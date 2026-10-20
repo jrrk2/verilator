@@ -63,6 +63,8 @@
 #include <unistd.h>
 #include <iomanip>
 #include <map>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -138,6 +140,7 @@ struct SLVal final {
     // Memory element write (big memory)
     const AstVar* memVarp = nullptr;
     SExpr idx;
+    int memLo = 0, memW = 0;  // memVarp: bits [memLo +: memW] of the element (memW 0: all of it)
     bool memDynamic = false;  // small array with dynamic index
     const AstVar* memSmallVarp = nullptr;
     bool sliceDynamic = false;  // vector[idx +: w] with a non-constant idx
@@ -157,6 +160,7 @@ struct SMem final {
     std::vector<SExpr> readIdx;  // primitive: read ports (dedup by index text)
     struct Write final {
         SExpr idx, data, en, clk;
+        int lo = 0, width = 0;  // writes bits [lo +: width] of the word (width 0: all of it)
     };
     std::vector<Write> writes;  // primitive: write ports
     bool anyWrite = false;
@@ -1580,6 +1584,203 @@ private:
         }
     }
 
+    // ---- memory transformations ahead of emission ----
+    void declWire(const std::string& name, int width) {
+        SDecl d;
+        d.name = name;
+        d.width = width;
+        d.dir = VDirection::NONE;
+        m_wires.push_back(d);
+        m_widths[name] = width;
+    }
+    static std::string memRdName(const std::string& mem, size_t i) { return mem + "_rdata" + std::to_string(i + 1); }
+    // A memory written in parts (byte lanes) becomes one memory per lane:
+    // the boundaries of every write, each lane with its slice of each write
+    // that covers it and of the initial image, and the read ports put back
+    // together.  Returns true if `m` was replaced.
+    bool splitLanes(SMem& m, std::vector<SMem*>& mems, std::deque<SMem>& store,
+                    std::unordered_map<std::string, int>& rdUses) {
+        bool partial = false;
+        for (const SMem::Write& w : m.writes) {
+            if (w.width && (w.lo != 0 || w.width != m.dataWidth)) partial = true;
+        }
+        if (!partial) return false;
+        std::set<int> cuts{0, m.dataWidth};
+        for (const SMem::Write& w : m.writes) {
+            if (!w.width) continue;
+            cuts.insert(w.lo);
+            cuts.insert(std::min(w.lo + w.width, m.dataWidth));
+        }
+        const std::vector<int> b(cuts.begin(), cuts.end());
+        std::vector<uint64_t> words;
+        bool img = false;
+        if (m.hasInitWords) {
+            words = m.initWords;
+            img = true;
+        } else if (!m.initFile.empty()) {
+            img = readHexWords(m.initFile, words);
+            if (!img) v3error("memory " << m.name << ": cannot read " << m.initFile << " to split it into lanes");
+        }
+        if (img && m.dataWidth > 64) v3error("memory " << m.name << ": lanes of an initialised memory wider than 64 bits");
+        const size_t nr = m.readIdx.size();
+        // registered-output reads carry over to the lanes only if every lane can keep them
+        bool absorb = nr > 0;
+        for (size_t i = 0; i < nr && absorb; ++i) {
+            absorb = i < m.sync.size() && m.sync[i].used && rdUses[memRdName(m.name, i)] == 0;
+        }
+        std::vector<SMem*> lanes;
+        for (size_t k = 0; k + 1 < b.size(); ++k) {
+            const int lo = b[k];
+            const int w = b[k + 1] - b[k];
+            store.emplace_back();
+            SMem& L = store.back();
+            L.name = m.name + "_lane" + std::to_string(k);
+            L.depth = m.depth;
+            L.dataWidth = w;
+            L.addrWidth = m.addrWidth;
+            L.lo = m.lo;
+            L.readIdx = m.readIdx;
+            L.clk = m.clk;
+            L.anyWrite = m.anyWrite;
+            for (const SMem::Write& wr : m.writes) {
+                const int wlo = wr.width ? wr.lo : 0;
+                const int ww = wr.width ? wr.width : m.dataWidth;
+                if (lo < wlo || lo + w > wlo + ww) continue;
+                SMem::Write x = wr;
+                x.data = sliceOf(wr.data, lo - wlo, w);
+                x.lo = 0;
+                x.width = 0;
+                L.writes.push_back(x);
+            }
+            if (L.writes.size() > 1) absorb = false;
+            if (img) {
+                L.hasInitWords = true;
+                for (const uint64_t v : words) L.initWords.push_back(maskTo(v >> lo, w));
+            }
+            for (size_t i = 0; i < nr; ++i) rdUses[memRdName(L.name, i)] = rdUses[memRdName(m.name, i)];
+            lanes.push_back(&L);
+        }
+        for (SMem* const lp : lanes) {
+            SMem& L = *lp;
+            L.sync.clear();
+            if (absorb) {
+                L.sync = m.sync;
+                for (size_t i = 0; i < L.sync.size(); ++i) {
+                    if (!L.sync[i].used) continue;
+                    L.sync[i].q = L.name + "_q" + std::to_string(i + 1);
+                    L.sync[i].qRefs = {L.sync[i].q};
+                    declWire(L.sync[i].q, L.dataWidth);
+                }
+            }
+            mems.push_back(lp);
+        }
+        auto concat = [&](const std::function<std::string(const SMem&)>& part) {
+            SExpr e;
+            e.text = "{";
+            for (size_t k = lanes.size(); k-- > 0;) {
+                const std::string t = part(*lanes[k]);
+                e.text += t + (k ? ", " : "");
+                e.refs.push_back(t);
+            }
+            e.text += "}";
+            e.width = m.dataWidth;
+            return e;
+        };
+        for (size_t i = 0; i < nr; ++i) {
+            if (absorb) {
+                addAssign(m.sync[i].q, concat([&](const SMem& L) { return L.sync[i].q; }), m.sync[i].qRefs);
+                continue;
+            }
+            declWire(memRdName(m.name, i), m.dataWidth);
+            addAssign(memRdName(m.name, i), concat([&](const SMem& L) { return memRdName(L.name, i); }));
+            // the output registers held back for absorption go back in
+            if (i < m.sync.size() && m.sync[i].used) {
+                for (const SDeferredDff& dd : m_deferred) {
+                    if (dd.q != m.sync[i].q) continue;
+                    SItem& it = addCell(dd.negedge ? "dffn_en" : "dff_en", newName("dff"));
+                    it.params = {{"WIDTH", std::to_string(dd.width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+                    pinIn(it, "clk", dd.clk);
+                    it.pins.push_back({"rst", "1'b0"});
+                    pinIn(it, "en", dd.en);
+                    pinIn(it, "d", dd.d);
+                    pinOut(it, "q", dd.q, dd.qRefs);
+                }
+            }
+        }
+        return true;
+    }
+    // `a_q <= a; ... = mem[a_q];` -- a read through an address register that
+    // is always enabled and never reset -- is a synchronous read of `a`.  A
+    // block RAM port reads the old word when the same cycle writes it, where
+    // the registered address reads the new one, so the write-first result is
+    // put back with a registered hit flag and write data.
+    void registeredAddressReads(SMem& m, std::unordered_map<std::string, int>& rdUses) {
+        const std::string one = constExpr(1, 1).text;
+        for (size_t i = 0; i < m.readIdx.size(); ++i) {
+            if (i < m.sync.size() && m.sync[i].used) continue;
+            const SExpr a = m.readIdx[i];
+            if (!a.isIdent) continue;
+            const SItem* dff = nullptr;
+            for (const SItem& it : m_items) {
+                if (it.kind != SItem::CELL || it.prim != "dff_en") continue;
+                std::string q, en, rst;
+                for (const SPin& p : it.pins) {
+                    if (p.name == "q") q = p.expr;
+                    if (p.name == "en") en = p.expr;
+                    if (p.name == "rst") rst = p.expr;
+                }
+                if (q == a.text && en == one && rst == "1'b0") { dff = &it; break; }
+            }
+            if (!dff) continue;
+            std::string clkText, dText;
+            for (const SPin& p : dff->pins) {
+                if (p.name == "clk") clkText = p.expr;
+                if (p.name == "d") dText = p.expr;
+            }
+            bool sameClock = true;
+            for (const SMem::Write& w : m.writes) sameClock = sameClock && w.clk.text == clkText;
+            if (!sameClock) continue;
+            SExpr clk = identExpr(clkText, 1);
+            clk.refs = {rootIdent(clkText)};
+            SExpr d;
+            d.text = dText;
+            d.width = a.width;
+            d.refs = dff->reads;
+            d = materialize(d);
+            const std::string q = m.name + "_aq" + std::to_string(i + 1);
+            declWire(q, m.dataWidth);
+            if (m.sync.size() < m.readIdx.size()) m.sync.resize(m.readIdx.size());
+            SMem::SyncRead& sr = m.sync[i];
+            sr.used = true;
+            sr.en = constExpr(1, 1);
+            sr.q = q;
+            sr.qRefs = {q};
+            sr.clk = clk;
+            m.readIdx[i] = d;
+            auto reg = [&](const SExpr& in, int width) {
+                const SExpr o = newWire(width);
+                SItem& it = addCell("dff_en", newName("dff"));
+                it.params = {{"WIDTH", std::to_string(width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+                pinIn(it, "clk", clk);
+                it.pins.push_back({"rst", "1'b0"});
+                pinIn(it, "en", constExpr(1, 1));
+                pinIn(it, "d", in);
+                pinOut(it, "q", o.text);
+                return o;
+            };
+            SExpr out = identExpr(q, m.dataWidth);
+            out.refs = {q};
+            for (const SMem::Write& w : m.writes) {
+                const SExpr hit = materialize(andBits(
+                    w.en, genBinary("comparator_eq", resize(w.idx, m.addrWidth, false),
+                                    resize(d, m.addrWidth, false), m.addrWidth, 1)));
+                out = genMux(reg(hit, 1), out, reg(w.data, m.dataWidth), m.dataWidth);
+            }
+            declWire(memRdName(m.name, i), m.dataWidth);
+            addAssign(memRdName(m.name, i), out);
+            rdUses[memRdName(m.name, i)] = 0;  // the primitive's output is `q` now
+        }
+    }
     // "base[lo+:w]" with a constant lo -> true
     static bool splitSliceKey(const std::string& key, std::string& base, int& lo, int& w) {
         const size_t b = key.find('[');
@@ -1875,6 +2076,8 @@ private:
             w.data = rhs;
             w.en = materialize(pathCondition());
             w.clk = m_clk;
+            w.lo = lv.memLo;
+            w.width = lv.memW;
             m.writes.push_back(w);
             m.anyWrite = true;
             if (m_seq) m.clk = m_clk;
@@ -2034,8 +2237,22 @@ private:
         if (AstSel* const sp = VN_CAST(lhsp, Sel)) {
             SLVal base = lowerLValue(sp->fromp(), env);
             if (!base.ok) return lv;
+            if (base.memVarp && !base.memW) {
+                // mem[a][lsb +: w] <= d with a constant lsb (a byte lane, once
+                // a loop over the byte enables is unrolled): a partial write,
+                // which gives the memory a lane of its own
+                const SExpr lsbE = lowerExpr(sp->lsbp(), env);
+                if (lsbE.hasVal) {
+                    base.memLo = static_cast<int>(lsbE.val);
+                    base.memW = sp->widthConst();
+                    base.width = base.memW;
+                    return base;
+                }
+            }
             if (base.memVarp || base.memDynamic) {
-                warnNode(lhsp, "part-select write into array element with dynamic index unsupported");
+                // never silently: a dropped write turns a RAM into a ROM of zeros
+                lhsp->v3error("structural backend: part-select write into array element with a"
+                              " non-constant bit offset is not supported");
                 return lv;
             }
             const int w = sp->widthConst();
@@ -3276,8 +3493,11 @@ private:
                 }
             }
         }
-        for (SMem* const mp : mems) {
-            SMem& m = *mp;
+        std::deque<SMem> laneStore;  // lanes split off below; must outlive the loop
+        for (size_t mi = 0; mi < mems.size(); ++mi) {
+            SMem& m = *mems[mi];
+            if (splitLanes(m, mems, laneStore, rdUses)) continue;
+            registeredAddressReads(m, rdUses);
             const size_t nr = m.readIdx.size();
             const size_t nw = m.writes.size();
             if (nr == 0 && nw == 0) {
