@@ -34,6 +34,7 @@
 
 #include "struct_netlist.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -91,9 +92,9 @@ public:
     void equate(int a, int b) {
         if (a == b) return;
         const int va = a >> 1, vb = b >> 1;
-        if (va && isPlaceholder(va) && !hasAlias(va)) {
+        if (va && isPlaceholder(va) && !hasAlias(va) && !m_pinned.count(va)) {
             m_alias[va] = b ^ (a & 1);
-        } else if (vb && isPlaceholder(vb) && !hasAlias(vb)) {
+        } else if (vb && isPlaceholder(vb) && !hasAlias(vb) && !m_pinned.count(vb)) {
             m_alias[vb] = a ^ (b & 1);
         } else {
             svs_netlist::warn("net driven twice (lit " + std::to_string(a) + " vs " + std::to_string(b) + ")");
@@ -182,7 +183,56 @@ public:
         for (const int l : a) r = XOR(r, l);
         return r;
     }
+    // ---- hard arithmetic (CARRY4 chains, DSP48E1) ----
+    // An add / subtract / ordered compare of at least MIN_CARRY bits is not
+    // built from gates: its propagate (S = a ^ b) and generate (DI = a) bits
+    // and initial carry become primary outputs of the AIG, its sum bits and
+    // final carry fresh primary inputs, and the mapper emits a CARRY4 chain
+    // between them.  ABC still maps the S functions (and whatever feeds them)
+    // into the LUTs in front of the chain.  A multiply of at least MIN_DSP
+    // bits is split into 24 x 17 partial products on DSP48E1s (pairs whose
+    // shift is past the result width, or whose operand slice is constant 0,
+    // are skipped) summed with such adders.
+    static constexpr size_t MIN_CARRY = 4;
+    static constexpr size_t MIN_DSP = 8;
+    struct Chain {
+        Vec s, di;  // per bit
+        int cyinit = 0;
+        Vec o;  // sum bits (placeholders), empty for a compare
+        int co = -1;  // final carry (placeholder), -1 when unused
+    };
+    struct Dsp {
+        Vec a, b;  // 25 / 18 operand bits (zero-extended)
+        Vec p;  // 48 product bits (placeholders)
+    };
+    std::vector<Chain> m_chains;
+    std::vector<Dsp> m_dsps;
+    bool m_hard = true;
+    std::unordered_set<int> m_pinned;  // hard-cell outputs: never aliased by equate
+    int pinnedVar() {
+        const int l = newVar();
+        m_pinned.insert(l >> 1);
+        return l;
+    }
+    static bool allConst(const Vec& v) {
+        for (const int l : v) if ((l >> 1) != 0) return false;
+        return true;
+    }
     Vec add(const Vec& a, const Vec& b, int cin = 0) {
+        if (m_hard && a.size() >= MIN_CARRY && !(allConst(a) && allConst(b))) {
+            Chain c;
+            for (size_t i = 0; i < a.size(); ++i) {
+                c.s.push_back(XOR(a[i], b[i]));
+                c.di.push_back(a[i]);
+                c.o.push_back(pinnedVar());
+            }
+            c.cyinit = cin;
+            m_chains.push_back(c);
+            return m_chains.back().o;
+        }
+        return addGates(a, b, cin);
+    }
+    Vec addGates(const Vec& a, const Vec& b, int cin = 0) {
         Vec r(a.size());
         int c = cin;
         for (size_t i = 0; i < a.size(); ++i) {
@@ -196,17 +246,61 @@ public:
     Vec neg(const Vec& a) { return add(NOTv(a), constVec(0, a.size()), 1); }
     Vec mul(const Vec& a, const Vec& b) {
         const int w = a.size();
+        if (m_hard && static_cast<size_t>(w) >= MIN_DSP) {
+            std::vector<Vec> parts;  // shifted partial products, w bits each
+            for (int i = 0; 24 * i < w; ++i) {
+                Vec ai;
+                for (int k = 0; k < 24; ++k) ai.push_back(24 * i + k < w ? a[24 * i + k] : 0);
+                if (allConst(ai) && std::all_of(ai.begin(), ai.end(), [](int l) { return l == 0; })) continue;
+                for (int j = 0; 24 * i + 17 * j < w; ++j) {
+                    Vec bj;
+                    for (int k = 0; k < 17; ++k) bj.push_back(17 * j + k < w ? b[17 * j + k] : 0);
+                    if (std::all_of(bj.begin(), bj.end(), [](int l) { return l == 0; })) continue;
+                    Dsp d;
+                    d.a = ai;
+                    d.a.push_back(0);  // A[24] = 0: the 24 bits are unsigned
+                    d.b = bj;
+                    d.b.push_back(0);  // B[17] = 0
+                    for (int k = 0; k < 48; ++k) d.p.push_back(pinnedVar());
+                    m_dsps.push_back(d);
+                    const int sh = 24 * i + 17 * j;
+                    Vec part(w, 0);
+                    for (int k = 0; k < 41 && sh + k < w; ++k) part[sh + k] = m_dsps.back().p[k];
+                    parts.push_back(part);
+                }
+            }
+            if (parts.empty()) return constVec(0, w);
+            while (parts.size() > 1) {  // balanced adder tree
+                std::vector<Vec> next;
+                for (size_t k = 0; k + 1 < parts.size(); k += 2) next.push_back(add(parts[k], parts[k + 1]));
+                if (parts.size() % 2) next.push_back(parts.back());
+                parts.swap(next);
+            }
+            return parts[0];
+        }
         Vec acc = constVec(0, w);
         for (int i = 0; i < w; ++i) {
             if (isFalse(b[i])) continue;
             Vec part(w, 0);
             for (int j = 0; i + j < w; ++j) part[i + j] = AND(a[j], b[i]);
-            acc = add(acc, part);
+            acc = addGates(acc, part);
         }
         return acc;
     }
     int eq(const Vec& a, const Vec& b) { return redOr(XORv(a, b)) ^ 1; }
     int ltU(const Vec& a, const Vec& b) {
+        if (m_hard && a.size() >= MIN_CARRY && !(allConst(a) && allConst(b))) {
+            // a < b  <=>  no carry out of a + ~b + 1
+            Chain c;
+            for (size_t i = 0; i < a.size(); ++i) {
+                c.s.push_back(XOR(a[i], b[i] ^ 1));
+                c.di.push_back(a[i]);
+            }
+            c.cyinit = 1;
+            c.co = pinnedVar();
+            m_chains.push_back(c);
+            return m_chains.back().co ^ 1;
+        }
         int borrow = 0;
         for (size_t i = 0; i < a.size(); ++i) borrow = OR(AND(a[i] ^ 1, b[i]), AND(OR(a[i] ^ 1, b[i]), borrow));
         return borrow;
@@ -401,7 +495,28 @@ private:
             }
             m_cellInPo.push_back(pos);
         }
+        for (const AigB::Chain& ch : m_aig.m_chains) {
+            ChainPo cp;
+            cp.s = m_po.size();
+            for (const int l : ch.s) addPO(l);
+            cp.di = m_po.size();
+            for (const int l : ch.di) addPO(l);
+            cp.cyinit = addPO(ch.cyinit);
+            m_chainPo.push_back(cp);
+        }
+        for (const AigB::Dsp& d : m_aig.m_dsps) {
+            DspPo dp;
+            dp.a = m_po.size();
+            for (const int l : d.a) addPO(l);
+            dp.b = m_po.size();
+            for (const int l : d.b) addPO(l);
+            m_dspPo.push_back(dp);
+        }
     }
+    struct ChainPo { int s, di, cyinit; };
+    struct DspPo { int a, b; };
+    std::vector<ChainPo> m_chainPo;
+    std::vector<DspPo> m_dspPo;
 
     // ---- AIGER (binary) ----
     void writeAiger(const std::string& path) {
@@ -796,6 +911,66 @@ private:
             for (int i = 0; i < k; ++i) ins.emplace_back("I" + std::to_string(i), "[" + netOf(l.ins[i]) + "]");
             cell("LUT" + std::to_string(k), "lut_" + sanitize(o) + "_" + std::to_string(m_ncells), {{"INIT", "\"" + lutInit(l) + "\""}}, ins, {{"O", "[" + netOfName[o] + "]"}});
         }
+        // 2b. carry chains: blocks of four bits, the first with CI = 0 and the
+        // initial carry on CYINIT, each later one's CI from the previous CO[3];
+        // bits past the width propagate (S = 1, DI = 0)
+        for (size_t ci = 0; ci < m_aig.m_chains.size(); ++ci) {
+            const AigB::Chain& ch = m_aig.m_chains[ci];
+            const ChainPo& cp = m_chainPo[ci];
+            const size_t w = ch.s.size();
+            const size_t nb = (w + 3) / 4;
+            std::string carry = "\"0\"";
+            m_curPath.clear();
+            for (size_t blk = 0; blk < nb; ++blk) {
+                std::vector<std::string> sv, dv, ov, cov;
+                for (size_t k = 0; k < 4; ++k) {
+                    const size_t i = 4 * blk + k;
+                    sv.push_back(i < w ? m_poNet[cp.s + i] : "\"1\"");
+                    dv.push_back(i < w ? m_poNet[cp.di + i] : "\"0\"");
+                    ov.push_back(i < w && !ch.o.empty() ? netOfLit(ch.o[i]) : newNet());
+                    cov.push_back(blk + 1 == nb && k == 3 && ch.co >= 0 ? netOfLit(ch.co) : newNet());
+                }
+                cell("CARRY4", "carry" + std::to_string(ci) + "_" + std::to_string(blk), {},
+                     {{"CI", "[" + carry + "]"}, {"CYINIT", "[" + (blk == 0 ? m_poNet[cp.cyinit] : std::string("\"0\"")) + "]"},
+                      {"DI", bitsJson(dv)}, {"S", bitsJson(sv)}},
+                     {{"CO", bitsJson(cov)}, {"O", bitsJson(ov)}});
+                carry = cov[3];
+            }
+        }
+        // 2c. DSP48E1: combinational multiply, P = A * B (OPMODE X = Y = M, Z = 0)
+        for (size_t di = 0; di < m_aig.m_dsps.size(); ++di) {
+            const AigB::Dsp& d = m_aig.m_dsps[di];
+            const DspPo& dp = m_dspPo[di];
+            auto zeros = [](size_t n) { return std::vector<std::string>(n, "\"0\""); };
+            std::vector<std::string> a = zeros(30), b = zeros(18), p, fresh;
+            for (size_t k = 0; k < d.a.size(); ++k) a[k] = m_poNet[dp.a + k];
+            for (size_t k = 0; k < d.b.size(); ++k) b[k] = m_poNet[dp.b + k];
+            for (const int l : d.p) p.push_back(netOfLit(l));
+            auto freshN = [&](size_t n) { std::vector<std::string> v; for (size_t k = 0; k < n; ++k) v.push_back(newNet()); return v; };
+            const std::string z = "[\"0\"]";
+            std::vector<std::pair<std::string, std::string>> params = {
+                {"A_INPUT", "\"DIRECT\""}, {"B_INPUT", "\"DIRECT\""}, {"USE_DPORT", "\"FALSE\""}, {"USE_MULT", "\"MULTIPLY\""},
+                {"USE_SIMD", "\"ONE48\""}};
+            for (const char* r : {"ACASCREG", "ADREG", "ALUMODEREG", "AREG", "BCASCREG", "BREG", "CARRYINREG", "CARRYINSELREG",
+                                  "CREG", "DREG", "INMODEREG", "MREG", "OPMODEREG", "PREG"})
+                params.emplace_back(r, binParam(0));
+            std::vector<std::pair<std::string, std::string>> ins = {
+                {"A", bitsJson(a)}, {"B", bitsJson(b)}, {"C", bitsJson(zeros(48))}, {"D", bitsJson(zeros(25))},
+                {"ACIN", bitsJson(zeros(30))}, {"BCIN", bitsJson(zeros(18))}, {"PCIN", bitsJson(zeros(48))},
+                {"ALUMODE", bitsJson(zeros(4))}, {"INMODE", bitsJson(zeros(5))}, {"CARRYINSEL", bitsJson(zeros(3))},
+                {"OPMODE", bitsJson({"\"1\"", "\"0\"", "\"1\"", "\"0\"", "\"0\"", "\"0\"", "\"0\""})},
+                {"CARRYIN", z}, {"CARRYCASCIN", z}, {"MULTSIGNIN", z}, {"CLK", z}};
+            for (const char* ce : {"CEA1", "CEA2", "CEAD", "CEALUMODE", "CEB1", "CEB2", "CEC", "CECARRYIN", "CECTRL", "CED",
+                                   "CEINMODE", "CEM", "CEP", "RSTA", "RSTALLCARRYIN", "RSTALUMODE", "RSTB", "RSTC", "RSTCTRL",
+                                   "RSTD", "RSTINMODE", "RSTM", "RSTP"})
+                ins.emplace_back(ce, z);
+            std::vector<std::pair<std::string, std::string>> outs = {
+                {"P", bitsJson(p)}, {"ACOUT", bitsJson(freshN(30))}, {"BCOUT", bitsJson(freshN(18))}, {"PCOUT", bitsJson(freshN(48))},
+                {"CARRYCASCOUT", "[" + newNet() + "]"}, {"CARRYOUT", bitsJson(freshN(4))}, {"MULTSIGNOUT", "[" + newNet() + "]"},
+                {"OVERFLOW", "[" + newNet() + "]"}, {"UNDERFLOW", "[" + newNet() + "]"}, {"PATTERNDETECT", "[" + newNet() + "]"},
+                {"PATTERNBDETECT", "[" + newNet() + "]"}};
+            cell("DSP48E1", "dsp" + std::to_string(di), params, ins, outs);
+        }
         // 3. registers
         for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
             const Design::Reg& r = m_d.regs[ri];
@@ -1063,6 +1238,16 @@ private:
             in("D");
             for (int i = 0; i < 6; ++i) in("DPRA" + std::to_string(i));
             in("WCLK"); in("WE");
+        } else if (t == "CARRY4") {
+            out("CO", 4); out("O", 4); in("CI"); in("CYINIT"); in("DI", 4); in("S", 4);
+        } else if (t == "DSP48E1") {
+            out("ACOUT", 30); out("BCOUT", 18); out("CARRYCASCOUT"); out("CARRYOUT", 4); out("MULTSIGNOUT"); out("OVERFLOW");
+            out("P", 48); out("PATTERNBDETECT"); out("PATTERNDETECT"); out("PCOUT", 48); out("UNDERFLOW");
+            in("A", 30); in("ACIN", 30); in("ALUMODE", 4); in("B", 18); in("BCIN", 18); in("C", 48); in("CARRYCASCIN");
+            in("CARRYIN"); in("CARRYINSEL", 3); in("CEA1"); in("CEA2"); in("CEAD"); in("CEALUMODE"); in("CEB1"); in("CEB2");
+            in("CEC"); in("CECARRYIN"); in("CECTRL"); in("CED"); in("CEINMODE"); in("CEM"); in("CEP"); in("CLK"); in("D", 25);
+            in("INMODE", 5); in("MULTSIGNIN"); in("OPMODE", 7); in("PCIN", 48); in("RSTA"); in("RSTALLCARRYIN");
+            in("RSTALUMODE"); in("RSTB"); in("RSTC"); in("RSTCTRL"); in("RSTD"); in("RSTINMODE"); in("RSTM"); in("RSTP");
         } else if (t == "IBUF" || t == "OBUF" || t == "BUFG") {
             out("O"); in("I");
         }
