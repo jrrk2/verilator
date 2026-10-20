@@ -50,6 +50,7 @@ typedef struct Abc_Frame_t_ Abc_Frame_t;
 void Abc_Start();
 void Abc_Stop();
 Abc_Frame_t* Abc_FrameGetGlobalFrame();
+void Abc_FrameSetBatchMode(int Mode);
 int Cmd_CommandExecute(Abc_Frame_t* pAbc, const char* sCommand);
 }  // namespace abc
 #define ABC_NAMESPACE abc
@@ -582,6 +583,9 @@ private:
             started = true;
         }
         ABC_NAMESPACE::Abc_Frame_t* const pAbc = ABC_NAMESPACE::Abc_FrameGetGlobalFrame();
+        // Batch mode: otherwise ABC appends every command to ./abc.history,
+        // which here is the design's own directory.
+        ABC_NAMESPACE::Abc_FrameSetBatchMode(1);
         std::string script = v3Global.opt.mapOnlyAbcScript();
         if (script.empty()) script = "strash; dc2; if -K 6";
         const std::string cmd = "read_aiger " + aig + "; " + script + "; write_blif " + blif;
