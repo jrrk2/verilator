@@ -1915,7 +1915,61 @@ private:
         }
         setKey(lv, rhs, blocking, env);
     }
+    // Slice keys of one variable must not overlap: assembleFromMap lays them
+    // out by bit position, not in the order they were written.  Two that
+    // do (a slice write over a differently-cut earlier one, or the two arms
+    // of an if cutting the variable differently -- picorv32's decoded_imm_j)
+    // are folded into the whole variable first.
+    static bool slicesOverlap(const std::vector<std::pair<int, int>>& iv) {
+        std::vector<std::pair<int, int>> v = iv;
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        int end = -1;
+        for (const auto& lw : v) {
+            if (lw.first < end) return true;
+            end = std::max(end, lw.first + lw.second);
+        }
+        return false;
+    }
+    static void sliceIntervals(const std::map<std::string, SExpr>& mp, const std::string& base,
+                               std::vector<std::pair<int, int>>& iv) {
+        const std::string pfx = base + "[";
+        for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
+            std::string b;
+            int lo, w;
+            if (splitSliceKey(it->first, b, lo, w) && b == base) iv.emplace_back(lo, w);
+        }
+    }
+    static void eraseSlices(std::map<std::string, SExpr>& mp, const std::string& base) {
+        const std::string pfx = base + "[";
+        for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;) it = mp.erase(it);
+    }
+    // Replace `base`'s slices in env.next (and env.cur when `cur`) by the whole value they make
+    void foldToWhole(Env& env, const std::string& base, bool cur) {
+        const SExpr nv = materialize(readKey(base, env, false));
+        eraseSlices(env.next, base);
+        env.setNext(base, nv);
+        if (cur) {
+            const SExpr cv = materialize(readKey(base, env, true));
+            eraseSlices(env.cur, base);
+            env.cur[base] = cv;
+        }
+    }
     void setKey(const SLVal& lv, const SExpr& rhs, bool blocking, Env& env) {
+        {
+            std::string base;
+            int lo, w;
+            if (splitSliceKey(lv.key, base, lo, w)) {
+                auto clash = [&](const std::map<std::string, SExpr>& mp) {
+                    std::vector<std::pair<int, int>> iv;
+                    sliceIntervals(mp, base, iv);
+                    iv.emplace_back(lo, w);
+                    return slicesOverlap(iv);
+                };
+                const bool inCur = blocking || !m_seq;
+                if (clash(env.next) || (inCur && clash(env.cur))) foldToWhole(env, base, inCur);
+            }
+        }
         if (lv.key.find('[') == std::string::npos) {
             const std::string pfx = lv.key + "[";
             auto erasePfx = [&](std::map<std::string, SExpr>& mp) {
@@ -2133,6 +2187,29 @@ private:
             }
             env.halted = true;
             env.haltTarget = thenEnv.haltTarget;
+        }
+        // Arms that cut a variable into different slices are merged whole
+        {
+            std::set<std::string> bases;
+            for (const Env* b : {&thenEnv, &elseEnv}) {
+                for (const auto& kv : b->next) {
+                    std::string base;
+                    int lo, w;
+                    if (splitSliceKey(kv.first, base, lo, w)) bases.insert(base);
+                }
+            }
+            for (const std::string& base : bases) {
+                std::vector<std::pair<int, int>> iv;
+                sliceIntervals(thenEnv.next, base, iv);
+                sliceIntervals(elseEnv.next, base, iv);
+                if (!slicesOverlap(iv)) continue;
+                const bool cur = !m_seq;
+                foldToWhole(thenEnv, base, cur);
+                foldToWhole(elseEnv, base, cur);
+                // the arms began as copies of env, so its slices are in both
+                eraseSlices(env.next, base);
+                if (cur) eraseSlices(env.cur, base);
+            }
         }
         // next: keys driven by either branch
         std::vector<std::string> keys;
