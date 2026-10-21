@@ -1094,7 +1094,9 @@ private:
             for (size_t b = 0; b < kv.second.size(); ++b) {
                 const std::string n = m_poNet[m_topOutPo[oi] + b];
                 const int r = m_aig.resolve(kv.second[b]);
-                if (inout || n[0] == '"' || bufferedVars.count(r >> 1)) {
+                // a constant output gets its OBUF too, as from iopadmap (ethmin's
+                // PHY ties eth_rst_n high); var 0 is the constant, not a buffered net
+                if (inout || (n[0] != '"' && bufferedVars.count(r >> 1))) {
                     nets.push_back(n);
                 } else {
                     const std::string pad = newNet();
@@ -1560,7 +1562,7 @@ private:
     void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) {
         const int aw = paramOf(c, "ADDR_WIDTH", 1);
         const int dw = paramOf(c, "DATA_WIDTH", 1);
-        const int depth = 1 << aw;
+        const int depth = paramOf(c, "DEPTH", 1 << aw);  // words used
         auto pinNets = [&](const char* name) -> std::vector<std::string> {
             for (size_t i = 0; i < c.ins.size(); ++i) {
                 if (c.ins[i].first == name) {
@@ -1796,7 +1798,7 @@ private:
     void emitLutram(const Design::Cell& c, const std::vector<int>& inPo) {
         const int aw = paramOf(c, "ADDR_WIDTH", 1);
         const int dw = paramOf(c, "DATA_WIDTH", 1);
-        const int depth = 1 << aw;
+        const int depth = paramOf(c, "DEPTH", 1 << aw);  // words used
         auto pinNets = [&](const char* name) -> std::vector<std::string> {
             for (size_t i = 0; i < c.ins.size(); ++i) {
                 if (c.ins[i].first == name) {
