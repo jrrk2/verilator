@@ -1146,14 +1146,17 @@ private:
     }
 
     // `wire w = expr;` reaches us as `initial w = expr;` (an AstInitial whose
-    // statements all assign nets): that is a continuous assignment.
+    // statements all assign nets): that is a continuous assignment.  So does
+    // `assign o = CONST;` onto an output port with no net type: Verilator
+    // makes the port [CONST] and the assign an initial (VexRiscv's bridges
+    // tie off outputs this way; dropped, they were undriven nets)
     bool harvestNetInit(AstNode* stmtsp) {
         if (!stmtsp) return false;
         for (AstNode* sp = stmtsp; sp; sp = sp->nextp()) {
             const AstAssign* const asp = VN_CAST(sp, Assign);
             if (!asp) return false;
             const AstVarRef* const refp = VN_CAST(asp->lhsp(), VarRef);
-            if (!refp || !refp->varp()->isNet()) return false;
+            if (!refp || !(refp->varp()->isNet() || refp->varp()->isConst())) return false;
         }
         for (AstNode* sp = stmtsp; sp; sp = sp->nextp()) {
             const AstAssign* const asp = VN_AS(sp, Assign);
@@ -1564,6 +1567,45 @@ private:
                     }
                     en = level == 0 ? lvlEn : materialize(andBits(en, lvlEn));
                 }
+                // `if (we) q <= wd; else q <= mem[a];` -- a write-first port (LiteX's
+                // L2 cache, LiteEth's buffers).  Nonblocking, mem[a] is the old word,
+                // so the read is a read-first synchronous port with the same enable,
+                // and the other arm goes back outside it from registered copies of
+                // the select and its value.
+                if (!useRst) {
+                    const auto mit = m_muxes.find(d.text);
+                    const bool isMux = mit != m_muxes.end();
+                    const bool rd0 = isMux && mit->second.in0.isIdent && m_readPorts.count(mit->second.in0.text);
+                    const bool rd1 = isMux && mit->second.in1.isIdent && m_readPorts.count(mit->second.in1.text);
+                    if (rd0 != rd1) {
+                        const SExpr sel = mit->second.sel;
+                        const SExpr rd = rd0 ? mit->second.in0 : mit->second.in1;
+                        const SExpr other = rd0 ? mit->second.in1 : mit->second.in0;
+                        const auto& port = m_readPorts.at(rd.text);
+                        SMem& m = m_mems.at(port.first);
+                        if (m.sync.size() < m.readIdx.size()) m.sync.resize(m.readIdx.size());
+                        SMem::SyncRead& sr = m.sync[port.second];
+                        if (!sr.used) {
+                            const std::string raw = key + "__rd";
+                            declWire(raw, width);
+                            sr.used = true;
+                            sr.en = en;
+                            sr.q = raw;
+                            sr.qRefs = {raw};
+                            sr.clk = m_clk;
+                            m.clk = m_clk;
+                            m_deferred.push_back({raw, {raw}, rd, en, m_clk, width, m_negedge});
+                            const SExpr selQ = newWire(1);
+                            genDff(selQ.text, {selQ.text}, sel, en, 1, 0, false);
+                            const SExpr otherQ = newWire(width);
+                            genDff(otherQ.text, {otherQ.text}, other, en, width, 0, false);
+                            SExpr rawE = identExpr(raw, width);
+                            rawE.refs = {raw};
+                            addAssign(key, genMux(selQ, rd0 ? rawE : otherQ, rd0 ? otherQ : rawE, width), qRefs);
+                            continue;
+                        }
+                    }
+                }
                 // `if (re) q <= mem[a];` with no reset -> a synchronous read
                 // port whose output register is the BRAM's own
                 const auto rp = d.isIdent ? m_readPorts.find(d.text) : m_readPorts.end();
@@ -1636,10 +1678,13 @@ private:
         }
         if (img && m.dataWidth > 64) v3error("memory " << m.name << ": lanes of an initialised memory wider than 64 bits");
         const size_t nr = m.readIdx.size();
-        // registered-output reads carry over to the lanes only if every lane can keep them
+        // registered-output reads carry over to the lanes only if every lane can keep
+        // them; a registered-address read does not stand in the way, as each lane
+        // turns it into a synchronous read of its own (registeredAddressReads)
         bool absorb = nr > 0;
         for (size_t i = 0; i < nr && absorb; ++i) {
-            absorb = i < m.sync.size() && m.sync[i].used && rdUses[memRdName(m.name, i)] == 0;
+            const bool sync = i < m.sync.size() && m.sync[i].used;
+            absorb = sync ? rdUses[memRdName(m.name, i)] == 0 : registeredAddress(m, i) != nullptr;
         }
         std::vector<SMem*> lanes;
         for (size_t k = 0; k + 1 < b.size(); ++k) {
@@ -1700,7 +1745,7 @@ private:
             return e;
         };
         for (size_t i = 0; i < nr; ++i) {
-            if (absorb) {
+            if (absorb && i < m.sync.size() && m.sync[i].used) {
                 addAssign(m.sync[i].q, concat([&](const SMem& L) { return L.sync[i].q; }), m.sync[i].qRefs);
                 continue;
             }
@@ -1727,37 +1772,53 @@ private:
     // block RAM port reads the old word when the same cycle writes it, where
     // the registered address reads the new one, so the write-first result is
     // put back with a registered hit flag and write data.
-    void registeredAddressReads(SMem& m, std::unordered_map<std::string, int>& rdUses) {
+    // The address register of read port `i` if it is a registered-address
+    // read (see registeredAddressReads), else null
+    const SItem* registeredAddress(const SMem& m, size_t i) const {
+        if (i < m.sync.size() && m.sync[i].used) return nullptr;
+        const SExpr& a = m.readIdx[i];
+        if (!a.isIdent) return nullptr;
         const std::string one = constExpr(1, 1).text;
-        for (size_t i = 0; i < m.readIdx.size(); ++i) {
-            if (i < m.sync.size() && m.sync[i].used) continue;
-            const SExpr a = m.readIdx[i];
-            if (!a.isIdent) continue;
-            const SItem* dff = nullptr;
-            for (const SItem& it : m_items) {
-                if (it.kind != SItem::CELL || it.prim != "dff_en") continue;
-                std::string q, en, rst;
-                for (const SPin& p : it.pins) {
-                    if (p.name == "q") q = p.expr;
-                    if (p.name == "en") en = p.expr;
-                    if (p.name == "rst") rst = p.expr;
-                }
-                if (q == a.text && en == one && rst == "1'b0") { dff = &it; break; }
+        for (const SItem& it : m_items) {
+            if (it.kind != SItem::CELL || it.prim != "dff_en") continue;
+            std::string q, en, rst, clkText;
+            for (const SPin& p : it.pins) {
+                if (p.name == "q") q = p.expr;
+                if (p.name == "en") en = p.expr;
+                if (p.name == "rst") rst = p.expr;
+                if (p.name == "clk") clkText = p.expr;
             }
+            if (q != a.text || en != one || rst != "1'b0") continue;
+            for (const SMem::Write& w : m.writes) {
+                if (w.clk.text != clkText) return nullptr;
+            }
+            return &it;
+        }
+        return nullptr;
+    }
+    void registeredAddressReads(SMem& m, std::unordered_map<std::string, int>& rdUses) {
+        for (size_t i = 0; i < m.readIdx.size(); ++i) {
+            const SItem* const dff = registeredAddress(m, i);
             if (!dff) continue;
+            // Only into a memory whose reads all end up synchronous: the
+            // primitives are all-synchronous or all-asynchronous, and an
+            // asynchronous memory would read this port at the unregistered
+            // address while `rdata` is also driven from the bypass below
+            bool othersSync = true;
+            for (size_t j = 0; j < m.readIdx.size(); ++j) {
+                if (j != i && !(j < m.sync.size() && m.sync[j].used) && !registeredAddress(m, j)) othersSync = false;
+            }
+            if (!othersSync) continue;
             std::string clkText, dText;
             for (const SPin& p : dff->pins) {
                 if (p.name == "clk") clkText = p.expr;
                 if (p.name == "d") dText = p.expr;
             }
-            bool sameClock = true;
-            for (const SMem::Write& w : m.writes) sameClock = sameClock && w.clk.text == clkText;
-            if (!sameClock) continue;
             SExpr clk = identExpr(clkText, 1);
             clk.refs = {rootIdent(clkText)};
             SExpr d;
             d.text = dText;
-            d.width = a.width;
+            d.width = m.readIdx[i].width;
             d.refs = dff->reads;
             d = materialize(d);
             const std::string q = m.name + "_aq" + std::to_string(i + 1);
@@ -3533,6 +3594,9 @@ private:
             auto addr = [&](const SExpr& e) { return resize(e, m.addrWidth, false); };
             std::vector<std::pair<std::string, std::string>> params
                 = {{"ADDR_WIDTH", std::to_string(m.addrWidth)}, {"DATA_WIDTH", std::to_string(m.dataWidth)}};
+            // the words actually used, when fewer than the address reaches: the
+            // mapper sizes the block RAM to it (a 2.5 MB ROM is 20 deep blocks, not 32)
+            if (m.depth > 0 && m.depth < (1LL << m.addrWidth)) params.emplace_back("DEPTH", std::to_string(m.depth));
             if (!m.initFile.empty()) {
                 params.emplace_back("INIT_FILE", "\"" + m.initFile + "\"");
             } else if (m.hasInitWords) {
