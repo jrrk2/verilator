@@ -1390,10 +1390,7 @@ private:
             // without FF-rip the register is opaque: Q is free, D is still compared
         }
         // mark the Q bits as driven so they are not reported undriven
-        if (qe->kind == Expr::IDENT) {
-            NetBits* nb = findNet(sc.prefix + qe->name);
-            if (nb) for (int& c : nb->drivers) if (c == 0) c = 1;
-        }
+        markDriven(qe, sc);
     }
     static std::string lvalText(const ExprP& e) {
         switch (e->kind) {
@@ -1537,13 +1534,45 @@ private:
             const std::string qname = sc.prefix + lvalText(de);
             m_d->regNext[qname] = m_bl.MUXv(re, q, data);
             m_d->regQ[qname] = q;
-            if (de->kind == Expr::IDENT) {
-                NetBits* nb = findNet(sc.prefix + de->name);
-                if (nb) for (int& c : nb->drivers) if (c == 0) c = 1;
-            }
+            markDriven(de, sc);
         }
     }
 
+    // The bits an output connection drives: register Qs, memory read ports
+    // and black-box outputs are free variables, not assigns, so they are not
+    // counted by driveBits.  A plain net, a constant bit or part select, or a
+    // concatenation of those; anything else marks the whole base net.
+    void markDriven(const ExprP& e, const Scope& sc) {
+        if (!e) return;
+        auto base = [&](const ExprP& b) -> NetBits* {
+            return b && b->kind == Expr::IDENT ? findNet(sc.prefix + b->name) : nullptr;
+        };
+        auto mark = [](NetBits* nb, long long lo, long long n) {
+            if (!nb) return;
+            for (long long k = std::max(0LL, lo); k < std::min<long long>(lo + n, nb->width); ++k)
+                if (nb->drivers[k] == 0) nb->drivers[k] = 1;
+        };
+        switch (e->kind) {
+        case Expr::IDENT: { NetBits* nb = base(e); if (nb) mark(nb, 0, nb->width); return; }
+        case Expr::CONCAT: for (const ExprP& a : e->args) markDriven(a, sc); return;
+        case Expr::BITSEL:
+            if (isConstExpr(e->args[1], sc)) { mark(base(e->args[0]), constOf(e->args[1], sc) - baseLsb(e->args[0], sc), 1); return; }
+            break;
+        case Expr::PARTSEL:
+            mark(base(e->args[0]), std::min(e->ival, e->ival2) - baseLsb(e->args[0], sc), std::abs(e->ival - e->ival2) + 1);
+            return;
+        case Expr::PARTSEL_UP:
+            if (isConstExpr(e->args[1], sc)) {
+                long long lo = constOf(e->args[1], sc) - baseLsb(e->args[0], sc);
+                if (e->ival2) lo = lo - e->ival + 1;
+                mark(base(e->args[0]), lo, e->ival);
+                return;
+            }
+            break;
+        default: break;
+        }
+        if (!e->args.empty()) { NetBits* nb = base(e->args[0]); if (nb) mark(nb, 0, nb->width); }
+    }
     static bool bbOutPin(const std::string& n) {
         return n.rfind("rdata", 0) == 0 || n == "q" || n == "Q" || n.rfind("out", 0) == 0
                || n == "O" || n.rfind("dout", 0) == 0 || n == "cout" || n == "valid"
@@ -1569,11 +1598,8 @@ private:
             const bool isOut = isOutPin(n);
             if (isOut) {
                 m_d->bbOut[inst + "." + n] = eval(p.expr, sc);
-                if (p.expr->kind == Expr::IDENT) {
-                    m_bbOutNets.insert(sc.prefix + p.expr->name);
-                    NetBits* nb = findNet(sc.prefix + p.expr->name);
-                    if (nb) for (int& c : nb->drivers) if (c == 0) c = 1;
-                }
+                if (p.expr->kind == Expr::IDENT) m_bbOutNets.insert(sc.prefix + p.expr->name);
+                markDriven(p.expr, sc);
             } else {
                 m_d->bbIn[inst + "." + n] = eval(p.expr, sc);
             }

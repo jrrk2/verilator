@@ -40,6 +40,7 @@
 #include <functional>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 // libabc entry points.  The yosys-bundled ABC is compiled as C++ inside
 // `namespace abc` (ABC_USE_NAMESPACE=abc); declaring the handful of
@@ -400,6 +401,12 @@ class Mapper final {
     int m_ncells = 0;
     std::unordered_map<std::string, int> m_counts;
     std::vector<std::string> m_warnings;
+    // Electrical rule check on the flat netlist: every bit a cell input reads
+    // must be driven by a cell output or a top-level input (or be a constant).
+    // The first reader of each net, for the report, and every driven net.
+    std::unordered_map<std::string, std::string> m_firstLoad;
+    std::unordered_set<std::string> m_drivenNets;
+    std::unordered_map<std::string, std::string> m_netName;  // first named bit of each net
 
 public:
     void run(const std::string& filename) {
@@ -769,6 +776,16 @@ private:
             for (const auto& p : outs) r.conns.push_back({p.first, true, splitBits(p.second)});
             m_recs.push_back(std::move(r));
         }
+        for (const auto& p : ins) {
+            const std::vector<std::string> bits = splitBits(p.second);
+            for (size_t b = 0; b < bits.size(); ++b) {
+                if (bits[b].empty() || bits[b][0] == '"') continue;
+                m_firstLoad.emplace(bits[b], name + "." + p.first + (bits.size() > 1 ? "[" + std::to_string(b) + "]" : ""));
+            }
+        }
+        for (const auto& p : outs) {
+            for (const std::string& n : splitBits(p.second)) if (!n.empty() && n[0] != '"') m_drivenNets.insert(n);
+        }
         if (m_ncells) m_cells << ",\n";
         ++m_ncells;
         ++m_counts[type];
@@ -1053,6 +1070,7 @@ private:
         bool first = true;
         auto port = [&](const std::string& name, const char* dir, const std::vector<std::string>& nets) {
             m_portRecs.push_back({name, dir, nets});
+            if (std::string(dir) != "output") for (const std::string& n : nets) m_drivenNets.insert(n);
             ports << (first ? "" : ",\n") << "    \"" << name << "\": {\"direction\": \"" << dir << "\", \"bits\": " << bitsJson(nets) << "}";
             netnames << (first ? "" : ",\n") << "    \"" << name << "\": {\"hide_name\": 0, \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             first = false;
@@ -1128,8 +1146,12 @@ private:
                     ok = false;
                 }
             }
-            if (undriven && !m_d.regQ.count(kv.first)) m_warnings.push_back("net " + kv.first + " has no driver");
+            (void)undriven;
             if (!ok) continue;
+            for (size_t b = 0; b < nets.size(); ++b) {
+                if (!nets[b].empty() && nets[b][0] != '"')
+                    m_netName.emplace(nets[b], nets.size() == 1 ? kv.first : kv.first + "[" + std::to_string(b + kv.second.lsb) + "]");
+            }
             netnames << ",\n    \"" << kv.first << "\": {\"hide_name\": 0, \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             {
                 int lo = 0;
@@ -1141,6 +1163,23 @@ private:
                     m_netNames.emplace(std::make_pair(path, nets[b]), nm);
                 }
             }
+        }
+        // Floating gates: hierarchy does not come into it -- a net with no driver
+        // that no cell reads is harmless wherever it is named, and one that a
+        // cell reads is an error wherever it is
+        {
+            std::vector<std::pair<std::string, std::string>> floating;
+            for (const auto& kv : m_firstLoad) {
+                if (!m_drivenNets.count(kv.first)) floating.push_back(kv);
+            }
+            std::sort(floating.begin(), floating.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+            for (size_t i = 0; i < floating.size() && i < 20; ++i) {
+                const auto nit = m_netName.find(floating[i].first);
+                m_warnings.push_back("floating input " + floating[i].second + ": net "
+                                     + (nit != m_netName.end() ? nit->second : "#" + floating[i].first) + " has no driver");
+            }
+            if (floating.size() > 20)
+                m_warnings.push_back(std::to_string(floating.size() - 20) + " more floating inputs");
         }
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
         if (filename.empty()) return;  // --map-only-edif alone
@@ -1629,7 +1668,22 @@ private:
             P[0].we = weBit;
             P[0].din = wdata;
             P[1].we = "\"0\"";
-            if (twoReads) {
+            if (twoReads && (ra1 == waddr || ra2 == waddr)) {
+                // A read at the write address (LiteEth's buffers, the second
+                // port a registered-address read became) shares port A with
+                // the write: READ_FIRST gives the word before the write, as the
+                // synchronous read does, and the other read has port B to itself
+                const bool firstShares = ra1 == waddr;
+                P[0].en = orNet(weBit, firstShares ? re1Bit : re2Bit);
+                P[0].addr = waddr;
+                P[0].dout = firstShares ? rd1 : rd2;
+                P[0].mode = "READ_FIRST";
+                P[1].en = firstShares ? re2Bit : re1Bit;
+                P[1].addr = firstShares ? ra2 : ra1;
+                P[1].dout = firstShares ? rd2 : rd1;
+            } else if (twoReads) {
+                // two reads at their own addresses: port A takes the write and,
+                // in a cycle without one, the first read (NO_CHANGE keeps it)
                 P[0].en = orNet(weBit, re1Bit);
                 P[0].addr = muxAddr(weBit, waddr, ra1);
                 P[0].dout = rd1;
@@ -1662,6 +1716,15 @@ private:
             prim = "RAMB36E1";
             nblocks = (depth + 32767) / 32768;
         }
+        // --map-only-bram-cascade: the 32K x1 blocks of a deep memory go in
+        // pairs, a LOWER and an UPPER RAMB36 joined by the column's cascade
+        // wires into one 64K x1 memory (UG473; as Vivado maps a 64K x1 RAM):
+        // address bit 15 to both picks the half, only the UPPER's DO is read,
+        // and the select logic and output mux work on pairs, halving the mux
+        const bool cascade = v3Global.opt.mapOnlyBramCascade() && nblocks > 1;
+        if (cascade && (nblocks & 1)) ++nblocks;  // the last pair's UPPER is unused, its contents 0
+        const int units = cascade ? nblocks / 2 : nblocks;  // what the output mux chooses between
+        const int sel0 = cascade ? 1 : 0;  // the first address bit above a unit
         const bool b36 = std::string(prim) == "RAMB36E1";
         const int addrTotal = b36 ? 16 : 14, diW = b36 ? 32 : 16, dipW = b36 ? 4 : 2, weaW = b36 ? 4 : 2, webweW = b36 ? 8 : 4;
         int shift = 0;
@@ -1674,7 +1737,8 @@ private:
             std::vector<std::string> v;
             for (int i = 0; i < shift; ++i) v.push_back("\"0\"");
             for (int i = 0; i < wordAddrW; ++i) v.push_back(i < static_cast<int>(a.size()) ? a[i] : "\"0\"");
-            if (b36) v.push_back("\"1\"");
+            // bit 15: unused (tied high) on a RAMB36 of its own, the half select of a cascaded pair
+            if (b36) v.push_back(!cascade ? "\"1\"" : wordAddrW < static_cast<int>(a.size()) ? a[wordAddrW] : "\"0\"");
             return v;
         };
         auto rep = [&](const std::string& bit, int n) { return std::vector<std::string>(n, bit); };
@@ -1683,18 +1747,18 @@ private:
         struct Sel { std::vector<std::string> blockEn, regHi; };
         Sel S[2];
         for (int k = 0; k < 2; ++k) {
-            if (nblocks == 1) { S[k].blockEn = {P[k].en}; continue; }
+            if (units == 1) { S[k].blockEn = {P[k].en}; continue; }
             std::vector<std::string> hi;
             for (int i = 0; i < hiW; ++i) {
                 const size_t idx = wordAddrW + i;
                 hi.push_back(idx < P[k].addr.size() ? P[k].addr[idx] : "\"0\"");
             }
-            for (int d = 0; d < nblocks; ++d) {
+            for (int u = 0; u < units; ++u) {
                 std::string en = P[k].en;
-                for (int i = 0; i < hiW; ++i) en = andNet(en, (d >> i) & 1 ? hi[i] : notNet(hi[i]));
+                for (int i = sel0; i < hiW; ++i) en = andNet(en, (u >> (i - sel0)) & 1 ? hi[i] : notNet(hi[i]));
                 S[k].blockEn.push_back(en);
             }
-            for (int i = 0; i < hiW; ++i) {
+            for (int i = sel0; i < hiW; ++i) {
                 const std::string q = newNet();
                 cell("FDRE", "bsel_" + std::to_string(m_ncells), {{"INIT", "\"0\""}},
                      {{"C", "[" + P[k].clk + "]"}, {"CE", "[" + P[k].en + "]"}, {"D", "[" + hi[i] + "]"}, {"R", "[\"0\"]"}},
@@ -1740,16 +1804,19 @@ private:
         for (int t = 0; t < ntiles; ++t) {
             const int lo = t * tw;
             const int sw = std::min(tw, dw - lo);
+            std::string casOut[2];  // a LOWER's cascade outputs, for the UPPER after it
             for (int d = 0; d < nblocks; ++d) {
+                const bool lower = cascade && !(d & 1);
+                const int u = cascade ? d / 2 : d;
                 std::vector<std::string> di[2], dout[2], dop[2];
                 for (int k = 0; k < 2; ++k) {
                     di[k] = zeros(diW);
                     for (int b = 0; b < sw; ++b) di[k][b] = lo + b < static_cast<int>(P[k].din.size()) ? P[k].din[lo + b] : "\"0\"";
                     for (int b = 0; b < diW; ++b) {
                         std::string n;
-                        if (b < sw && lo + b < static_cast<int>(P[k].dout.size())) {
-                            n = nblocks == 1 ? P[k].dout[lo + b] : newNet();
-                            if (nblocks > 1) blkOut[k][lo + b].push_back(n);
+                        if (b < sw && lo + b < static_cast<int>(P[k].dout.size()) && !lower) {
+                            n = units == 1 ? P[k].dout[lo + b] : newNet();
+                            if (units > 1) blkOut[k][lo + b].push_back(n);
                         } else {
                             n = newNet();
                         }
@@ -1760,12 +1827,16 @@ private:
                 std::vector<std::pair<std::string, std::string>> params = {
                     {"RAM_MODE", "\"TDP\""}, {"WRITE_MODE_A", std::string("\"") + P[0].mode + "\""}, {"WRITE_MODE_B", std::string("\"") + P[1].mode + "\""},
                     {"READ_WIDTH_A", binParam(mw)}, {"WRITE_WIDTH_A", binParam(mw)},
-                    {"READ_WIDTH_B", binParam(mw)}, {"WRITE_WIDTH_B", binParam(tdp ? mw : 0)},
+                    {"READ_WIDTH_B", binParam(mw)}, {"WRITE_WIDTH_B", binParam(tdp || cascade ? mw : 0)},  // a cascaded pair is x1 on every port
                     {"DOA_REG", binParam(0)}, {"DOB_REG", binParam(0)}};
                 initParams(lo, sw, d, params);
+                if (cascade) {
+                    params.emplace_back("RAM_EXTENSION_A", lower ? "\"LOWER\"" : "\"UPPER\"");
+                    params.emplace_back("RAM_EXTENSION_B", lower ? "\"LOWER\"" : "\"UPPER\"");
+                }
                 std::vector<std::pair<std::string, std::string>> ins = {
                     {"CLKARDCLK", "[" + P[0].clk + "]"}, {"CLKBWRCLK", "[" + P[1].clk + "]"},
-                    {"ENARDEN", "[" + S[0].blockEn[d] + "]"}, {"ENBWREN", "[" + S[1].blockEn[d] + "]"},
+                    {"ENARDEN", "[" + S[0].blockEn[u] + "]"}, {"ENBWREN", "[" + S[1].blockEn[u] + "]"},
                     {"REGCEAREGCE", "[\"0\"]"}, {"REGCEB", "[\"0\"]"},
                     {"RSTRAMARSTRAM", "[\"0\"]"}, {"RSTRAMB", "[\"0\"]"}, {"RSTREGARSTREG", "[\"0\"]"}, {"RSTREGB", "[\"0\"]"},
                     {"WEA", bitsJson(rep(P[0].we, weaW))}, {"WEBWE", bitsJson(rep(P[1].we, webweW))},
@@ -1775,6 +1846,17 @@ private:
                     {"DIBDI", bitsJson(di[1])}, {"DIPBDIP", bitsJson(zeros(dipW))}};
                 std::vector<std::pair<std::string, std::string>> outs = {
                     {"DOADO", bitsJson(dout[0])}, {"DOPADOP", bitsJson(dop[0])}, {"DOBDO", bitsJson(dout[1])}, {"DOPBDOP", bitsJson(dop[1])}};
+                if (lower) {
+                    casOut[0] = newNet();
+                    casOut[1] = newNet();
+                    ins.push_back({"CASCADEINA", "[\"1\"]"});
+                    ins.push_back({"CASCADEINB", "[\"1\"]"});
+                    outs.push_back({"CASCADEOUTA", "[" + casOut[0] + "]"});
+                    outs.push_back({"CASCADEOUTB", "[" + casOut[1] + "]"});
+                } else if (cascade) {
+                    ins.push_back({"CASCADEINA", "[" + casOut[0] + "]"});
+                    ins.push_back({"CASCADEINB", "[" + casOut[1] + "]"});
+                }
                 {
                     int lo = 0;
                     m_curLeaf = leafOf(c.name, lo) + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : "");
@@ -1782,7 +1864,7 @@ private:
                 cell(prim, sanitize(c.name) + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : ""), params, ins, outs);
             }
         }
-        if (nblocks > 1) {
+        if (units > 1) {
             for (int k = 0; k < 2; ++k) {
                 for (int b = 0; b < dw && b < static_cast<int>(P[k].dout.size()); ++b) {
                     muxTree(blkOut[k][b], S[k].regHi, P[k].dout[b]);

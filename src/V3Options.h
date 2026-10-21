@@ -306,6 +306,7 @@ private:
     bool m_structOnlyWidePackedMem = false;  // main switch: --struct-only-wide-packed-mem
     bool m_structOnlyReport = false;  // main switch: --struct-only-report
     bool m_mapOnlyKeepTemps = false;  // main switch: --map-only-keep-temps
+    bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_lintOnly = false;        // main switch: --lint-only
     bool m_gmake = false;           // main switch: --make gmake
     bool m_makeJson = false;        // main switch: --make json
@@ -753,6 +754,7 @@ public:
     bool mapOnlyEdifFlat() const { return m_mapOnlyEdifFlat; }
     string mapOnlyAbcScript() const { return m_mapOnlyAbcScript; }
     bool mapOnlyKeepTemps() const { return m_mapOnlyKeepTemps; }
+    bool mapOnlyBramCascade() const { return m_mapOnlyBramCascade; }
     const std::set<string>& structOnlyBlackbox() const { return m_structOnlyBlackbox; }
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }
