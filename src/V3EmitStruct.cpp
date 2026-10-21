@@ -206,6 +206,19 @@ struct Env final {
         if (!next.count(key)) order.push_back(key);
         next[key] = v;
     }
+    // Drop `base`'s slices (keys "base[...") from `next`, and from `order`
+    // with them: code walking `order` may look each key up in `next`
+    void eraseNextSlices(const std::string& base) {
+        const std::string pfx = base + "[";
+        bool any = false;
+        for (auto it = next.lower_bound(pfx); it != next.end() && it->first.compare(0, pfx.size(), pfx) == 0;) {
+            it = next.erase(it);
+            any = true;
+        }
+        if (any) order.erase(std::remove_if(order.begin(), order.end(),
+                                            [&](const std::string& k) { return k.compare(0, pfx.size(), pfx) == 0; }),
+                             order.end());
+    }
 };
 
 std::string sanitizeName(const std::string& s) {
@@ -2150,7 +2163,7 @@ private:
     // Replace `base`'s slices in env.next (and env.cur when `cur`) by the whole value they make
     void foldToWhole(Env& env, const std::string& base, bool cur) {
         const SExpr nv = materialize(readKey(base, env, false));
-        eraseSlices(env.next, base);
+        env.eraseNextSlices(base);
         env.setNext(base, nv);
         if (cur) {
             const SExpr cv = materialize(readKey(base, env, true));
@@ -2424,7 +2437,7 @@ private:
                 foldToWhole(thenEnv, base, cur);
                 foldToWhole(elseEnv, base, cur);
                 // the arms began as copies of env, so its slices are in both
-                eraseSlices(env.next, base);
+                env.eraseNextSlices(base);
                 if (cur) eraseSlices(env.cur, base);
             }
         }
