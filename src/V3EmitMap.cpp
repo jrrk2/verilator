@@ -706,6 +706,7 @@ private:
     }
     // The netlist as records, for the EDIF writer (filled alongside the JSON)
     struct Conn { std::string port; bool out; std::vector<std::string> bits; };
+    std::vector<std::pair<std::string, std::string>> m_regQ;  // (Q net, register cell) for every flip-flop
     struct CellRec {
         std::string type, name;
         std::string path;  // hierarchical instance path of the module it belongs to ("" = top)
@@ -769,7 +770,7 @@ private:
               const std::vector<std::pair<std::string, std::string>>& params,
               const std::vector<std::pair<std::string, std::string>>& ins,
               const std::vector<std::pair<std::string, std::string>>& outs) {
-        if (!v3Global.opt.mapOnlyEdif().empty()) {
+        if (!v3Global.opt.mapOnlyEdif().empty() || !v3Global.opt.mapOnlyVerilog().empty()) {
             CellRec r{type, name, m_curPath, m_curLeaf, params, {}};
             m_curLeaf.clear();
             for (const auto& p : ins) r.conns.push_back({p.first, false, splitBits(p.second)});
@@ -785,6 +786,14 @@ private:
         }
         for (const auto& p : outs) {
             for (const std::string& n : splitBits(p.second)) if (!n.empty() && n[0] != '"') m_drivenNets.insert(n);
+        }
+        // a register's output, for naming it if no signal does (see emitJson)
+        if (type.rfind("FD", 0) == 0) {
+            for (const auto& p : outs) {
+                if (p.first != "Q") continue;
+                const std::vector<std::string> bits = splitBits(p.second);
+                if (bits.size() == 1 && !bits[0].empty() && bits[0][0] != '"') m_regQ.emplace_back(bits[0], name);
+            }
         }
         if (m_ncells) m_cells << ",\n";
         ++m_ncells;
@@ -1164,6 +1173,19 @@ private:
                 }
             }
         }
+        // A register whose output no signal names -- one the mapper made (a ROM's
+        // tile select) or one whose value only reaches a pad -- gets <cell>_Q.
+        // Unnamed, a reader of the JSON invents a name for the net (yosys:
+        // $auto$jsonparse...), and nothing that matches registers by name (an
+        // LVS against the placement) can find it.  Not the cell's own name:
+        // yosys keeps cells and wires in one namespace.
+        for (const auto& rq : m_regQ) {
+            if (m_netName.count(rq.first)) continue;
+            const std::string nm = rq.second + "_Q";
+            m_netName.emplace(rq.first, nm);
+            netnames << ",\n    \"" << nm << "\": {\"hide_name\": 0, \"bits\": [" << rq.first
+                     << "], \"attributes\": {}}";
+        }
         // Floating gates: hierarchy does not come into it -- a net with no driver
         // that no cell reads is harmless wherever it is named, and one that a
         // cell reads is an error wherever it is
@@ -1182,7 +1204,8 @@ private:
                 m_warnings.push_back(std::to_string(floating.size() - 20) + " more floating inputs");
         }
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
-        if (filename.empty()) return;  // --map-only-edif alone
+        if (!v3Global.opt.mapOnlyVerilog().empty()) writeVerilog(v3Global.opt.mapOnlyVerilog());
+        if (filename.empty()) return;  // --map-only-edif / --map-only-verilog alone
         std::ofstream os{filename};
         os << "{\n  \"creator\": \"verilator --map-only-output\",\n  \"modules\": {\n    \"" << m_top << "\": {\n"
            << "      \"attributes\": {\"top\": \"00000000000000000000000000000001\"},\n"
@@ -1297,6 +1320,111 @@ private:
             out("O"); in("I");
         }
         return v;
+    }
+    // The mapped netlist as structural Verilog, for simulating it against the
+    // primitives' models (unisims, or yosys's cells_sim.v): one flat module of
+    // the design's ports, a wire per net and an instance per cell, with the
+    // same cells, parameters and connections as the JSON.  A net that is a
+    // port bit is that port bit; any other takes its signal's name (or n<id>),
+    // escaped as Verilog needs, and moved aside with _net if a port or a cell
+    // already has it -- Verilog keeps wires and instances in one namespace.
+    static std::string verilogId(const std::string& n) {
+        bool plain = !n.empty() && (std::isalpha(static_cast<unsigned char>(n[0])) || n[0] == '_');
+        for (const char c : n)
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '$') plain = false;
+        return plain ? n : "\\" + n + " ";
+    }
+    static std::string verilogParam(const std::string& json) {
+        if (json.empty() || json[0] != '"') return json;  // a plain number
+        std::string v = json.substr(1, json.size() >= 2 ? json.size() - 2 : 0);
+        const bool bits = !v.empty() && v.find_first_not_of("01xz") == std::string::npos;
+        if (!bits) return "\"" + v + "\"";
+        const size_t w = v.size();
+        if (v.find_first_of("xz") != std::string::npos) return std::to_string(w) + "'b" + v;
+        std::string hex;
+        for (size_t end = w; end > 0;) {
+            const size_t start = end >= 4 ? end - 4 : 0;
+            int nib = 0;
+            for (size_t i = start; i < end; ++i) nib = (nib << 1) | (v[i] == '1');
+            hex.insert(hex.begin(), "0123456789abcdef"[nib]);
+            end = start;
+        }
+        return std::to_string(w) + "'h" + hex;
+    }
+    void writeVerilog(const std::string& path) {
+        std::set<std::string> taken;  // port and cell names: a wire may not reuse one
+        std::map<std::string, std::string> ref;  // net id -> how it is written
+        std::vector<std::string> assigns;
+        for (const PortRec& pr : m_portRecs) {
+            taken.insert(pr.name);
+            for (size_t i = 0; i < pr.bits.size(); ++i) {
+                const std::string& b = pr.bits[i];
+                const std::string here = pr.bits.size() == 1 ? verilogId(pr.name) : verilogId(pr.name) + "[" + std::to_string(i) + "]";
+                if (b.empty()) continue;
+                if (b[0] == '"') {  // a constant output
+                    assigns.push_back("  assign " + here + " = 1'b" + (b.size() > 1 ? b.substr(1, 1) : "x") + ";");
+                    continue;
+                }
+                const auto it = ref.emplace(b, here);
+                if (!it.second) {  // the same net on two ports: the later one follows the first
+                    if (pr.dir == "input") assigns.push_back("  assign " + it.first->second + " = " + here + ";");
+                    else assigns.push_back("  assign " + here + " = " + it.first->second + ";");
+                }
+            }
+        }
+        for (const CellRec& r : m_recs) taken.insert(r.name);
+        std::vector<std::string> wires;
+        auto bitRef = [&](const std::string& b) -> std::string {
+            if (b.empty()) return "1'bx";
+            if (b[0] == '"') return std::string("1'b") + (b.size() > 1 ? b.substr(1, 1) : "x");
+            const auto it = ref.find(b);
+            if (it != ref.end()) return it->second;
+            const auto nn = m_netName.find(b);
+            std::string nm = nn != m_netName.end() ? nn->second : "n" + b;
+            const std::string base = nm.substr(0, nm.find('['));
+            if (taken.count(nm) || taken.count(base)) nm += "_net";
+            const std::string id = verilogId(nm);
+            ref.emplace(b, id);
+            wires.push_back(id);
+            return id;
+        };
+        std::ostringstream body;
+        for (const CellRec& r : m_recs) {
+            body << "  " << r.type;
+            if (!r.params.empty()) {
+                body << " #(";
+                for (size_t i = 0; i < r.params.size(); ++i)
+                    body << (i ? ", " : "") << "." << r.params[i].first << "(" << verilogParam(r.params[i].second) << ")";
+                body << ")";
+            }
+            body << " " << verilogId(r.name) << " (";
+            for (size_t i = 0; i < r.conns.size(); ++i) {
+                const Conn& c = r.conns[i];
+                body << (i ? "," : "") << "\n    ." << c.port << "(";
+                if (c.bits.size() == 1) {
+                    body << bitRef(c.bits[0]);
+                } else {
+                    body << "{";
+                    for (size_t k = c.bits.size(); k-- > 0;) body << bitRef(c.bits[k]) << (k ? ", " : "");
+                    body << "}";
+                }
+                body << ")";
+            }
+            body << ");\n";
+        }
+        std::ofstream os{path};
+        os << "// verilator --map-only-verilog: the mapped netlist of " << m_top << "\n";
+        os << "module " << verilogId(m_top) << " (";
+        for (size_t i = 0; i < m_portRecs.size(); ++i) os << (i ? ", " : "") << verilogId(m_portRecs[i].name);
+        os << ");\n";
+        for (const PortRec& pr : m_portRecs) {
+            os << "  " << pr.dir;
+            if (pr.bits.size() > 1) os << " [" << pr.bits.size() - 1 << ":0]";
+            os << " " << verilogId(pr.name) << ";\n";
+        }
+        for (const std::string& w : wires) os << "  wire " << w << ";\n";
+        for (const std::string& a : assigns) os << a << "\n";
+        os << body.str() << "endmodule\n";
     }
     void writeEdif(const std::string& path) {
         // library cells: type -> ports (name, out, width): the declared or
