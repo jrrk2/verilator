@@ -161,6 +161,8 @@ struct SMem final {
     struct Write final {
         SExpr idx, data, en, clk;
         int lo = 0, width = 0;  // writes bits [lo +: width] of the word (width 0: all of it)
+        // the if-conditions it is under, outermost first: (condition, in the else branch)
+        std::vector<std::pair<std::string, bool>> path;
     };
     std::vector<Write> writes;  // primitive: write ports
     bool anyWrite = false;
@@ -304,6 +306,38 @@ class StructModule final {
     std::vector<std::pair<std::string, int>> m_regsInBlock;
 
     static constexpr int MEMORY_THRESHOLD_BITS = 128;  // sv_memory.memory_threshold
+    // Arrays above the threshold but written from more than two places become
+    // registers up to this size; larger ones stay memories
+    static constexpr int REGISTER_ARRAY_MAX_BITS = 4096;
+    // The places that write unpacked array varp: assignments whose target is an
+    // element (or a bit range of one) of it, outside initial blocks.  One inside a loop writes as many
+    // elements as the array has in a single cycle (a reset clearing a register
+    // file), which no memory port does, so it counts as that many.
+    int arrayWriteSites(const AstVar* varp, int depth) const {
+        int n = 0;
+        m_modp->foreach([&](const AstNodeAssign* ap) {
+            const AstNode* lhs = ap->lhsp();
+            for (;;) {
+                if (const AstArraySel* const sp = VN_CAST(lhs, ArraySel)) {
+                    lhs = sp->fromp();
+                } else if (const AstSel* const bp = VN_CAST(lhs, Sel)) {
+                    lhs = bp->fromp();
+                } else {
+                    break;
+                }
+            }
+            const AstNodeVarRef* const rp = VN_CAST(lhs, NodeVarRef);
+            if (!rp || rp->varp() != varp) return;
+            bool inLoop = false, initial = false;
+            for (const AstNode* up = ap->backp(); up && !VN_IS(up, NodeModule); up = up->backp()) {
+                if (VN_IS(up, Loop) || VN_IS(up, Repeat)) inLoop = true;
+                // an initial block sets the contents, it is not a write port (a ROM's table)
+                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic)) initial = true;
+            }
+            if (!initial) n += inLoop ? depth : 1;
+        });
+        return n;
+    }
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
     static constexpr int MAX_SLICE_SLOTS = 32;  // dynamic slice writes expanded to per-slot enables up to this
@@ -572,7 +606,12 @@ private:
         if (depth > 1) {
             // Unpacked array (sv_memory.detect_memories)
             const int bits = depth * elemWidth;
-            if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS) {
+            // A memory primitive has at most two write ports: an array written
+            // from more places (a register file cleared by a reset loop, or
+            // loaded at constant addresses as well as written by the core) is
+            // registers, as a small array is, unless it is too big for that
+            if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS
+                && (bits > REGISTER_ARRAY_MAX_BITS || arrayWriteSites(varp, depth) <= 2)) {
                 SMem m;
                 m.name = name;
                 m.depth = depth;
@@ -2152,6 +2191,30 @@ private:
             w.clk = m_clk;
             w.lo = lv.memLo;
             w.width = lv.memW;
+            for (const auto& c : m_pathCond) w.path.emplace_back(c.first.text, c.second);
+            // Writes in the two branches of one if are never both made: one
+            // write port, its address and data chosen by which branch it is
+            // (a load port used during reset and the core's port otherwise).
+            // The merged write is under what the two have in common, so a
+            // third branch of an else-if chain merges into it in turn.
+            for (SMem::Write& o : m.writes) {
+                if (o.clk.text != w.clk.text || o.lo != w.lo || o.width != w.width) continue;
+                size_t split = 0;
+                bool exclusive = false;
+                for (; split < std::min(o.path.size(), w.path.size()); ++split) {
+                    if (o.path[split].first != w.path[split].first) break;
+                    if (o.path[split].second != w.path[split].second) { exclusive = true; break; }
+                }
+                if (!exclusive) continue;
+                const int aw = std::max(o.idx.width, w.idx.width);
+                o.idx = genMux(w.en, resize(o.idx, aw, false), resize(w.idx, aw, false), aw);
+                o.data = genMux(w.en, o.data, w.data, std::max(o.data.width, w.data.width));
+                o.en = materialize(orBits(o.en, w.en));
+                o.path.resize(split);
+                m.anyWrite = true;
+                if (m_seq) m.clk = m_clk;
+                return;
+            }
             m.writes.push_back(w);
             m.anyWrite = true;
             if (m_seq) m.clk = m_clk;
@@ -3781,6 +3844,38 @@ private:
                     pinIn(it, "we", nw ? m.writes[0].en : constExpr(0, 1));
                     pinIn(it, "waddr", nw ? addr(m.writes[0].idx) : zeroA);
                     pinIn(it, "wdata", nw ? m.writes[0].data : zeroD);
+                    pinIn(it, "raddr1", addr(m.readIdx[r0]));
+                    pinIn(it, "raddr2", addr(m.readIdx[r1]));
+                    for (size_t r = r0; r <= r1; ++r) declRd(r);
+                    pinOut(it, "rdata1", rdName(r0));
+                    if (r1 != r0) {
+                        pinOut(it, "rdata2", rdName(r1));
+                    } else {
+                        it.pins.push_back({"rdata2", ""});
+                    }
+                }
+                continue;
+            }
+            if (nr > 2 && nw == 2) {
+                // Two writes and more read ports than the primitive has (a
+                // register file a dual-issue core writes from both slots and
+                // reads for every operand): replicate it, every copy taking
+                // both writes and two of the reads
+                warn("memory " + m.name + ": 2 write ports and " + std::to_string(nr)
+                     + " read ports; replicated into " + std::to_string((nr + 1) / 2) + " memory_2w2r_rf banks");
+                for (size_t bank = 0; bank * 2 < nr; ++bank) {
+                    const size_t r0 = bank * 2;
+                    const size_t r1 = std::min(r0 + 1, nr - 1);
+                    SItem& it = addCell("memory_2w2r_rf", m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
+                    it.keep = true;
+                    it.params = params;
+                    pinIn(it, "clk", clk);
+                    for (size_t p = 0; p < 2; ++p) {
+                        const std::string sfx = std::to_string(p + 1);
+                        pinIn(it, "we" + sfx, m.writes[p].en);
+                        pinIn(it, "waddr" + sfx, addr(m.writes[p].idx));
+                        pinIn(it, "wdata" + sfx, m.writes[p].data);
+                    }
                     pinIn(it, "raddr1", addr(m.readIdx[r0]));
                     pinIn(it, "raddr2", addr(m.readIdx[r1]));
                     for (size_t r = r0; r <= r1; ++r) declRd(r);
