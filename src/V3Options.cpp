@@ -1650,6 +1650,10 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
         m_jsonOnly = true;  // same pipeline cut-point as --json-only
     });
     DECL_OPTION("-map-only-edif-flat", OnOff, &m_mapOnlyEdifFlat);
+    DECL_OPTION("-map-only-verilog", CbVal, [this](const char* valp) {
+        m_mapOnlyVerilog = valp;
+        m_jsonOnly = true;  // same pipeline cut-point as --json-only
+    });
     DECL_OPTION("-map-only-abc-script", Set, &m_mapOnlyAbcScript);
     DECL_OPTION("-map-only-keep-temps", OnOff, &m_mapOnlyKeepTemps);
     DECL_OPTION("-map-only-bram-cascade", OnOff, &m_mapOnlyBramCascade);

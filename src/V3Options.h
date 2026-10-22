@@ -426,6 +426,7 @@ private:
     string      m_birOnlyOutput;  // main switch: --bir-only-output
     string      m_mapOnlyOutput;  // main switch: --map-only-output
     string      m_mapOnlyEdif;  // main switch: --map-only-edif
+    string      m_mapOnlyVerilog;  // main switch: --map-only-verilog
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
     std::set<string> m_structOnlyBlackbox;  // main switch: --struct-only-blackbox
@@ -751,6 +752,7 @@ public:
     string birOnlyOutput() const { return m_birOnlyOutput; }
     string mapOnlyOutput() const { return m_mapOnlyOutput; }
     string mapOnlyEdif() const { return m_mapOnlyEdif; }
+    string mapOnlyVerilog() const { return m_mapOnlyVerilog; }
     bool mapOnlyEdifFlat() const { return m_mapOnlyEdifFlat; }
     string mapOnlyAbcScript() const { return m_mapOnlyAbcScript; }
     bool mapOnlyKeepTemps() const { return m_mapOnlyKeepTemps; }
@@ -763,7 +765,7 @@ public:
     // unless the structural backend is the only requested serialization
     bool jsonTreeWanted() const {
         return (m_structOnlyOutput.empty() && m_birOnlyOutput.empty() && m_mapOnlyOutput.empty()
-                && m_mapOnlyEdif.empty())
+                && m_mapOnlyEdif.empty() && m_mapOnlyVerilog.empty())
                || !m_jsonOnlyOutput.empty();
     }
     string l2Name() const { return m_l2Name; }

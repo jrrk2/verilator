@@ -150,7 +150,8 @@ static void emitSerialized() VL_MT_DISABLED {
         V3EmitStruct::emit(v3Global.opt.structOnlyOutput());
     }
     if (!v3Global.opt.birOnlyOutput().empty()) V3EmitBir::emit(v3Global.opt.birOnlyOutput());
-    if (!v3Global.opt.mapOnlyOutput().empty() || !v3Global.opt.mapOnlyEdif().empty()) {
+    if (!v3Global.opt.mapOnlyOutput().empty() || !v3Global.opt.mapOnlyEdif().empty()
+        || !v3Global.opt.mapOnlyVerilog().empty()) {
         V3EmitMap::emit(v3Global.opt.mapOnlyOutput());
     }
     if (v3Global.opt.jsonOnly() && v3Global.opt.jsonTreeWanted()) emitJson();
