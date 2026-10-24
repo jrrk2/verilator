@@ -31,6 +31,15 @@
 #include <unordered_set>
 #include <vector>
 
+// windef.h (through verilatedos.h on Windows) defines CONST as const and IN, OUT, OPTIONAL as nothing,
+// which Expr::CONST and the IN pin names here would expand
+#ifdef _WIN32
+#undef CONST
+#undef IN
+#undef OUT
+#undef OPTIONAL
+#endif
+
 namespace svs_netlist {
 
 inline bool g_verbose = false;

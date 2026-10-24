@@ -59,10 +59,16 @@ obj_shared:
 # optimised and the debug binary: in C++ inside namespace abc, no readline
 ABC_DIR ?= $(srcdir)/../third_party/abc
 LIBABC := $(ABC_DIR)/libabc.a
+# ABC tests WIN32, which MSVC defines and MinGW does not (it has _WIN32); no DLL export decorations
+ABC_ARCHFLAGS := -DABC_USE_STDINT_H
+ifeq ($(OS),Windows_NT)
+ABC_ARCHFLAGS += -DWIN32 -DWIN32_NO_DLL
+ABC_AR := AR="$(SHELL) $(abspath $(srcdir))/mingw-ar.sh"
+endif
 $(LIBABC):
 	@test -f $(ABC_DIR)/Makefile || { echo "%Error: $(ABC_DIR) is empty: git submodule update --init third_party/abc"; exit 1; }
 	$(MAKE) -C $(ABC_DIR) libabc.a ABC_USE_NAMESPACE=abc ABC_USE_LIBSTDCXX=1 ABC_USE_NO_READLINE=1 \
-	  CC="@CXX@" CXX="@CXX@" LD="@CXX@" ARCHFLAGS=-DABC_USE_STDINT_H
+	  CC="@CXX@" CXX="@CXX@" LD="@CXX@" ARCHFLAGS="$(ABC_ARCHFLAGS)" $(ABC_AR)
 prefiles:: $(LIBABC)
 
 opt: ../bin/verilator_bin$(EXEEXT) ../bin/verilator_coverage_bin$(EXEEXT)
