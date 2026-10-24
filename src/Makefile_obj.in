@@ -103,7 +103,11 @@ LIBS = $(CFG_LIBS) -lm
 # ABC_DIR=<dir> on the make command line uses another ABC build instead.
 ABC_DIR ?= $(srcdir)/../third_party/abc
 CPPFLAGS += -I$(ABC_DIR)/src -DABC_NAMESPACE=abc -DABC_USE_STDINT_H
-LIBS += $(ABC_DIR)/libabc.a -lpthread -ldl
+ifeq ($(OS),Windows_NT)
+CPPFLAGS += -DWIN32 -DWIN32_NO_DLL  # as libabc was built (../Makefile)
+LIBS_ABC_WIN := -lshlwapi  # PathMatchSpecA, for ABC's liberty reader
+endif
+LIBS += $(ABC_DIR)/libabc.a -lpthread -ldl $(LIBS_ABC_WIN)
 
 CPPFLAGS += -DVERILATOR_INTERNAL_
 CPPFLAGS += -MMD
