@@ -802,6 +802,11 @@ public:
         , m_bb{blackboxes}
         , m_ffrip{ffrip} {}
 
+    // Told when elaboration enters an instance (its prefix "a.b." and module
+    // type) and when it comes back to the parent, so a gate backend can
+    // attribute the nodes it builds to that instance
+    std::function<void(const std::string& prefix, const std::string& type)> onScope;
+
     void run(const std::string& top, Design& d) {
         m_d = &d;
         const auto it = m_mods.find(top);
@@ -951,12 +956,7 @@ private:
                 return {(i >= 0 && i < static_cast<long long>(base.size())) ? base[i] : m_bl.F()};
             }
             const Vec idx = eval(ie, sc);
-            // dynamic bit select: mux over all positions
-            int r = m_bl.F();
-            for (size_t i = 0; i < base.size(); ++i) {
-                r = m_bl.MUX(m_bl.eq(idx, m_bl.constVec(i + lsb, idx.size())), r, base[i]);
-            }
-            return {r};
+            return {dynSelect(base, idx, lsb, 1)[0]};
         }
         case Expr::PARTSEL: {
             const Vec base = eval(e->args[0], sc);
@@ -983,15 +983,7 @@ private:
                 return r;
             }
             const Vec idx = eval(ie, sc);
-            Vec r(w, m_bl.F());
-            for (size_t s = 0; s < base.size(); ++s) {
-                const int hit = m_bl.eq(idx, m_bl.constVec(s + lsb + (e->ival2 ? w - 1 : 0), idx.size()));
-                for (int i = 0; i < w; ++i) {
-                    const size_t k = s + i;
-                    r[i] = m_bl.MUX(hit, r[i], k < base.size() ? base[k] : m_bl.F());
-                }
-            }
-            return r;
+            return dynSelect(base, idx, lsb + (e->ival2 ? w - 1 : 0), w);
         }
         case Expr::CONCAT: {
             Vec r;
@@ -1168,6 +1160,7 @@ private:
     // ---- elaboration ----
     void elaborate(const Module& m, const std::string& prefix, const Item* instItem, const Scope* parent) {
         Scope sc{prefix, &m};
+        if (onScope) onScope(prefix, m.name);
         // Allocate nets
         for (const NetDecl& d : m.nets) {
             NetBits nb;
@@ -1183,7 +1176,8 @@ private:
             nb.width = total;
             m_d->nets[prefix + d.name] = nb;
         }
-        // Connect ports to the parent
+        // Connect ports to the parent (the pin expressions are the parent's logic)
+        if (onScope && parent) onScope(parent->prefix, parent->mod->name);
         if (instItem) {
             std::map<std::string, const NetDecl*> decls;
             for (const NetDecl& d : m.nets) decls[d.name] = &d;
@@ -1210,6 +1204,7 @@ private:
                 }
             }
         }
+        if (onScope) onScope(prefix, m.name);
         for (const Item& it : m.items) {
             if (it.kind == Item::ASSIGN) {
                 const int w = exprWidth(it.lhs, sc);
@@ -1219,6 +1214,7 @@ private:
                 elaborateCell(it, sc);
             }
         }
+        if (onScope && parent) onScope(parent->prefix, parent->mod->name);
     }
 
     long long paramInt(const Item& it, const char* name, long long dflt, const Scope& sc) {
@@ -1244,6 +1240,26 @@ private:
         const ExprP e = pinExpr(it, name);
         if (!e) return;
         driveLValue(e, v, sc, "output pin ." + std::string(name) + " of " + it.instName);
+    }
+
+    // base[idx - off +: w] at a dynamic position: the base run through a
+    // logarithmic shifter (log2(base) stages of muxes) rather than one mux
+    // per position and bit; a window before or past the base reads as zero,
+    // as a select by position does
+    Vec dynSelect(const Vec& base, const Vec& idxIn, int off, int w) {
+        Vec idx = idxIn;
+        idx.push_back(m_bl.F());  // headroom: the subtraction's sign
+        Vec amt = off ? m_bl.sub(idx, m_bl.constVec(off, idx.size())) : idx;
+        int over = amt.back();  // negative: before the base
+        amt.pop_back();
+        for (size_t k = 0; k < amt.size(); ++k) {
+            if ((1ULL << std::min<size_t>(k, 62)) >= base.size()) over = m_bl.OR(over, amt[k]);
+        }
+        const Vec sh = m_bl.shr(base, amt, false);
+        const int keep = m_bl.NOT(over);
+        Vec r(w, m_bl.F());
+        for (int i = 0; i < w && i < static_cast<int>(sh.size()); ++i) r[i] = m_bl.AND(sh[i], keep);
+        return r;
     }
 
     void elaborateCell(const Item& it, const Scope& sc) {

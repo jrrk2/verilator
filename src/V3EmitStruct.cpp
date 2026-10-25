@@ -6,7 +6,8 @@
 // (sv_parse.ml -> sv_transform.ml -> sv_tran_struct.ml -> sv_gen.ml and
 // the sv_gen_xilinx_rtl.ml relabeling pass) onto Verilator's own AST.
 //
-// Process flow, per module, in this order:
+// Before any module, interfaces are lowered to plain signals and ports
+// (StructIfaceLower).  Then, per module, in this order:
 //
 //   1. Declaration pass.  Every AstVar becomes a port / localparam / wire
 //      declaration.  Indexed generate scopes ("blk[3]") prefix the names
@@ -304,6 +305,8 @@ class StructModule final {
     std::vector<std::pair<SExpr, bool>> m_pathCond;  // (cond, negated)
     std::vector<const AstJumpBlock*> m_jumpStack;
     std::vector<std::pair<std::string, int>> m_regsInBlock;
+    // bits each variable is assigned in the current block, as (lo, width)
+    std::map<std::string, std::vector<std::pair<int, int>>> m_blockWrites;
 
     static constexpr int MEMORY_THRESHOLD_BITS = 128;  // sv_memory.memory_threshold
     // Arrays above the threshold but written from more than two places become
@@ -313,6 +316,16 @@ class StructModule final {
     // element (or a bit range of one) of it, outside initial blocks.  One inside a loop writes as many
     // elements as the array has in a single cycle (a reset clearing a register
     // file), which no memory port does, so it counts as that many.
+    // The array is connected whole to an instance pin
+    bool wholePinUse(const AstVar* varp) const {
+        bool any = false;
+        m_modp->foreach([&](const AstPin* pinp) {
+            if (const AstVarRef* const rp = VN_CAST(pinp->exprp(), VarRef)) {
+                if (rp->varp() == varp) any = true;
+            }
+        });
+        return any;
+    }
     int arrayWriteSites(const AstVar* varp, int depth) const {
         int n = 0;
         m_modp->foreach([&](const AstNodeAssign* ap) {
@@ -341,6 +354,7 @@ class StructModule final {
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
     static constexpr int MAX_SLICE_SLOTS = 32;  // dynamic slice writes expanded to per-slot enables up to this
+    static constexpr int MAX_ELEMENT_MUX = 256;  // arr[i] on a packed array: mux chain up to this many elements
 
 public:
     StructModule(AstNodeModule* modp, bool xilinx, bool wideMem, bool report)
@@ -603,14 +617,17 @@ private:
         const int elemWidth = elemp->width();
         d.width = elemWidth;
         d.isSigned = elemp->isSigned();
-        if (depth > 1) {
-            // Unpacked array (sv_memory.detect_memories)
+        if (VN_IS(varp->dtypep()->skipRefp(), UnpackArrayDType)) {
+            // Unpacked array (sv_memory.detect_memories); a one-element array
+            // is still an array, its element reads must not become bit-selects
             const int bits = depth * elemWidth;
             // A memory primitive has at most two write ports: an array written
             // from more places (a register file cleared by a reset loop, or
             // loaded at constant addresses as well as written by the core) is
-            // registers, as a small array is, unless it is too big for that
-            if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS
+            // registers, as a small array is, unless it is too big for that.
+            // Ports, and arrays handed whole to an instance pin, are one
+            // wire per element so the pin can be split the same way.
+            if (depth > 1 && !varp->isIO() && !wholePinUse(varp) && bits > MEMORY_THRESHOLD_BITS
                 && (bits > REGISTER_ARRAY_MAX_BITS || arrayWriteSites(varp, depth) <= 2)) {
                 SMem m;
                 m.name = name;
@@ -622,25 +639,22 @@ private:
                 m_mems[varp] = m;
                 return;  // replaced by a memory primitive; no declaration
             }
-            if (!varp->isIO()) {
-                // Small array: one register / wire per element
-                SMem m;
-                m.name = name;
-                m.depth = depth;
-                m.dataWidth = elemWidth;
-                m.lo = lo;
-                m.asRegs = true;
-                for (int i = 0; i < depth; ++i) {
-                    SDecl e = d;
-                    e.name = name + "__" + std::to_string(i);
-                    m.regNames.push_back(e.name);
-                    m_decls.push_back(e);
-                    m_widths[e.name] = elemWidth;
-                }
-                m_mems[varp] = m;
-                return;
+            // Small array, or a port: one register / wire / port per element
+            SMem m;
+            m.name = name;
+            m.depth = depth;
+            m.dataWidth = elemWidth;
+            m.lo = lo;
+            m.asRegs = true;
+            for (int i = 0; i < depth; ++i) {
+                SDecl e = d;
+                e.name = name + "__" + std::to_string(i);
+                m.regNames.push_back(e.name);
+                m_decls.push_back(e);
+                m_widths[e.name] = elemWidth;
             }
-            d.unpacked = " [" + std::to_string(lo) + ":" + std::to_string(lo + depth - 1) + "]";
+            m_mems[varp] = m;
+            return;
         } else if (m_wideMem && !varp->isIO() && elemWidth > 512 && elemWidth <= 65536) {
             // sv_memory wide-packed-array heuristic (opt-in): infer
             // DATA_WIDTH from a DATA_WIDTH / DATAWIDTH parameter, else 64/32/16/8
@@ -1242,6 +1256,7 @@ private:
 
     // ---- user module instance ----
     void lowerCell(AstCell* cp) {
+        if (VN_IS(cp->modp(), Iface)) return;  // lowered to plain vars (StructIfaceLower)
         Env env;
         SItem it;
         it.kind = SItem::USERCELL;
@@ -1261,7 +1276,9 @@ private:
         }
         for (AstPin* pinp = cp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
             // positional connections are named __pinNumberN; the port is modVarp
-            const std::string pinName = pinp->modVarp() ? pinp->modVarp()->prettyName() : pinp->name();
+            // sanitised as the port's own declaration is (declareVar)
+            const std::string pinName
+                = sanitizeName(pinp->modVarp() ? pinp->modVarp()->prettyName() : pinp->name());
             if (!pinp->exprp()) {
                 it.pins.push_back({pinName, ""});
                 continue;
@@ -1269,6 +1286,29 @@ private:
             AstNodeExpr* const ep = VN_CAST(pinp->exprp(), NodeExpr);
             if (!ep) continue;
             const bool isOut = pinp->modVarp() && pinp->modVarp()->direction().isWritable();
+            if (const AstVarRef* const rp = VN_CAST(ep, VarRef)) {
+                // .PIN(arr): an array handed over whole, one pin per element
+                // (both sides are declared per element, see declareVar)
+                const auto mit = m_mems.find(rp->varp());
+                if (mit != m_mems.end() && mit->second.asRegs) {
+                    const SMem& m = mit->second;
+                    int depth = 1, lo = 0;
+                    if (pinp->modVarp()) unpackedOf(pinp->modVarp()->dtypep(), depth, lo);
+                    if (depth != m.depth) {
+                        warnNode(pinp, "array pin connection with mismatched depth");
+                        continue;
+                    }
+                    for (int k = 0; k < depth; ++k) {
+                        const std::string pn = pinName + "__" + std::to_string(k);
+                        if (isOut) {
+                            pinOut(it, pn, m.regNames[k]);
+                        } else {
+                            pinIn(it, pn, readKey(m.regNames[k], env, true));
+                        }
+                    }
+                    continue;
+                }
+            }
             if (isOut) {
                 SLVal lv;
                 if (!VN_IS(ep, Concat)) lv = lowerLValue(ep, env);
@@ -1528,6 +1568,7 @@ private:
         m_rstCondp = nullptr;
         m_pathCond.clear();
         m_regsInBlock.clear();
+        m_blockWrites.clear();
         ++m_alwaysSeq;
         Env env;
         if (m_seq) {
@@ -1546,6 +1587,26 @@ private:
         lowerStmts(ap->stmtsp(), env);
         finishBlock(env);
         if (m_seq && m_report) reportRegisters(cls);
+    }
+
+    // The bits of `key` this block assigned, coalesced, as (lo, hi); all of
+    // them when nothing was recorded (keys set outside setKey)
+    std::vector<std::pair<int, int>> writtenIntervals(const std::string& key, int width) const {
+        const auto it = m_blockWrites.find(key);
+        if (it == m_blockWrites.end()) return {{0, width}};
+        std::vector<std::pair<int, int>> v = it->second;
+        std::sort(v.begin(), v.end());
+        std::vector<std::pair<int, int>> out;
+        for (const auto& lw : v) {
+            const int lo = lw.first;
+            const int hi = std::min(width, lw.first + lw.second);
+            if (!out.empty() && lo <= out.back().second) {
+                out.back().second = std::max(out.back().second, hi);
+            } else {
+                out.emplace_back(lo, hi);
+            }
+        }
+        return out;
     }
 
     // Emit the block's final values as registers / latches / assigns
@@ -1569,6 +1630,39 @@ private:
             if (val.text == key) continue;  // hold
             const int width = widthOfKey(key);
             const std::vector<std::string> qRefs = keyRefs(key);
+            // Overlapping slice writes were folded into the whole variable
+            // (setKey), the bits it did not write read back from the net.
+            // The block still drives only the bits it wrote: the rest have
+            // their own drivers (one lane per generate iteration)
+            if (!m_latch && key.find('[') == std::string::npos) {
+                const std::vector<std::pair<int, int>> cov = writtenIntervals(key, width);
+                if (!(cov.size() == 1 && cov[0].first == 0 && cov[0].second == width)) {
+                    SExpr d = val;
+                    SExpr en = constExpr(1, 1);
+                    if (m_seq) {  // `if (en) q <= d;` over the whole: keep the enable
+                        const auto mit = m_muxes.find(d.text);
+                        if (mit != m_muxes.end() && mit->second.in0.text == key
+                            && mit->second.sel.isIdent) {
+                            en = mit->second.sel;
+                            d = mit->second.in1;
+                        }
+                    }
+                    const SExpr whole = materialize(d);
+                    for (const auto& lh : cov) {
+                        const int lo = lh.first;
+                        const int w = lh.second - lh.first;
+                        const std::string sub
+                            = key + "[" + std::to_string(lo) + "+:" + std::to_string(w) + "]";
+                        const SExpr part = sliceOf(whole, lo, w);
+                        if (m_seq) {
+                            genDff(sub, keyRefs(sub), part, en, w, 0, false);
+                        } else {
+                            addAssign(sub, part, keyRefs(sub));
+                        }
+                    }
+                    continue;
+                }
+            }
             if (m_seq) {
                 SExpr d = val;
                 SExpr en = constExpr(1, 1);
@@ -1676,6 +1770,7 @@ private:
                 addAssign(key, val, qRefs);
             }
         }
+        m_blockWrites.clear();
     }
 
     // ---- memory transformations ahead of emission ----
@@ -2242,13 +2337,19 @@ private:
             for (int k = 0; k < m.depth; ++k) {
                 const std::string& reg = m.regNames[k];
                 const SExpr hit = eqConst(idx, static_cast<uint64_t>(k + m.lo));
-                const SExpr prior = readKey(reg, env, blocking ? true : false);
-                const SExpr v = genMux(hit, prior, rhs, m.dataWidth);
                 SLVal e;
                 e.ok = true;
-                e.key = reg;
-                e.text = reg;
-                e.width = m.dataWidth;
+                if (lv.memW) {  // reg[lo +: w], a lane of the element
+                    e.key = reg + "[" + std::to_string(lv.memLo) + "+:" + std::to_string(lv.memW) + "]";
+                    e.text = reg + "[" + std::to_string(lv.memLo) + " +: " + std::to_string(lv.memW) + "]";
+                    e.width = lv.memW;
+                } else {
+                    e.key = reg;
+                    e.text = reg;
+                    e.width = m.dataWidth;
+                }
+                const SExpr prior = readKey(e.key, env, blocking ? true : false);
+                const SExpr v = genMux(hit, prior, rhs, e.width);
                 setKey(e, v, blocking, env);
             }
             return;
@@ -2300,6 +2401,7 @@ private:
             std::string base;
             int lo, w;
             if (splitSliceKey(lv.key, base, lo, w)) {
+                m_blockWrites[base].emplace_back(lo, w);
                 auto clash = [&](const std::map<std::string, SExpr>& mp) {
                     std::vector<std::pair<int, int>> iv;
                     sliceIntervals(mp, base, iv);
@@ -2311,6 +2413,7 @@ private:
             }
         }
         if (lv.key.find('[') == std::string::npos) {
+            m_blockWrites[lv.key].emplace_back(0, lv.width > 0 ? lv.width : widthOfKey(lv.key));
             const std::string pfx = lv.key + "[";
             auto erasePfx = [&](std::map<std::string, SExpr>& mp) {
                 for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;) it = mp.erase(it);
@@ -2374,10 +2477,11 @@ private:
         if (AstSel* const sp = VN_CAST(lhsp, Sel)) {
             SLVal base = lowerLValue(sp->fromp(), env);
             if (!base.ok) return lv;
-            if (base.memVarp && !base.memW) {
+            if ((base.memVarp || base.memDynamic) && !base.memW) {
                 // mem[a][lsb +: w] <= d with a constant lsb (a byte lane, once
                 // a loop over the byte enables is unrolled): a partial write,
-                // which gives the memory a lane of its own
+                // which gives a memory a lane of its own and a register array
+                // a slice write per element
                 const SExpr lsbE = lowerExpr(sp->lsbp(), env);
                 if (lsbE.hasVal) {
                     base.memLo = static_cast<int>(lsbE.val);
@@ -2933,7 +3037,14 @@ private:
         }
         for (const std::string& k : fenv.order) {
             if (k.compare(0, prefix.size(), prefix) == 0) continue;
-            env.setNext(k, fenv.next.at(k));
+            const auto nit = fenv.next.find(k);
+            if (nit == fenv.next.end()) {
+                // order and next are kept in step; a stray key is a bug to
+                // report, not a reason to abort the whole run
+                warnNode(refp, "internal: ordered key " + k + " has no pending value");
+                continue;
+            }
+            env.setNext(k, nit->second);
         }
         // Unbind
         for (AstVar* const fp : formals) {
@@ -3005,6 +3116,41 @@ private:
         }
         if (AstSel* const sp = VN_CAST(nodep, Sel)) return lowerSel(sp, env);
         if (AstArraySel* const ap = VN_CAST(nodep, ArraySel)) return lowerArraySel(ap, env);
+        if (VN_IS(nodep, StreamL) || VN_IS(nodep, StreamR)) {
+            // {<<s{x}}: the s-bit slices of x, taken from its LSB, in reverse
+            // order (the partial slice, if any, ends up lowest); {>>s{x}} is
+            // the bits as they are.  V3Width leaves the slice size a constant.
+            AstNodeBiop* const bp = VN_AS(nodep, NodeBiop);
+            const SExpr src = lowerExpr(bp->lhsp(), env);
+            const SExpr sz = lowerExpr(bp->rhsp(), env);
+            const int w = src.width;
+            const int s = (sz.hasVal && sz.val > 0) ? static_cast<int>(sz.val) : 1;
+            if (VN_IS(nodep, StreamR) || s >= w) return resize(src, width, false);
+            const int n = (w + s - 1) / s;
+            if (src.hasVal && w <= 64) {
+                uint64_t v = 0;
+                for (int k = 0; k < n; ++k) {
+                    const int cw = std::min(s, w - k * s);
+                    v = (v << cw) | maskTo(src.val >> (k * s), cw);
+                }
+                return constExpr(v, width);
+            }
+            const SExpr m = materialize(src);
+            std::string text = "{";
+            for (int k = 0; k < n; ++k) {
+                const SExpr part = sliceOf(m, k * s, std::min(s, w - k * s));
+                if (k) text += ", ";
+                text += part.text;
+            }
+            text += "}";
+            SExpr e;
+            e.text = text;
+            e.width = w;
+            e.refs = m.refs;
+            const SExpr out = newWire(w);
+            addAssign(out.text, e);
+            return resize(out, width, false);
+        }
         if (AstConcat* const cp = VN_CAST(nodep, Concat)) {
             std::vector<AstNodeExpr*> parts;
             flattenConcat(cp, parts);
@@ -3252,6 +3398,45 @@ private:
             e.width = w;
             e.refs = base.refs;
             return e;
+        }
+        {
+            // arr[i] on a packed array: Verilator makes it arr[i*W +: W] (the
+            // product narrowed to the bits it needs).  Select the element with
+            // a mux chain, as a register array is, rather than leave the
+            // netlist a part-select at a dynamic bit position (one mux per
+            // position and bit downstream).
+            AstNodeExpr* lp = sp->lsbp();
+            while (AstSel* const nsp = VN_CAST(lp, Sel)) {
+                const AstConst* const lc = VN_CAST(nsp->lsbp(), Const);
+                if (!lc || lc->toUInt() != 0) break;
+                lp = nsp->fromp();
+            }
+            if (VN_IS(lp, Mul) || VN_IS(lp, MulS)) {
+                AstNodeBiop* const mp = VN_AS(lp, NodeBiop);
+                const AstConst* kc = VN_CAST(mp->rhsp(), Const);
+                AstNodeExpr* ip = mp->lhsp();
+                if (!kc) {
+                    kc = VN_CAST(mp->lhsp(), Const);
+                    ip = mp->rhsp();
+                }
+                if (kc && kc->width() <= 64 && w > 0 && kc->toUQuad() == static_cast<uint64_t>(w)
+                    && base.width % w == 0 && base.width / w <= MAX_ELEMENT_MUX) {
+                    const int n = base.width / w;
+                    const SExpr idx = materialize(lowerExpr(ip, env));
+                    SExpr acc = materialize(sliceOf(base, 0, w));
+                    for (int k = 1; k < n; ++k) {
+                        acc = genMux(eqConst(idx, static_cast<uint64_t>(k)), materialize(acc),
+                                     materialize(sliceOf(base, k * w, w)), w);
+                    }
+                    if (idx.width >= 64 || (1ull << idx.width) > static_cast<uint64_t>(n)) {
+                        // past the last element reads as zero, as a select by position does
+                        const SExpr inRange = materialize(genBinary(
+                            "comparator_lt", idx, constExpr(n, idx.width), idx.width, 1));
+                        acc = genMux(inRange, materialize(constExpr(0, w)), materialize(acc), w);
+                    }
+                    return acc;
+                }
+            }
         }
         const SExpr idx = materialize(lsbE);
         if (base.isConst) {
@@ -4221,7 +4406,270 @@ std::string V3EmitStruct::emitString() {
     return os.str();
 }
 
+//######################################################################
+// Interface lowering
+//
+// The structural flow stops after elaboration, before V3Scope, so the
+// design still has interface instances, interface ports and VARXREFs into
+// them (V3Param has already split interface arrays into one cell / port per
+// element, named x__BRA__i__KET__).  Each interface instance and port
+// becomes one plain variable per interface signal, named <owner>__<signal>:
+// ports take their direction from the modport, or without one from use
+// (written here or by a submodule's output: output, else input).  VARXREFs
+// become VARREFs to those variables and every interface pin becomes one pin
+// per signal.  The interface cells and IFACEREF vars stay in the tree;
+// declareVar and lowerCell skip them.
+
+namespace {
+
+class StructIfaceLower final {
+    struct Exp final {
+        std::map<std::string, AstVar*> sig;  // signal name -> lowered var
+    };
+    std::unordered_map<const AstNode*, Exp> m_exp;  // iface port var / iface cell -> its vars
+    std::unordered_set<const AstNodeModule*> m_done;
+
+    static std::vector<AstVar*> signals(const AstIface* ifacep) {
+        std::vector<AstVar*> out;
+        for (AstNode* sp = ifacep->stmtsp(); sp; sp = sp->nextp()) {
+            AstVar* const vp = VN_CAST(sp, Var);
+            if (!vp) {
+                if (VN_IS(sp, AssignW) || VN_IS(sp, Always) || VN_IS(sp, Cell)) {
+                    sp->v3warn(E_UNSUPPORTED, "Unsupported: logic inside an interface"
+                                              " (structural flow)");
+                }
+                continue;
+            }
+            if (vp->isParam() || vp->isIfaceRef() || vp->isGenVar()) continue;
+            if (vp->varType() == VVarType::GENVAR) continue;
+            out.push_back(vp);
+        }
+        return out;
+    }
+    static AstIfaceRefDType* ifaceDType(const AstVar* varp) {
+        return VN_CAST(varp->dtypep()->skipRefp(), IfaceRefDType);
+    }
+    static bool isIfacePort(const AstVar* varp) {
+        if (!varp->isIfaceRef()) return false;
+        const AstIfaceRefDType* const dtp = ifaceDType(varp);
+        return dtp && !dtp->cellp();
+    }
+    static AstNode* parentOf(AstNode* nodep) {
+        while (nodep->backp() && nodep->backp()->nextp() == nodep) nodep = nodep->backp();
+        return nodep->backp();
+    }
+    static AstNode* listOf(AstNode* scopep) {
+        if (AstGenBlock* const gp = VN_CAST(scopep, GenBlock)) return gp->itemsp();
+        if (AstNodeModule* const mp = VN_CAST(scopep, NodeModule)) return mp->stmtsp();
+        return nullptr;
+    }
+    static AstNode* findIn(AstNode* listp, const std::string& name) {
+        for (AstNode* np = listp; np; np = np->nextp()) {
+            if (np->name() != name) continue;
+            if (VN_IS(np, Cell) || VN_IS(np, GenBlock)) return np;
+            if (const AstVar* const vp = VN_CAST(np, Var)) {
+                if (vp->isIfaceRef()) return np;
+            }
+        }
+        return nullptr;
+    }
+    // The interface cell or port a VARXREF's dotted path names, searched
+    // from the reference's own generate scope outward
+    AstNode* resolve(AstNodeModule* modp, AstVarXRef* xp) {
+        std::vector<std::string> parts;
+        const std::string dotted = xp->dotted();
+        if (dotted.empty()) return nullptr;
+        for (size_t b = 0;;) {
+            const size_t e = dotted.find('.', b);
+            parts.push_back(dotted.substr(b, e == std::string::npos ? e : e - b));
+            if (e == std::string::npos) break;
+            b = e + 1;
+        }
+        AstNode* hitp = nullptr;
+        for (AstNode* sp = parentOf(xp); sp && !hitp; sp = parentOf(sp)) {
+            if (VN_IS(sp, GenBlock) || sp == modp) hitp = findIn(listOf(sp), parts[0]);
+            if (sp == modp) break;
+        }
+        for (size_t i = 1; hitp && i < parts.size(); ++i) {
+            hitp = VN_IS(hitp, GenBlock) ? findIn(listOf(hitp), parts[i]) : nullptr;
+        }
+        if (!hitp) return nullptr;
+        if (const AstCell* const cp = VN_CAST(hitp, Cell)) {
+            return VN_IS(cp->modp(), Iface) ? hitp : nullptr;
+        }
+        if (const AstVar* const vp = VN_CAST(hitp, Var)) {
+            return isIfacePort(vp) ? hitp : nullptr;
+        }
+        return nullptr;
+    }
+    // The interface owner a pin expression connects (an iface port, or an
+    // instance through its __Viftop var)
+    const Exp* pinOwner(const AstPin* pinp) const {
+        const AstVarRef* const rp = VN_CAST(pinp->exprp(), VarRef);
+        if (!rp) return nullptr;
+        const AstNode* ownerp = rp->varp();
+        if (const AstIfaceRefDType* const dtp = ifaceDType(rp->varp())) {
+            if (dtp->cellp()) ownerp = dtp->cellp();
+        }
+        const auto it = m_exp.find(ownerp);
+        return it == m_exp.end() ? nullptr : &it->second;
+    }
+
+    void process(AstNodeModule* modp) {
+        if (!m_done.insert(modp).second) return;
+        std::vector<AstCell*> cells;  // submodule instances
+        std::vector<AstCell*> ifaceCells;
+        std::vector<AstVar*> ports;
+        std::vector<AstVarXRef*> xrefs;
+        modp->foreach([&](AstNode* np) {
+            if (AstCell* const cp = VN_CAST(np, Cell)) {
+                if (VN_IS(cp->modp(), Iface)) {
+                    ifaceCells.push_back(cp);
+                } else if (cp->modp()) {
+                    cells.push_back(cp);
+                }
+            } else if (AstVarXRef* const xp = VN_CAST(np, VarXRef)) {
+                xrefs.push_back(xp);
+            }
+        });
+        for (AstNode* sp = modp->stmtsp(); sp; sp = sp->nextp()) {
+            AstVar* const vp = VN_CAST(sp, Var);
+            if (vp && isIfacePort(vp)) ports.push_back(vp);
+        }
+        // Submodules first: their port directions decide modport-less ones here
+        for (AstCell* const cp : cells) process(cp->modp());
+
+        std::vector<std::pair<AstVarXRef*, AstNode*>> owned;
+        std::set<std::pair<const AstNode*, std::string>> written;
+        for (AstVarXRef* const xp : xrefs) {
+            AstNode* const ownerp = resolve(modp, xp);
+            if (!ownerp) continue;
+            owned.emplace_back(xp, ownerp);
+            if (xp->access().isWriteOrRW()) written.emplace(ownerp, xp->varp()->name());
+        }
+        for (AstCell* const cp : cells) {
+            for (AstPin* pinp = cp->pinsp(); pinp; pinp = VN_AS(pinp->nextp(), Pin)) {
+                if (!pinp->modVarp() || !pinp->modVarp()->isIfaceRef()) continue;
+                const AstVarRef* const rp = VN_CAST(pinp->exprp(), VarRef);
+                const auto cit = m_exp.find(pinp->modVarp());
+                if (!rp || cit == m_exp.end()) continue;
+                for (const auto& kv : cit->second.sig) {
+                    if (kv.second->direction() == VDirection::OUTPUT) {
+                        written.emplace(rp->varp(), kv.first);
+                    }
+                }
+            }
+        }
+
+        for (AstVar* const pp : ports) {
+            const AstIfaceRefDType* const dtp = ifaceDType(pp);
+            const AstIface* const ifacep = dtp->ifaceViaCellp();
+            if (!ifacep) continue;
+            std::map<std::string, VDirection> mpDir;
+            if (const AstModport* const mpp = dtp->modportp()) {
+                for (AstNode* np = mpp->varsp(); np; np = np->nextp()) {
+                    if (const AstModportVarRef* const mvp = VN_CAST(np, ModportVarRef)) {
+                        mpDir[mvp->name()] = mvp->direction();
+                    }
+                }
+            }
+            Exp& exp = m_exp[pp];
+            AstNode* afterp = pp;
+            for (AstVar* const sigp : signals(ifacep)) {
+                VDirection dir;
+                if (dtp->modportp()) {
+                    const auto it = mpDir.find(sigp->name());
+                    if (it == mpDir.end()) continue;  // not in this modport: no port
+                    dir = it->second;
+                    // A modport output this module never drives (the parent
+                    // assigns the interface signal itself) must not become a
+                    // driver: an undriven output pin would short the parent's
+                    if (dir == VDirection::OUTPUT && !written.count({pp, sigp->name()})) {
+                        dir = VDirection::INPUT;
+                    }
+                } else {
+                    dir = written.count({pp, sigp->name()}) ? VDirection::OUTPUT
+                                                            : VDirection::INPUT;
+                }
+                AstVar* const nvp = new AstVar{pp->fileline(), VVarType::PORT,
+                                               pp->name() + "__" + sigp->name(), sigp};
+                nvp->direction(dir);
+                nvp->declDirection(dir);
+                afterp->addNextHere(nvp);
+                afterp = nvp;
+                exp.sig[sigp->name()] = nvp;
+            }
+        }
+        for (AstCell* const cp : ifaceCells) {
+            Exp& exp = m_exp[cp];
+            AstNode* afterp = cp;
+            for (AstVar* const sigp : signals(VN_AS(cp->modp(), Iface))) {
+                AstVar* const nvp = new AstVar{cp->fileline(), VVarType::VAR,
+                                               cp->name() + "__" + sigp->name(), sigp};
+                afterp->addNextHere(nvp);
+                afterp = nvp;
+                exp.sig[sigp->name()] = nvp;
+            }
+        }
+
+        for (const auto& kv : owned) {
+            AstVarXRef* const xp = kv.first;
+            const Exp& exp = m_exp[kv.second];
+            const auto it = exp.sig.find(xp->varp()->name());
+            if (it == exp.sig.end()) {
+                xp->v3warn(E_UNSUPPORTED, "Unsupported: interface signal "
+                                              << xp->prettyNameQ()
+                                              << " is not in the port's modport");
+                continue;
+            }
+            xp->replaceWith(new AstVarRef{xp->fileline(), it->second, xp->access()});
+            VL_DO_DANGLING(xp->deleteTree(), xp);
+        }
+
+        for (AstCell* const cp : cells) {
+            for (AstPin *pinp = cp->pinsp(), *nextp; pinp; pinp = nextp) {
+                nextp = VN_AS(pinp->nextp(), Pin);
+                if (!pinp->modVarp() || !pinp->modVarp()->isIfaceRef()) continue;
+                const auto cit = m_exp.find(pinp->modVarp());
+                const Exp* const parentp = pinOwner(pinp);
+                if (cit != m_exp.end() && parentp) {
+                    for (const auto& kv : cit->second.sig) {
+                        const auto pit = parentp->sig.find(kv.first);
+                        if (pit == parentp->sig.end()) continue;
+                        const bool out = kv.second->direction() == VDirection::OUTPUT;
+                        AstPin* const npinp = new AstPin{
+                            pinp->fileline(), pinp->pinNum(), kv.second->name(),
+                            new AstVarRef{pinp->fileline(), pit->second,
+                                          out ? VAccess::WRITE : VAccess::READ}};
+                        npinp->modVarp(kv.second);
+                        pinp->addNextHere(npinp);
+                    }
+                } else if (pinp->exprp()) {
+                    pinp->v3warn(E_UNSUPPORTED, "Unsupported: interface pin connection"
+                                                " (structural flow)");
+                }
+                VL_DO_DANGLING(pinp->unlinkFrBack()->deleteTree(), pinp);
+            }
+        }
+    }
+
+public:
+    explicit StructIfaceLower(AstNetlist* rootp) {
+        for (AstNodeModule* modp = rootp->modulesp(); modp;
+             modp = VN_AS(modp->nextp(), NodeModule)) {
+            if (VN_IS(modp, Module) && !modp->dead()) process(modp);
+        }
+    }
+};
+
+}  // namespace
+
 static void emitStructTo(std::ostream& os) {
+    static bool s_ifaceLowered = false;
+    if (!s_ifaceLowered) {
+        s_ifaceLowered = true;
+        StructIfaceLower{v3Global.rootp()};
+    }
     const bool xilinx = v3Global.opt.structOnlyXilinxRtl();
     if (xilinx) {
         os << "// Generated by xilinx_rtl backend\n"
