@@ -429,6 +429,7 @@ private:
     string      m_mapOnlyOutput;  // main switch: --map-only-output
     string      m_mapOnlyEdif;  // main switch: --map-only-edif
     string      m_mapOnlyVerilog;  // main switch: --map-only-verilog
+    string      m_mapOnlyMemInit;  // main switch: --map-only-meminit
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
     std::set<string> m_structOnlyBlackbox;  // main switch: --struct-only-blackbox
@@ -755,6 +756,7 @@ public:
     string mapOnlyOutput() const { return m_mapOnlyOutput; }
     string mapOnlyEdif() const { return m_mapOnlyEdif; }
     string mapOnlyVerilog() const { return m_mapOnlyVerilog; }
+    string mapOnlyMemInit() const { return m_mapOnlyMemInit; }
     bool mapOnlyEdifFlat() const { return m_mapOnlyEdifFlat; }
     string mapOnlyAbcScript() const { return m_mapOnlyAbcScript; }
     bool mapOnlyKeepTemps() const { return m_mapOnlyKeepTemps; }
