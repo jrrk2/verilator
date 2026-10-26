@@ -31,6 +31,8 @@
 #include "V3EmitStruct.h"
 #include "V3Global.h"
 #include <unistd.h>
+#include <climits>
+#include <cstdlib>
 
 #include "struct_netlist.h"
 
@@ -411,6 +413,8 @@ class Mapper final {
     int m_ncells = 0;
     std::unordered_map<std::string, int> m_counts;
     std::vector<std::string> m_warnings;
+    // --map-only-meminit: one JSON object per memory (see writeMemInit), collected as the memories are emitted
+    std::vector<std::string> m_memInit;
     // instance scopes (partitioned mapping): id -> (prefix "a.b.", module type); 0 = top
     std::vector<std::pair<std::string, std::string>> m_scopes;
     std::unordered_map<std::string, int> m_scopeId;
@@ -1415,6 +1419,7 @@ private:
         }
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
         if (!v3Global.opt.mapOnlyVerilog().empty()) writeVerilog(v3Global.opt.mapOnlyVerilog());
+        if (!v3Global.opt.mapOnlyMemInit().empty()) writeMemInit(v3Global.opt.mapOnlyMemInit());
         if (filename.empty()) return;  // --map-only-edif / --map-only-verilog alone
         std::ofstream os{filename};
         os << "{\n  \"creator\": \"verilator --map-only-output\",\n  \"modules\": {\n    \"" << m_top << "\": {\n"
@@ -1936,6 +1941,63 @@ private:
         for (const auto& p : c.params) if (p.first == name) return std::atoi(p.second.c_str());
         return dflt;
     }
+    static std::string jsonStr(const std::string& v) {
+        std::string o = "\"";
+        for (const char ch : v) {
+            if (ch == '"' || ch == '\\') { o += '\\'; o += ch; }
+            else if (static_cast<unsigned char>(ch) < 0x20) o += ' ';
+            else o += ch;
+        }
+        return o + "\"";
+    }
+    // The file $readmemh named, as readHex finds it: as given, else under $MEM_INIT_DIR; made absolute so that a tool
+    // run from another directory finds the same file
+    static std::string resolveInitFile(const std::string& f) {
+        if (f.empty()) return f;
+        std::vector<std::string> cands{f};
+        if (const char* d = std::getenv("MEM_INIT_DIR")) cands.push_back(std::string(d) + "/" + f);
+        for (const std::string& cand : cands) {
+            if (!std::ifstream{cand}) continue;
+            char buf[PATH_MAX];
+            if (const char* r = ::realpath(cand.c_str(), buf)) return r;
+            return cand;
+        }
+        return f;
+    }
+    // One memory of the manifest.  The cells of the memory are named <cell>_t<lane tile>[_d<depth block>]: lane tile t holds
+    // data bits [t*tw, t*tw+tw) of every word (the last one fewer: width), depth block d the words [d*words_per_tile,
+    // (d+1)*words_per_tile).  Word k of a block is in bits [k*tw, k*tw+tw) of the block RAM's INIT_xx lines (the data layout
+    // of UG473 for a port of tw data bits), which is what a tool needs to place a new image into a placed design.
+    void recordMemInit(const Design::Cell& c, const std::string& initFile, const char* prim, int dw, int depth, int tw,
+                       int ntiles, int nblocks, int wordsPerTile, bool cascade) {
+        std::ostringstream o;
+        const std::string cellBase = sanitize(c.name);
+        o << "    {\"name\": " << jsonStr(c.name) << ", \"type\": " << jsonStr(c.type) << ", \"kind\": \"bram\""
+          << ", \"primitive\": " << jsonStr(prim) << ", \"init_file\": " << jsonStr(initFile)
+          << ", \"init_path\": " << jsonStr(resolveInitFile(initFile)) << ", \"width\": " << dw << ", \"depth\": " << depth
+          << ", \"lane_bits\": " << tw << ", \"lanes\": " << ntiles << ", \"blocks\": " << nblocks
+          << ", \"words_per_block\": " << wordsPerTile << ", \"cascade\": " << (cascade ? "true" : "false") << ",\n"
+          << "     \"cells\": [";
+        bool first = true;
+        for (int t = 0; t < ntiles; ++t) {
+            for (int d = 0; d < nblocks; ++d) {
+                const int lo = t * tw;
+                o << (first ? "\n" : ",\n") << "       {\"cell\": "
+                  << jsonStr(cellBase + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : ""))
+                  << ", \"lane\": " << t << ", \"block\": " << d << ", \"bit_lo\": " << lo
+                  << ", \"bits\": " << std::min(tw, dw - lo) << ", \"word_lo\": " << d * wordsPerTile << "}";
+                first = false;
+            }
+        }
+        o << "\n     ]}";
+        m_memInit.push_back(o.str());
+    }
+    void writeMemInit(const std::string& filename) {
+        std::ofstream os{filename};
+        os << "{\n  \"creator\": \"verilator --map-only-meminit\",\n  \"top\": " << jsonStr(m_top) << ",\n  \"memories\": [\n";
+        for (size_t i = 0; i < m_memInit.size(); ++i) os << m_memInit[i] << (i + 1 < m_memInit.size() ? ",\n" : "\n");
+        os << "  ]\n}\n";
+    }
     void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) {
         const int aw = paramOf(c, "ADDR_WIDTH", 1);
         const int dw = paramOf(c, "DATA_WIDTH", 1);
@@ -2109,14 +2171,17 @@ private:
         // tiles' INIT_xx strings: lane bit i of word k sits at INIT bit k*tw+i
         // (x1/x9/x36 data layout; parity bits unused, INITP left 0)
         std::vector<uint64_t> image;
+        std::string initFile;
         for (const auto& p : c.params) {
             if (p.first != "INIT_FILE") continue;
             std::string f = p.second;
             if (f.size() >= 2 && f.front() == '"') f = f.substr(1, f.size() - 2);
             if (f.empty()) continue;
+            initFile = f;
             if (!readHex(f, image)) m_warnings.push_back("memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
         }
         const int wordsPerTile = 32768 / tw;
+        if (!v3Global.opt.mapOnlyMemInit().empty()) recordMemInit(c, initFile, prim, dw, depth, tw, ntiles, nblocks, wordsPerTile, cascade);
         auto initParams = [&](int lo, int sw, int d, std::vector<std::pair<std::string, std::string>>& params) {
             if (image.empty()) return;
             for (int line = 0; line < 128; ++line) {
