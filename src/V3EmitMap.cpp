@@ -30,6 +30,7 @@
 
 #include "V3EmitStruct.h"
 #include "V3Global.h"
+#include "V3Os.h"
 #include <unistd.h>
 #include <climits>
 #include <cstdlib>
@@ -1958,9 +1959,7 @@ private:
         if (const char* d = std::getenv("MEM_INIT_DIR")) cands.push_back(std::string(d) + "/" + f);
         for (const std::string& cand : cands) {
             if (!std::ifstream{cand}) continue;
-            char buf[PATH_MAX];
-            if (const char* r = ::realpath(cand.c_str(), buf)) return r;
-            return cand;
+            return V3Os::filenameRealPath(cand);   // realpath, or _fullpath on Windows
         }
         return f;
     }
