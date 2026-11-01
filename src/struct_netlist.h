@@ -200,6 +200,8 @@ struct NetDecl {
     int lsb = 0;  // declared [msb:lsb] lsb (part selects are relative to it)
     bool isSigned = false;
     int depth = 1;  // unpacked array elements (1 = scalar)
+    int unpackDims = 0;  // number of unpacked dimensions
+    int elemLo = 0;  // the unpacked dimension's lowest index (one dimension)
     int dir = 0;  // 0 internal, 1 input, 2 output, 3 inout
 };
 
@@ -539,6 +541,8 @@ private:
             }
             expect("]");
             d.depth *= static_cast<int>(std::llabs(hi - lo) + 1);
+            d.elemLo = static_cast<int>(std::min(lo, hi));
+            ++d.unpackDims;
         }
     }
 
@@ -759,6 +763,10 @@ struct NetBits {
     int lsb = 0;
     bool isSigned = false;
     int depth = 1;
+    // a one-dimensional unpacked array, flat: element k at bits
+    // [(k - elemLo) * elemW +: elemW]; elemW 0 for anything else
+    int elemW = 0;
+    int elemLo = 0;
 };
 
 struct Design {
@@ -879,7 +887,10 @@ private:
             return 1;
         }
         case Expr::CONST: return e->bits.size();
-        case Expr::BITSEL: return 1;
+        case Expr::BITSEL: {
+            if (const NetBits* const ap = arrayNetOf(e, sc)) return ap->elemW;
+            return 1;
+        }
         case Expr::PARTSEL: return std::abs(e->ival - e->ival2) + 1;
         case Expr::PARTSEL_UP: return e->ival;
         case Expr::CONCAT: {
@@ -943,6 +954,27 @@ private:
             return r;
         }
         case Expr::BITSEL: {
+            if (const NetBits* const ap = arrayNetOf(e, sc)) {
+                const Vec base = eval(e->args[0], sc);
+                const int ew = ap->elemW;
+                const int n = static_cast<int>(base.size()) / ew;
+                auto elem = [&](long long k) {
+                    Vec r(ew, m_bl.F());
+                    if (k >= 0 && k < n) for (int b = 0; b < ew; ++b) r[b] = base[k * ew + b];
+                    return r;
+                };
+                const ExprP& ie = e->args[1];
+                if (isConstExpr(ie, sc)) return elem(constOf(ie, sc) - ap->elemLo);
+                // dynamic element select: mux over the elements
+                const Vec idx = eval(ie, sc);
+                Vec r(ew, m_bl.F());
+                for (int k = 0; k < n; ++k) {
+                    const int hit = m_bl.eq(idx, m_bl.constVec(k + ap->elemLo, idx.size()));
+                    const Vec ek = elem(k);
+                    for (int b = 0; b < ew; ++b) r[b] = m_bl.MUX(hit, r[b], ek[b]);
+                }
+                return r;
+            }
             const Vec base = eval(e->args[0], sc);
             const int lsb = baseLsb(e->args[0], sc);
             const ExprP& ie = e->args[1];
@@ -1074,7 +1106,15 @@ private:
             const NetBits* nb = findNet(sc.prefix + base->name);
             if (nb) return nb->lsb;
         }
+        // an element of an unpacked array has the element's packed lsb
+        if (const NetBits* const ap = arrayNetOf(base, sc)) return ap->lsb;
         return 0;
+    }
+    // e is `x[i]` on a one-dimensional unpacked array net x: that net
+    NetBits* arrayNetOf(const ExprP& e, const Scope& sc) {
+        if (e->kind != Expr::BITSEL || e->args[0]->kind != Expr::IDENT) return nullptr;
+        NetBits* const nb = findNet(sc.prefix + e->args[0]->name);
+        return nb && nb->elemW > 0 ? nb : nullptr;
     }
     bool isConstExpr(const ExprP& e, const Scope& sc) {
         switch (e->kind) {
@@ -1108,6 +1148,15 @@ private:
         case Expr::PARTSEL:
         case Expr::PARTSEL_UP: {
             const ExprP& base = lhs->args[0];
+            if (NetBits* const ap = lhs->kind == Expr::BITSEL ? arrayNetOf(lhs, sc) : nullptr) {
+                // x[k] = v on an unpacked array: the element's bits
+                if (!isConstExpr(lhs->args[1], sc))
+                    die(m_d->label + ": dynamic index on assignment target '" + base->name + "' unsupported");
+                const long long k = constOf(lhs->args[1], sc) - ap->elemLo;
+                driveBits(*ap, static_cast<int>(k * ap->elemW), m_bl.resize(val, ap->elemW, false),
+                          sc.prefix + base->name, what);
+                return;
+            }
             if (base->kind != Expr::IDENT) die("unsupported nested lvalue select");
             NetBits* nb = findNet(sc.prefix + base->name);
             if (!nb) die(m_d->label + ": assignment to undeclared '" + base->name + "'");
@@ -1179,7 +1228,14 @@ private:
             nb.bits.resize(total);
             nb.drivers.assign(total, 0);
             for (int i = 0; i < total; ++i) nb.bits[i] = m_bl.newVar();
-            if (d.depth != 1) warn(m_d->label + ": unpacked array net " + prefix + d.name + " kept as a flat " + std::to_string(total) + "-bit vector");
+            if (d.unpackDims == 1) {
+                // element selects pick whole elements; the net is flat
+                // outside (a top-level port is one [total-1:0] port)
+                nb.elemW = d.width;
+                nb.elemLo = d.elemLo;
+            } else if (d.depth != 1) {
+                warn(m_d->label + ": unpacked array net " + prefix + d.name + " kept as a flat " + std::to_string(total) + "-bit vector");
+            }
             nb.width = total;
             m_d->nets[prefix + d.name] = nb;
         }
@@ -1565,6 +1621,13 @@ private:
         case Expr::IDENT: { NetBits* nb = base(e); if (nb) mark(nb, 0, nb->width); return; }
         case Expr::CONCAT: for (const ExprP& a : e->args) markDriven(a, sc); return;
         case Expr::BITSEL:
+            if (const NetBits* const ap = arrayNetOf(e, sc)) {
+                if (isConstExpr(e->args[1], sc)) {
+                    mark(base(e->args[0]), (constOf(e->args[1], sc) - ap->elemLo) * ap->elemW, ap->elemW);
+                    return;
+                }
+                break;
+            }
             if (isConstExpr(e->args[1], sc)) { mark(base(e->args[0]), constOf(e->args[1], sc) - baseLsb(e->args[0], sc), 1); return; }
             break;
         case Expr::PARTSEL:
