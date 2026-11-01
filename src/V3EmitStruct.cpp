@@ -1538,6 +1538,7 @@ private:
         // array can clock a register but is never matched as a reset.
         std::vector<std::pair<const AstVar*, bool>> edges;  // (var, negedge)
         std::vector<AstNodeExpr*> edgeExprs;  // parallel to edges: the item when not a plain signal
+        size_t constEdges = 0;
         int levels = 0;
         if (AstSenTree* const stp = ap->sentreep()) {
             for (AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
@@ -1552,9 +1553,12 @@ private:
                         edges.emplace_back(nullptr, neg);
                         edgeExprs.push_back(ip->sensp());
                     } else if (VN_IS(ip->sensp(), Const)) {
-                        c.reason = "edge of a constant (the block never fires)";
-                        c.neverFires = true;
-                        return c;
+                        // a tied-off clock: no edge ever comes from it, but an async
+                        // set/reset beside it still acts (an RS flip-flop), so it is
+                        // kept as a clock tied to its constant
+                        edges.emplace_back(nullptr, neg);
+                        edgeExprs.push_back(ip->sensp());
+                        ++constEdges;
                     } else {
                         c.reason = "edge-sensitive item that is not a signal or a bit of one";
                         return c;
@@ -1571,6 +1575,12 @@ private:
             } else {
                 c.reason = "always_ff with no edge-triggered signal";
             }
+            return c;
+        }
+        if (constEdges == edges.size()) {
+            // every edge is a constant: nothing can ever trigger the block
+            c.reason = "every edge is of a constant (the block never fires)";
+            c.neverFires = true;
             return c;
         }
         std::vector<ResetLink> bodyResets;
