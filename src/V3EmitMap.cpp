@@ -1127,6 +1127,11 @@ private:
         // IBUF/OBUF/IOBUF/IBUFDS(_GTE2)/... touches gets one inserted here, the
         // pad on its outer side.  nextpnr then does with it what it does with
         // yosys's (GT serial pads included).
+        //
+        // --map-only-no-iobuf: the top is not the chip but a block mapped once
+        // and instantiated (spliced into another netlist) many times -- its
+        // ports are nets, not pads, and get no buffers.
+        const bool noIobuf = v3Global.opt.mapOnlyNoIobuf();
         static const std::set<std::string> ioTypes = {
             "IBUF", "IBUFG", "IBUFDS", "IBUFGDS", "IBUFDS_GTE2", "IBUFDS_DIFF_OUT", "OBUF", "OBUFT",
             "OBUFDS", "OBUFTDS", "IOBUF", "IOBUFDS"};
@@ -1142,7 +1147,7 @@ private:
             size_t b = 0;
             for (const int l : kv.second) {
                 const std::string n = netOfLit(l);
-                if (bufferedVars.count(m_aig.resolve(l) >> 1)) {
+                if (noIobuf || bufferedVars.count(m_aig.resolve(l) >> 1)) {
                     nets.push_back(n);
                 } else {
                     const std::string pad = newNet();
@@ -1162,7 +1167,7 @@ private:
                 const int r = m_aig.resolve(kv.second[b]);
                 // a constant output gets its OBUF too, as from iopadmap (ethmin's
                 // PHY ties eth_rst_n high); var 0 is the constant, not a buffered net
-                if (inout || (n[0] != '"' && bufferedVars.count(r >> 1))) {
+                if (noIobuf || inout || (n[0] != '"' && bufferedVars.count(r >> 1))) {
                     nets.push_back(n);
                 } else {
                     const std::string pad = newNet();
