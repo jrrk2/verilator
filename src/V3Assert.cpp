@@ -1333,7 +1333,9 @@ class AssertVisitor final : public VNVisitor {
             VIsCached::clearCacheTree();
         }
         iterateChildren(nodep);
-        if (!nodep->user1SetOnce()) {
+        // A synthesis netlist checks case fullness and overlap statically
+        // (V3EmitStruct); runtime checks would only add unreachable items.
+        if (!nodep->user1SetOnce() && !v3Global.opt.synthOnly()) {
             bool has_default = false;
             for (AstCaseItem* const itemp : nodep->itemspList()) {
                 if (itemp->isDefault()) has_default = true;

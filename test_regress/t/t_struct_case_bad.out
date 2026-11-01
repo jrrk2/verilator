@@ -1,0 +1,15 @@
+%Error: t/t_struct_case_bad.v:17:3: always_comb does not assign 'y_comb' on every path, so it would need a latch (IEEE 1800-2023 9.2.2.2)
+                                  : ... note: In instance 't'
+                                  : ... Suggest assigning it on every path, or using always_latch
+   17 |   always_comb
+      |   ^~~~~~~~~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_struct_case_bad.v:27:12: 'unique case' items overlap: selector value 2'h3 matches more than one item (IEEE 1800-2023 12.5.3)
+                                   : ... note: In instance 't'
+   27 |     unique casez (sel)
+      |            ^~~~~
+%Error: t/t_struct_case_bad.v:37:14: 'priority case' is not full: selector value 2'h3 matches no item and there is no default (IEEE 1800-2023 12.5.3)
+                                   : ... note: In instance 't'
+   37 |     priority case (sel)
+      |              ^~~~
+%Error: Exiting due to
