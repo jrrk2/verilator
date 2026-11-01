@@ -294,6 +294,10 @@ class StructModule final {
     // Procedural context
     bool m_seq = false;
     bool m_latch = false;
+    bool m_comb = false;  // combinational always block: always_comb or always @*
+    bool m_alwaysComb = false;  // ... written as always_comb, which must not need a latch
+    const AstAlways* m_alwaysp = nullptr;  // block being lowered
+    std::unordered_set<std::string> m_localKeys;  // keys of inlined function locals
     SExpr m_clk;
     bool m_negedge = false;
     bool m_hasRst = false;
@@ -1626,6 +1630,9 @@ private:
         }
         VL_RESTORER(m_seq);
         VL_RESTORER(m_latch);
+        VL_RESTORER(m_comb);
+        VL_RESTORER(m_alwaysComb);
+        VL_RESTORER(m_alwaysp);
         VL_RESTORER_COPY(m_clk);
         VL_RESTORER(m_negedge);
         VL_RESTORER(m_hasRst);
@@ -1637,6 +1644,9 @@ private:
         VL_RESTORER(m_rstCondp);
         m_seq = cls.kind == BlockKind::SEQ;
         m_latch = cls.kind == BlockKind::LATCH;
+        m_comb = cls.kind == BlockKind::COMB;
+        m_alwaysComb = ap->keyword() == VAlwaysKwd::ALWAYS_COMB;
+        m_alwaysp = ap;
         m_hasRst = false;
         m_rstAsync = false;
         m_rstVarp = nullptr;
@@ -1790,18 +1800,72 @@ private:
                     }
                 }
                 genDff(key, qRefs, d, en, width, resetVal, useRst);
-            } else if (m_latch) {
-                const auto mit = m_muxes.find(val.text);
-                if (mit != m_muxes.end() && mit->second.in0.text == key) {
-                    genLatch(key, qRefs, mit->second.sel, mit->second.in1, width);
+            } else if (m_latch || m_comb) {
+                std::map<std::string, HoldSplit> memo;
+                const HoldSplit hs = splitHold(val, key, memo);
+                if (!hs.holds) {
+                    if (m_latch) {
+                        warnNode(m_alwaysp, "always_latch assigns " + key
+                                                + " on every path; no latch needed, emitted"
+                                                  " as combinational logic");
+                    }
+                    addAssign(key, val, qRefs);
+                } else if (m_alwaysComb) {
+                    m_alwaysp->v3error("always_comb does not assign '"
+                                       << key << "' on every path, so it would need a latch"
+                                       << " (IEEE 1800-2023 9.2.2.2)\n"
+                                       << m_alwaysp->warnMore()
+                                       << "... Suggest assigning it on every path, or using"
+                                          " always_latch");
+                    addAssign(key, hs.d, qRefs);  // keep the netlist well formed
                 } else {
-                    warn("always_latch: no enable structure for " + key + ", using en=1");
-                    genLatch(key, qRefs, constExpr(1, 1), val, width);
+                    if (m_comb) {
+                        warnNode(m_alwaysp, "latch inferred for " + key
+                                                + ": not assigned on every path of a"
+                                                  " combinational always block");
+                    }
+                    genLatch(key, qRefs, materialize(hs.en), hs.d, width);
                 }
             } else {
                 addAssign(key, val, qRefs);
             }
         }
+    }
+
+    // A combinational or latch block's final value for `key` split into where
+    // the block assigns it (en) and what it assigns there (d).  The paths that
+    // hold are the mux-tree leaves that are `key` itself (priorNext).
+    struct HoldSplit final {
+        SExpr en;  // 1 where the block assigns `key`
+        SExpr d;  // value assigned where en is 1
+        bool holds = false;  // some path keeps the old value
+    };
+    HoldSplit splitHold(const SExpr& v, const std::string& key,
+                        std::map<std::string, HoldSplit>& memo) {
+        if (v.text == key) return {constExpr(0, 1), v, true};
+        const auto mit = m_muxes.find(v.text);
+        if (mit == m_muxes.end()) return {constExpr(1, 1), v, false};
+        const auto cit = memo.find(v.text);  // mux trees are DAGs
+        if (cit != memo.end()) return cit->second;
+        const MuxInfo mux = mit->second;  // copied: genMux below inserts into m_muxes
+        const HoldSplit a = splitHold(mux.in0, key, memo);
+        const HoldSplit b = splitHold(mux.in1, key, memo);
+        HoldSplit r{constExpr(1, 1), v, false};
+        if (a.holds || b.holds) {
+            r.holds = true;
+            if (a.en.hasVal && b.en.hasVal) {
+                // Arms both const and different (equal would have merged): sel or !sel
+                r.en = b.en.val ? mux.sel : notBit(mux.sel);
+            } else {
+                r.en = genMux(mux.sel, a.en, b.en, 1);
+            }
+            // Where an arm only holds, d is don't-care there: take the other arm
+            const bool aOnlyHolds = a.en.hasVal && !a.en.val;
+            const bool bOnlyHolds = b.en.hasVal && !b.en.val;
+            r.d = aOnlyHolds ? b.d : bOnlyHolds ? a.d : genMux(mux.sel, a.d, b.d, v.width);
+        }
+        memo.emplace(v.text, r);
+        return r;
     }
 
     // ---- memory transformations ahead of emission ----
@@ -2759,7 +2823,11 @@ private:
                 if (wit != env.next.end()) return sliceOf(wit->second, lo, w);
             }
         }
-        if (m_seq || m_latch) return readKey(key, env, false);  // hold
+        // Hold.  In a combinational block finishBlock finds the paths that
+        // hold and decides whether they are a latch or an error.
+        if (m_seq || m_latch || (m_comb && !m_localKeys.count(rootIdent(key)))) {
+            return readKey(key, env, false);
+        }
         warn("Incomplete if for " + key + " - using default 0");
         return constExpr(0, widthOfKey(key));
     }
@@ -2802,17 +2870,183 @@ private:
         }
     }
 
-    // case: each item becomes (expr == c1) | (expr == c2) ... ; items are
-    // folded from the last to the first into a mux chain
-    // (sv_tran_struct structural_case build_mux_chain), via the generic
-    // if-merge so blocking semantics stay right.
+    // ---- case: static analysis, keyword check, then structure ----
+    //
+    // The labels are analysed before any hardware is built.  "Full" means
+    // every selector value matches some label; "parallel" means no value
+    // matches labels of two different items.  A unique/unique0/priority
+    // keyword is a claim about those properties: when the analysis decides a
+    // property the claim is checked against it and a false claim is an
+    // error; only when the analysis cannot decide is the claim trusted.
+    // full_case/parallel_case comments are not claims the netlist honours.
+    //
+    // Structure: every item becomes a hit signal (expr == c1) | (expr == c2)
+    // ...  A case that is not parallel keeps its priority as a mux chain in
+    // item order.  A parallel case is a balanced tree, each node selecting
+    // on whether any item of its left half hits.  A full case tests no hit
+    // on its last path, and a default it can never reach is dropped; a case
+    // that is not full falls through to its default or, without one, holds.
+    // Everything goes through the generic if-merge so blocking semantics
+    // stay right.
+    enum class CaseProp : uint8_t { NO, YES, UNKNOWN };
+    struct CaseFacts final {
+        CaseProp full = CaseProp::UNKNOWN;  // ignoring any default
+        CaseProp parallel = CaseProp::UNKNOWN;
+        uint64_t unmatched = 0;  // a value no label matches, when full is NO
+        uint64_t overlap = 0;  // a value two items match, when parallel is NO
+    };
+    // A constant label as the selector values it matches: (v & mask) == value
+    struct CaseCube final {
+        uint64_t mask;
+        uint64_t value;
+        int item;  // index of its case item
+    };
+    // Labels that test at most this many selector bits between them are
+    // decided by visiting every combination of those bits
+    static constexpr int CASE_ENUMERATE_MAX_BITS = 16;
+
+    // False when a label is not a constant the analysis models (a variable,
+    // an inside range, or X/Z bits that are not wildcards and so never match
+    // 2-state hardware).  Wildcards follow caseMatch.
+    static bool caseCubes(const AstCase* cp, int width, std::vector<CaseCube>& cubes) {
+        int item = 0;
+        for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem), ++item) {
+            if (ip->isDefault()) continue;
+            for (AstNodeExpr* condp = ip->condsp(); condp;
+                 condp = VN_AS(condp->nextp(), NodeExpr)) {
+                const AstConst* const kp = VN_CAST(condp, Const);
+                if (!kp || kp->num().width() < width) return false;
+                const V3Number& num = kp->num();
+                uint64_t mask = 0;
+                uint64_t value = 0;
+                for (int b = 0; b < width; ++b) {
+                    const bool wild = cp->casex() ? num.bitIsXZ(b) : cp->casez() && num.bitIsZ(b);
+                    if (wild) continue;
+                    if (num.bitIsXZ(b)) return false;
+                    mask |= 1ULL << b;
+                    if (num.bitIs1(b)) value |= 1ULL << b;
+                }
+                cubes.push_back({mask, value, item});
+            }
+        }
+        return true;
+    }
+    static CaseFacts analyzeCase(const AstCase* cp) {
+        CaseFacts f;
+        const int width = cp->exprp()->width();
+        std::vector<CaseCube> cubes;
+        if (width > 64 || !caseCubes(cp, width, cubes)) return f;
+        // Bits no label tests cannot change which labels match
+        std::vector<int> tested;
+        uint64_t testedMask = 0;
+        for (const CaseCube& c : cubes) testedMask |= c.mask;
+        for (int b = 0; b < width; ++b) {
+            if ((testedMask >> b) & 1) tested.push_back(b);
+        }
+        if (static_cast<int>(tested.size()) <= CASE_ENUMERATE_MAX_BITS) {
+            f.full = CaseProp::YES;
+            f.parallel = CaseProp::YES;
+            for (uint64_t k = 0; k < (1ULL << tested.size()); ++k) {
+                uint64_t v = 0;
+                for (size_t i = 0; i < tested.size(); ++i) {
+                    if ((k >> i) & 1) v |= 1ULL << tested[i];
+                }
+                int firstItem = -1;
+                bool twoItems = false;
+                for (const CaseCube& c : cubes) {
+                    if ((v & c.mask) != c.value) continue;
+                    if (firstItem < 0) {
+                        firstItem = c.item;
+                    } else if (c.item != firstItem) {
+                        twoItems = true;
+                        break;
+                    }
+                }
+                if (firstItem < 0 && f.full == CaseProp::YES) {
+                    f.full = CaseProp::NO;
+                    f.unmatched = v;
+                }
+                if (twoItems && f.parallel == CaseProp::YES) {
+                    f.parallel = CaseProp::NO;
+                    f.overlap = v;
+                }
+            }
+            return f;
+        }
+        // Otherwise decided only when every label is an exact value.
+        // Fewer labels than 2^width values cannot be full; sorting finds
+        // values that two items share.
+        const uint64_t all = width == 64 ? ~0ULL : (1ULL << width) - 1;
+        for (const CaseCube& c : cubes) {
+            if (c.mask != all) return f;
+        }
+        std::sort(cubes.begin(), cubes.end(),
+                  [](const CaseCube& a, const CaseCube& b) { return a.value < b.value; });
+        f.full = CaseProp::NO;
+        f.parallel = CaseProp::YES;
+        uint64_t expect = 0;  // smallest value not yet seen
+        bool foundGap = false;
+        for (size_t i = 0; i < cubes.size(); ++i) {
+            if (!foundGap && cubes[i].value > expect) foundGap = true;
+            if (!foundGap && cubes[i].value == expect) ++expect;
+            if (i && cubes[i].value == cubes[i - 1].value && cubes[i].item != cubes[i - 1].item
+                && f.parallel == CaseProp::YES) {
+                f.parallel = CaseProp::NO;
+                f.overlap = cubes[i].value;
+            }
+        }
+        f.unmatched = expect;
+        return f;
+    }
+    // Check the case's keyword against what the analysis proved and decide
+    // which properties the structure may rely on
+    void checkCaseKeyword(AstCase* cp, const CaseFacts& f, bool hasDefault, bool& full,
+                          bool& parallel) {
+        const bool claimsFull = cp->uniquePragma() || cp->priorityPragma();
+        const bool claimsParallel = cp->uniquePragma() || cp->unique0Pragma();
+        const std::string kw = cp->uniquePragma()    ? "unique"
+                               : cp->unique0Pragma() ? "unique0"
+                                                     : "priority";
+        const int width = cp->exprp()->width();
+        if (claimsParallel && f.parallel == CaseProp::NO) {
+            cp->v3error("'" << kw << " case' items overlap: selector value "
+                            << constText(f.overlap, width) << " matches more than one item"
+                            << " (IEEE 1800-2023 12.5.3)");
+        }
+        if (claimsFull && !hasDefault && f.full == CaseProp::NO) {
+            cp->v3error("'" << kw << " case' is not full: selector value "
+                            << constText(f.unmatched, width)
+                            << " matches no item and there is no default"
+                            << " (IEEE 1800-2023 12.5.3)");
+        }
+        if (cp->fullPragma() || cp->parallelPragma()) {
+            warnNode(cp, "full_case/parallel_case comment ignored; the netlist follows the"
+                         " case's own semantics (use unique/unique0/priority)");
+        }
+        full = f.full == CaseProp::YES;
+        parallel = f.parallel == CaseProp::YES;
+        if (f.full == CaseProp::UNKNOWN && claimsFull && !hasDefault) {
+            full = true;
+            warnNode(cp, "fullness of case not decidable; trusting '" + kw + "'");
+        }
+        if (f.parallel == CaseProp::UNKNOWN && claimsParallel) {
+            parallel = true;
+            warnNode(cp, "overlap of case items not decidable; trusting '" + kw + "'");
+        }
+    }
+
+    struct CaseArms final {
+        std::vector<std::pair<SExpr, AstCaseItem*>> arms;  // (hit, item)
+        AstCaseItem* defaultp = nullptr;  // nullptr when absent or unreachable
+        bool parallel = false;
+        std::map<std::pair<size_t, size_t>, SExpr> anyHit;  // shared OR trees
+    };
     void lowerCase(AstCase* cp, Env& env) {
         const SExpr sel = materialize(lowerExpr(cp->exprp(), env));
-        std::vector<std::pair<SExpr, AstCaseItem*>> arms;
-        AstCaseItem* defaultp = nullptr;
+        CaseArms ca;
         for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) {
             if (ip->isDefault()) {
-                defaultp = ip;
+                ca.defaultp = ip;
                 continue;
             }
             SExpr hit = constExpr(0, 1);
@@ -2832,9 +3066,57 @@ private:
                 hit = first ? one : orBits(hit, one);
                 first = false;
             }
-            arms.emplace_back(materialize(hit), ip);
+            ca.arms.emplace_back(materialize(hit), ip);
         }
-        lowerCaseArms(arms, 0, defaultp, env);
+        bool full = false;
+        checkCaseKeyword(cp, analyzeCase(cp), ca.defaultp != nullptr, full, ca.parallel);
+        if (full) ca.defaultp = nullptr;  // unreachable
+        lowerCaseRange(ca, 0, ca.arms.size(), full, env);
+    }
+    // OR of the hits of arms [lo, hi), shared between tree levels
+    SExpr caseAnyHit(CaseArms& ca, size_t lo, size_t hi) {
+        if (hi - lo == 1) return ca.arms[lo].first;
+        const auto it = ca.anyHit.find({lo, hi});
+        if (it != ca.anyHit.end()) return it->second;
+        const size_t mid = (lo + hi) / 2;
+        const SExpr r = materialize(orBits(caseAnyHit(ca, lo, mid), caseAnyHit(ca, mid, hi)));
+        ca.anyHit.emplace(std::make_pair(lo, hi), r);
+        return r;
+    }
+    // Lower arms [lo, hi) and the fall-through after them; someHit: one of
+    // them is known to match, so there is no fall-through and the last arm
+    // left needs no test.  Earlier arms always go left, so item priority is
+    // kept whichever split is used.
+    void lowerCaseRange(CaseArms& ca, size_t lo, size_t hi, bool someHit, Env& env) {
+        if (lo == hi) {
+            if (ca.defaultp) lowerStmts(ca.defaultp->stmtsp(), env);
+            return;
+        }
+        if (hi - lo == 1 && someHit) {
+            lowerStmts(ca.arms[lo].second->stmtsp(), env);
+            return;
+        }
+        const size_t mid = ca.parallel ? std::max(lo + 1, (lo + hi) / 2) : lo + 1;
+        const SExpr cond = caseAnyHit(ca, lo, mid);
+        if (cond.hasVal) {
+            if (cond.val) {
+                lowerCaseRange(ca, lo, mid, true, env);
+            } else {
+                lowerCaseRange(ca, mid, hi, someHit, env);
+            }
+            return;
+        }
+        Env thenEnv = env;
+        Env elseEnv = env;
+        thenEnv.pending.clear();
+        elseEnv.pending.clear();
+        m_pathCond.emplace_back(cond, false);
+        lowerCaseRange(ca, lo, mid, true, thenEnv);
+        m_pathCond.pop_back();
+        m_pathCond.emplace_back(cond, true);
+        lowerCaseRange(ca, mid, hi, someHit, elseEnv);
+        m_pathCond.pop_back();
+        mergeBranches(cond, thenEnv, elseEnv, env);
     }
     SExpr orBits(const SExpr& a, const SExpr& b) {
         if (a.hasVal) return a.val ? a : b;
@@ -2865,33 +3147,6 @@ private:
         const SExpr c = lowerExpr(condp, env);
         if (sel.hasVal && c.hasVal) return constExpr(sel.val == maskTo(c.val, sel.width), 1);
         return genBinary("comparator_eq", sel, c, sel.width, 1);
-    }
-    void lowerCaseArms(std::vector<std::pair<SExpr, AstCaseItem*>>& arms, size_t i,
-                       AstCaseItem* defaultp, Env& env) {
-        if (i == arms.size()) {
-            if (defaultp) lowerStmts(defaultp->stmtsp(), env);
-            return;
-        }
-        const SExpr& hit = arms[i].first;
-        if (hit.hasVal) {
-            if (hit.val) {
-                lowerStmts(arms[i].second->stmtsp(), env);
-            } else {
-                lowerCaseArms(arms, i + 1, defaultp, env);
-            }
-            return;
-        }
-        Env thenEnv = env;
-        Env elseEnv = env;
-        thenEnv.pending.clear();
-        elseEnv.pending.clear();
-        m_pathCond.emplace_back(hit, false);
-        lowerStmts(arms[i].second->stmtsp(), thenEnv);
-        m_pathCond.pop_back();
-        m_pathCond.emplace_back(hit, true);
-        lowerCaseArms(arms, i + 1, defaultp, elseEnv);
-        m_pathCond.pop_back();
-        mergeBranches(hit, thenEnv, elseEnv, env);
     }
 
     // ---- loops (sv_transform unroll_for_loop, generalised) ----
@@ -3015,6 +3270,7 @@ private:
             if (m_localKey.count(lp)) savedLocal.emplace_back(lp, m_localKey[lp]);
             const std::string key = prefix + sanitizeName(lp->prettyName());
             m_localKey[lp] = key;
+            m_localKeys.insert(key);
             m_widths[key] = lp->width();
         }
         std::string retKey;
@@ -3022,6 +3278,7 @@ private:
             if (m_localKey.count(retp)) savedLocal.emplace_back(retp, m_localKey[retp]);
             retKey = prefix + sanitizeName(retp->prettyName());
             m_localKey[retp] = retKey;
+            m_localKeys.insert(retKey);
             m_widths[retKey] = retp->width();
         }
         // Execute the body on a copy of the environment so returns fold locally
@@ -3068,8 +3325,14 @@ private:
         }
         for (const auto& kv : savedBind) m_bind[kv.first] = kv.second;
         for (const auto& kv : savedAlias) m_alias[kv.first] = kv.second;
-        for (AstVar* const lp : locals) m_localKey.erase(lp);
-        if (retp) m_localKey.erase(retp);
+        for (AstVar* const lp : locals) {
+            m_localKeys.erase(m_localKey.at(lp));
+            m_localKey.erase(lp);
+        }
+        if (retp) {
+            m_localKeys.erase(retKey);
+            m_localKey.erase(retp);
+        }
         for (const auto& kv : savedLocal) m_localKey[kv.first] = kv.second;
         --m_inlineDepth;
         if (retVarOut) *retVarOut = retp;
