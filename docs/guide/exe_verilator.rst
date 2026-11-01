@@ -1312,6 +1312,22 @@ Summary:
    in-memory AST, so no JSON tree is written unless :vlopt:`--json-only-output`
    is also given.
 
+   Every case statement is analysed before its hardware is chosen: whether
+   every selector value matches an item (full) and whether any value matches
+   two items (parallel).  A :code:`unique`, :code:`unique0` or
+   :code:`priority` keyword whose claim the analysis disproves is an error;
+   when the analysis cannot decide (labels that are not constants, or that
+   test too many selector bits), the keyword is trusted.  A parallel case
+   becomes a balanced mux tree, any other a priority chain; a full case drops
+   its unreachable default.  :code:`full_case`/:code:`parallel_case` comments
+   are ignored.
+
+   An :code:`always_comb` that does not assign a variable on every path is an
+   error, as it would need a latch.  :code:`always_latch` and :code:`always
+   @*` produce a latch enabled on the paths that assign; an
+   :code:`always_latch` that assigns on every path is emitted as
+   combinational logic.
+
 .. option:: --struct-only-xilinx-rtl
 
    With :vlopt:`--struct-only-output`, relabel the primitive cells to the
