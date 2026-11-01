@@ -1501,6 +1501,7 @@ private:
     struct Classification final {
         BlockKind kind = BlockKind::UNSYNTH;
         const AstVar* clockp = nullptr;
+        AstNodeExpr* clockExprp = nullptr;  // clock that is not a plain signal (posedge v[k])
         bool negedge = false;
         bool hasRst = false;
         bool rstAsync = false;
@@ -1508,7 +1509,21 @@ private:
         AstNodeExpr* rstCondp = nullptr;
         bool rstNegated = false;
         std::string reason;
+        bool neverFires = false;  // an edge on a constant: the block can be dropped safely
     };
+
+    // posedge v[k]: a one-bit constant select of a signal, as V3Const leaves a
+    // generate loop's lane_clk[g] or a vector's bit
+    static bool isBitOfSignal(const AstNodeExpr* ep) {
+        if (!ep || ep->width() != 1) return false;
+        if (const AstSel* const sp = VN_CAST(ep, Sel)) {
+            return VN_IS(sp->fromp(), VarRef) && VN_IS(sp->lsbp(), Const);
+        }
+        if (const AstArraySel* const ap = VN_CAST(ep, ArraySel)) {
+            return VN_IS(ap->fromp(), VarRef) && VN_IS(ap->bitp(), Const);
+        }
+        return false;
+    }
 
     Classification classify(AstAlways* ap) {
         Classification c;
@@ -1518,18 +1533,32 @@ private:
         case VAlwaysKwd::ALWAYS_LATCH: c.kind = BlockKind::LATCH; return c;
         default: break;
         }
+        // An edge is a plain signal (var set) or a one-bit select of one,
+        // posedge v[k] (var null, the select in exprs): a bit of a vector or
+        // array can clock a register but is never matched as a reset.
         std::vector<std::pair<const AstVar*, bool>> edges;  // (var, negedge)
+        std::vector<AstNodeExpr*> edgeExprs;  // parallel to edges: the item when not a plain signal
         int levels = 0;
         if (AstSenTree* const stp = ap->sentreep()) {
             for (AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
                 const AstVarRef* const vrp = VN_CAST(ip->sensp(), VarRef);
                 if (ip->edgeType() == VEdgeType::ET_POSEDGE
                     || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
-                    if (!vrp) {
-                        c.reason = "edge-sensitive item that is not a plain signal";
+                    const bool neg = ip->edgeType() == VEdgeType::ET_NEGEDGE;
+                    if (vrp) {
+                        edges.emplace_back(vrp->varp(), neg);
+                        edgeExprs.push_back(nullptr);
+                    } else if (isBitOfSignal(ip->sensp())) {
+                        edges.emplace_back(nullptr, neg);
+                        edgeExprs.push_back(ip->sensp());
+                    } else if (VN_IS(ip->sensp(), Const)) {
+                        c.reason = "edge of a constant (the block never fires)";
+                        c.neverFires = true;
+                        return c;
+                    } else {
+                        c.reason = "edge-sensitive item that is not a signal or a bit of one";
                         return c;
                     }
-                    edges.emplace_back(vrp->varp(), ip->edgeType() == VEdgeType::ET_NEGEDGE);
                 } else {
                     ++levels;
                 }
@@ -1549,10 +1578,11 @@ private:
         if (edges.size() == 1) {
             c.kind = BlockKind::SEQ;
             c.clockp = edges[0].first;
+            c.clockExprp = edgeExprs[0];
             c.negedge = edges[0].second;
             // One edge: reset (if any) is synchronous, taken from the body chain
             for (const ResetLink& r : bodyResets) {
-                if (r.varp != c.clockp) {
+                if (!c.clockp || r.varp != c.clockp) {
                     c.hasRst = true;
                     c.rstAsync = false;
                     c.rstVarp = r.varp;
@@ -1568,21 +1598,26 @@ private:
         std::vector<ResetLink> asyncResets;
         for (const ResetLink& r : bodyResets) {
             for (const auto& e : edges) {
-                if (e.first == r.varp) {
+                if (e.first && e.first == r.varp) {
                     asyncResets.push_back(r);
                     break;
                 }
             }
         }
         std::vector<std::pair<const AstVar*, bool>> clocks;
-        for (const auto& e : edges) {
+        std::vector<AstNodeExpr*> clockExprs;
+        for (size_t i = 0; i < edges.size(); ++i) {
             bool isRst = false;
-            for (const ResetLink& r : asyncResets) isRst |= (r.varp == e.first);
-            if (!isRst) clocks.push_back(e);
+            for (const ResetLink& r : asyncResets) isRst |= edges[i].first && r.varp == edges[i].first;
+            if (!isRst) {
+                clocks.push_back(edges[i]);
+                clockExprs.push_back(edgeExprs[i]);
+            }
         }
         if (clocks.size() == 1 && !asyncResets.empty()) {
             c.kind = BlockKind::SEQ;
             c.clockp = clocks[0].first;
+            c.clockExprp = clockExprs[0];
             c.negedge = clocks[0].second;
             c.hasRst = true;
             c.rstAsync = true;
@@ -1617,6 +1652,14 @@ private:
         }
         if (cls.kind == BlockKind::UNSYNTH) {
             warnNode(ap, "unsynthesizable always block: " + cls.reason);
+            // The block's registers would be dropped and their loads left
+            // floating: stop here rather than hand a gutted netlist to P&R.
+            if (cls.neverFires) {
+                std::cerr << "%Warning-STRUCT: " << ap->fileline()->ascii()
+                          << ": always block dropped: " << cls.reason << "\n";
+            } else {
+                ap->v3error("Synthesis would drop this always block: " << cls.reason);
+            }
             SItem it;
             it.kind = SItem::COMMENT;
             it.text = "/* unsynthesizable always block: " + cls.reason + " */";
@@ -1646,7 +1689,8 @@ private:
         ++m_alwaysSeq;
         Env env;
         if (m_seq) {
-            m_clk = identExpr(varName(cls.clockp), 1);
+            m_clk = cls.clockExprp ? materialize(lowerExpr(cls.clockExprp, env))
+                                   : identExpr(varName(cls.clockp), 1);
             m_negedge = cls.negedge;
             if (cls.hasRst) {
                 m_hasRst = true;
