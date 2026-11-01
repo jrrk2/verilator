@@ -299,6 +299,8 @@ class StructModule final {
     bool m_hasRst = false;
     bool m_rstAsync = false;
     SExpr m_rst;  // lowered reset predicate (active-high)
+    SExpr m_rstRaw;  // the predicate as written, before the negation below
+    bool m_rstNegated = false;  // reset is the ELSE of m_rstRaw (`if (rst_n) ... else <reset>`)
     const AstVar* m_rstVarp = nullptr;
     AstNodeExpr* m_rstCondp = nullptr;
     std::vector<std::pair<SExpr, bool>> m_pathCond;  // (cond, negated)
@@ -306,15 +308,18 @@ class StructModule final {
     std::vector<std::pair<std::string, int>> m_regsInBlock;
 
     static constexpr int MEMORY_THRESHOLD_BITS = 128;  // sv_memory.memory_threshold
-    // Arrays above the threshold but written from more than two places become
+    // Arrays above the threshold but with more than one write port become
     // registers up to this size; larger ones stay memories
     static constexpr int REGISTER_ARRAY_MAX_BITS = 4096;
-    // The places that write unpacked array varp: assignments whose target is an
-    // element (or a bit range of one) of it, outside initial blocks.  One inside a loop writes as many
+    // The write ports unpacked array varp will have: assignments whose target is an
+    // element (or a bit range of one) of it, outside initial blocks, with the
+    // two branches of one if counted once.  One inside a loop writes as many
     // elements as the array has in a single cycle (a reset clearing a register
     // file), which no memory port does, so it counts as that many.
-    int arrayWriteSites(const AstVar* varp, int depth) const {
+    int arrayWriteSites(const AstVar* varp, int depth, bool* twoBlocksp = nullptr) const {
         int n = 0;
+        std::vector<BranchPath> ports;  // one per write port: the path it is under
+        std::vector<const AstNode*> procs;  // and the block it is written in
         m_modp->foreach([&](const AstNodeAssign* ap) {
             const AstNode* lhs = ap->lhsp();
             for (;;) {
@@ -329,14 +334,84 @@ class StructModule final {
             const AstNodeVarRef* const rp = VN_CAST(lhs, NodeVarRef);
             if (!rp || rp->varp() != varp) return;
             bool inLoop = false, initial = false;
+            const AstNode* procp = nullptr;
             for (const AstNode* up = ap->backp(); up && !VN_IS(up, NodeModule); up = up->backp()) {
                 if (VN_IS(up, Loop) || VN_IS(up, Repeat)) inLoop = true;
+                if (!procp && VN_IS(up, NodeProcedure)) procp = up;
                 // an initial block sets the contents, it is not a write port (a ROM's table)
                 if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic)) initial = true;
             }
-            if (!initial) n += inLoop ? depth : 1;
+            if (initial) return;
+            if (inLoop) {
+                n += depth;
+                return;
+            }
+            // Two writes in the two branches of one if are one write port once
+            // lowered (assignTo merges them, keeping what their paths have in
+            // common); count them the same way, so an exclusive pair still
+            // becomes a memory and a genuine second write port does not.
+            const BranchPath w = branchPath(ap);
+            for (BranchPath& o : ports) {
+                size_t split = 0;
+                bool exclusive = false;
+                for (; split < std::min(o.size(), w.size()); ++split) {
+                    if (o[split].first != w[split].first) break;
+                    if (o[split].second != w[split].second) { exclusive = true; break; }
+                }
+                if (exclusive) {
+                    o.resize(split);
+                    return;
+                }
+            }
+            ports.push_back(w);
+            procs.push_back(procp);
         });
-        return n;
+        // two ports, one in each of two blocks: the true dual port idiom
+        if (twoBlocksp) *twoBlocksp = n == 0 && ports.size() == 2 && procs[0] != procs[1];
+        return n + static_cast<int>(ports.size());
+    }
+    // The branches a statement sits in, outermost first, as lowering sees them
+    // (m_pathCond): (if, in its else), and for a case arm the chain lowerCase
+    // builds -- the else of every earlier arm, then the then of its own; the
+    // default arm is in the else of them all.
+    using BranchPath = std::vector<std::pair<const AstNode*, bool>>;
+    static BranchPath branchPath(const AstNode* np) {
+        BranchPath path;  // innermost first until the reverse
+        const AstNode* headp = np;
+        while (true) {
+            // back to the head of this statement list; its backp is the parent
+            while (headp->backp() && headp->backp()->nextp() == headp) headp = headp->backp();
+            const AstNode* const upp = headp->backp();
+            if (!upp || VN_IS(upp, NodeModule)) break;
+            if (const AstNodeIf* const ifp = VN_CAST(upp, NodeIf)) {
+                if (headp == ifp->thensp()) path.emplace_back(ifp, false);
+                else if (headp == ifp->elsesp()) path.emplace_back(ifp, true);
+            } else if (const AstCaseItem* const itemp = VN_CAST(upp, CaseItem)) {
+                if (headp == itemp->stmtsp()) {
+                    const AstNode* listp = itemp;
+                    while (listp->backp() && listp->backp()->nextp() == listp) listp = listp->backp();
+                    if (const AstCase* const cp = VN_CAST(listp->backp(), Case)) {
+                        BranchPath arms;  // outermost first
+                        for (const AstCaseItem* ip = cp->itemsp(); ip && ip != itemp;
+                             ip = VN_AS(ip->nextp(), CaseItem)) {
+                            if (!ip->isDefault()) arms.emplace_back(ip, true);
+                        }
+                        if (!itemp->isDefault()) {
+                            arms.emplace_back(itemp, false);
+                        } else {
+                            for (const AstCaseItem* ip = VN_AS(itemp->nextp(), CaseItem); ip;
+                                 ip = VN_AS(ip->nextp(), CaseItem)) {
+                                arms.emplace_back(ip, true);
+                            }
+                        }
+                        path.insert(path.end(), arms.rbegin(), arms.rend());
+                    }
+                }
+            }
+            headp = upp;
+        }
+        std::reverse(path.begin(), path.end());
+        return path;
     }
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
@@ -603,15 +678,22 @@ private:
         const int elemWidth = elemp->width();
         d.width = elemWidth;
         d.isSigned = elemp->isSigned();
-        if (depth > 1) {
+        // A one-element unpacked array (`logic [63:0] x [N]` with N = 1) is still
+        // an array: its accesses are element selects, x[0], which as a plain
+        // vector would read bit 0
+        if (depth > 1 || VN_IS(varp->dtypep()->skipRefp(), UnpackArrayDType)) {
             // Unpacked array (sv_memory.detect_memories)
             const int bits = depth * elemWidth;
-            // A memory primitive has at most two write ports: an array written
-            // from more places (a register file cleared by a reset loop, or
-            // loaded at constant addresses as well as written by the core) is
-            // registers, as a small array is, unless it is too big for that
+            // A block RAM takes one write port, or two as a true dual port
+            // (two clocked blocks, each writing and reading its own address);
+            // the mapper drops any other 2-write memory.  An array with more
+            // (written at two addresses in one block, cleared by a reset loop,
+            // or loaded at constant addresses as well as written by the core)
+            // is registers, as a small array is, unless it is too big for that
+            bool twoBlocks = false;
+            const int ports = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
             if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS
-                && (bits > REGISTER_ARRAY_MAX_BITS || arrayWriteSites(varp, depth) <= 2)) {
+                && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)) {
                 SMem m;
                 m.name = name;
                 m.depth = depth;
@@ -1347,6 +1429,29 @@ private:
         AstNodeExpr* condp;
         bool negated;  // reset branch is the ELSE of condp (V3Const swapped `if (!rst)`)
     };
+    // `r & x`, `~r & x`, `r | x` or `~r | x` (either operand order), 1 bit wide:
+    // what V3Const leaves of a 1-bit register's `if (r) q <= C; else q <= x;`.
+    // rvp is r, rneg whether it appears inverted, xp the other operand.
+    static bool foldedResetGate(AstNodeExpr* ep, AstVarRef*& rvp, bool& rneg, bool& isAnd,
+                                AstNodeExpr** xpp = nullptr) {
+        if (!ep || ep->width() != 1 || !(VN_IS(ep, And) || VN_IS(ep, Or))) return false;
+        AstNodeBiop* const bp = VN_AS(ep, NodeBiop);
+        isAnd = VN_IS(ep, And);
+        for (int side = 0; side < 2; ++side) {
+            AstNodeExpr* const rp = side ? bp->rhsp() : bp->lhsp();
+            rneg = false;
+            rvp = VN_CAST(rp, VarRef);
+            if (!rvp && (VN_IS(rp, Not) || VN_IS(rp, LogNot))) {
+                rvp = VN_CAST(VN_AS(rp, NodeUniop)->lhsp(), VarRef);
+                rneg = true;
+            }
+            if (rvp && rvp->width() == 1) {
+                if (xpp) *xpp = side ? bp->lhsp() : bp->rhsp();
+                return true;
+            }
+        }
+        return false;
+    }
     static void collectResetChain(AstNode* nodep, std::vector<ResetLink>& out) {
         if (!nodep) return;
         if (const AstBegin* const bp = VN_CAST(nodep, Begin)) {
@@ -1367,6 +1472,14 @@ private:
         }
         if (const AstNodeAssign* const ap = VN_CAST(nodep, NodeAssign)) {
             AstNodeExpr* ep = ap->rhsp();
+            // a 1-bit `if (!rst) q <= C; else q <= x;` that V3Const folded to a gate
+            AstVarRef* rvp = nullptr;
+            bool rneg = false, isAnd = false;
+            if (foldedResetGate(ep, rvp, rneg, isAnd)) {
+                // And(r, x) / Or(~r, x) reset while r is 0: the else of `r`
+                out.push_back({rvp->varp(), rvp, isAnd != rneg});
+                return;
+            }
             while (AstCond* const cp = VN_CAST(ep, Cond)) {
                 const AstVar* const v = predicateVar(cp->condp());
                 if (!v) break;
@@ -1518,6 +1631,8 @@ private:
         VL_RESTORER(m_hasRst);
         VL_RESTORER(m_rstAsync);
         VL_RESTORER_COPY(m_rst);
+        VL_RESTORER_COPY(m_rstRaw);
+        VL_RESTORER(m_rstNegated);
         VL_RESTORER(m_rstVarp);
         VL_RESTORER(m_rstCondp);
         m_seq = cls.kind == BlockKind::SEQ;
@@ -1539,6 +1654,8 @@ private:
                 m_rstVarp = cls.rstVarp;
                 m_rstCondp = cls.rstCondp;
                 SExpr r = toBool(lowerExpr(cls.rstCondp, env));
+                m_rstRaw = materialize(r);
+                m_rstNegated = cls.rstNegated;
                 if (cls.rstNegated) r = notBit(r);
                 m_rst = materialize(r);
             }
@@ -1586,6 +1703,15 @@ private:
                                && rit->second.in1.text == key) {
                         // reset branch holds: no reset on this register
                         d = rit->second.in0;
+                    } else if (rit != m_muxes.end() && m_rstNegated
+                               && rit->second.sel.text == m_rstRaw.text && rit->second.in0.hasVal) {
+                        // `q <= rst_n ? x : C`: the reset is the mux's other arm
+                        resetVal = rit->second.in0.val;
+                        d = rit->second.in1;
+                        useRst = true;
+                    } else if (rit != m_muxes.end() && m_rstNegated
+                               && rit->second.sel.text == m_rstRaw.text && rit->second.in0.text == key) {
+                        d = rit->second.in1;
                     }
                 }
                 // `if (en) q <= d;` -> dff_en with EN; nested holds
@@ -3061,6 +3187,21 @@ private:
             return r;
         }
         if (AstNodeUniop* const up = VN_CAST(nodep, NodeUniop)) return lowerUniop(up, env);
+        if (m_seq && m_rstAsync && width == 1) {
+            // The folded reset of a 1-bit register (see foldedResetGate): lower
+            // it as the mux it was, so finishBlock finds the reset and the
+            // register gets its asynchronous reset pin
+            AstVarRef* rvp = nullptr;
+            AstNodeExpr* xp = nullptr;
+            bool rneg = false, isAnd = false;
+            if (foldedResetGate(nodep, rvp, rneg, isAnd, &xp) && rvp->varp() == m_rstVarp) {
+                const SExpr r = toBool(lowerVarRef(rvp, env));
+                const SExpr x = lowerExpr(xp, env);
+                const SExpr c = constExpr(isAnd ? 0 : 1, 1);
+                // And(r): r ? x : 0   And(~r): r ? 0 : x   Or(r): r ? 1 : x   Or(~r): r ? x : 1
+                return isAnd != rneg ? genMux(r, c, x, 1) : genMux(r, x, c, 1);
+            }
+        }
         if (AstNodeBiop* const bp = VN_CAST(nodep, NodeBiop)) return lowerBiop(bp, env);
         if (VN_IS(nodep, CastSize) || VN_IS(nodep, CastWrap)) {
             AstNodeExpr* const inner = VN_IS(nodep, CastSize)

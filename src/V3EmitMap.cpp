@@ -216,6 +216,35 @@ public:
         m_pinned.insert(l >> 1);
         return l;
     }
+    // A partial product whose A or B slice is constant 0 once the netlist is
+    // elaborated is itself 0.  mul() skips such slices only when they are
+    // literal 0 as it builds them, but an operand bit is often still an
+    // unbound placeholder then (a zero-extended operand, an operand read
+    // through a net), bound to 0 by equate() later.  After elaboration every
+    // alias is known: drop those DSP48E1s and tie their product bits to 0.
+    int pruneDsps() {
+        const auto zero = [&](const Vec& v) {
+            for (const int l : v) if (resolve(l) != 0) return false;
+            return true;
+        };
+        size_t k = 0;
+        int dropped = 0;
+        for (size_t i = 0; i < m_dsps.size(); ++i) {
+            if (zero(m_dsps[i].a) || zero(m_dsps[i].b)) {
+                for (const int l : m_dsps[i].p) {
+                    const int v = l >> 1;  // pinnedVar(): an unaliased placeholder
+                    m_pinned.erase(v);
+                    m_alias[v] = l & 1;  // constant 0 (complemented if l was)
+                }
+                ++dropped;
+                continue;
+            }
+            if (k != i) m_dsps[k] = std::move(m_dsps[i]);
+            ++k;
+        }
+        m_dsps.resize(k);
+        return dropped;
+    }
     static bool allConst(const Vec& v) {
         for (const int l : v) if ((l >> 1) != 0) return false;
         return true;
@@ -439,18 +468,28 @@ public:
         std::set<std::string> bb;
         svs_netlist::Elaborator<AigB> e{m_aig, mods, bb, true};
         e.run(m_top, m_d);
+        const int deadDsps = m_aig.pruneDsps();
+        if (deadDsps && v3Global.opt.structOnlyReport())
+            std::cerr << "%Info: map-prune: " << deadDsps
+                      << " DSP48E1 partial products with a constant-0 operand removed\n";
         buildPOs();
         const std::string base = filename.empty() ? v3Global.opt.mapOnlyEdif() : filename;
         const std::string aig = base + ".aig";
         const std::string blif = base + ".blif";
-        writeAiger(aig);
-        runAbc(aig, blif);
         std::map<std::string, Lut> luts;
         std::vector<std::string> lutOrder;
-        readBlif(blif, luts, lutOrder);
-        if (!v3Global.opt.mapOnlyKeepTemps()) {
-            unlink(aig.c_str());
-            unlink(blif.c_str());
+        // Nothing comes out of the fabric (no top outputs, register inputs or
+        // hard-cell pins: a module with no outputs, or one whose logic all
+        // folded away): no LUTs to map, and ABC asserts on a network with no
+        // outputs (Abc_NtkCheckNames), so it is not run
+        if (!m_po.empty()) {
+            writeAiger(aig);
+            runAbc(aig, blif);
+            readBlif(blif, luts, lutOrder);
+            if (!v3Global.opt.mapOnlyKeepTemps()) {
+                unlink(aig.c_str());
+                unlink(blif.c_str());
+            }
         }
         emitJson(filename, luts, lutOrder);
         for (const std::string& w : m_warnings) std::cerr << "%Warning-MAP: " << w << "\n";
@@ -1413,7 +1452,7 @@ private:
             body << ");\n";
         }
         std::ofstream os{path};
-        os << "// verilator --map-only-verilog: the mapped netlist of " << m_top << "\n";
+        os << "// The mapped netlist of " << m_top << " (Verilator --map-only-verilog)\n";
         os << "module " << verilogId(m_top) << " (";
         for (size_t i = 0; i < m_portRecs.size(); ++i) os << (i ? ", " : "") << verilogId(m_portRecs[i].name);
         os << ");\n";
