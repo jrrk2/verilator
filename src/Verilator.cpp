@@ -154,6 +154,7 @@ static void emitSerialized() VL_MT_DISABLED {
         || !v3Global.opt.mapOnlyVerilog().empty()) {
         V3EmitMap::emit(v3Global.opt.mapOnlyOutput());
     }
+    V3Error::abortIfErrors();  // a block synthesis could not lower fails the run
     if (v3Global.opt.jsonOnly() && v3Global.opt.jsonTreeWanted()) emitJson();
 }
 
