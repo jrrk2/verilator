@@ -787,6 +787,11 @@ struct Design {
         int en = 0, rst = 0, clk = 0;  // literals (en/rst may be constants)
         bool async = false, negedge = false;
         bool latch = false;  // latch_en: transparent while en, no clock
+        // Original bit index of each q/d bit once some bits were taken out
+        // (merged into an equivalent register, absorbed into a DSP48E1 P
+        // register); empty while the register is whole.  resetVal / initVal
+        // stay indexed by the original bit.
+        std::vector<int> bitNo;
         unsigned long long resetVal = 0;
         unsigned long long initVal = 0;  // power-up value (INIT_VAL)
     };
