@@ -763,13 +763,14 @@ public:
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }
     bool structOnlyReport() const { return m_structOnlyReport; }
+    // True if a synthesis netlist (structural, BIR or mapped) is requested
+    bool synthOnly() const {
+        return !m_structOnlyOutput.empty() || !m_birOnlyOutput.empty() || !m_mapOnlyOutput.empty()
+               || !m_mapOnlyEdif.empty() || !m_mapOnlyVerilog.empty();
+    }
     // True if the --json-only tree file itself should be written: always
     // unless the structural backend is the only requested serialization
-    bool jsonTreeWanted() const {
-        return (m_structOnlyOutput.empty() && m_birOnlyOutput.empty() && m_mapOnlyOutput.empty()
-                && m_mapOnlyEdif.empty() && m_mapOnlyVerilog.empty())
-               || !m_jsonOnlyOutput.empty();
-    }
+    bool jsonTreeWanted() const { return !synthOnly() || !m_jsonOnlyOutput.empty(); }
     string l2Name() const { return m_l2Name; }
     string libCreate() const { return m_libCreate; }
     string libCreateName(bool shared) const {

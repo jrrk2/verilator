@@ -283,17 +283,25 @@ class StructModule final {
     int m_inlineDepth = 0;
     int m_callSeq = 0;
     int m_alwaysSeq = 0;
+    int m_sharedOps = 0;  // operators merged by shareOperators()
     std::string m_genPrefix;
     // mux bookkeeping for enable / reset-value folding
     struct MuxInfo final {
         SExpr sel, in0, in1;
     };
     std::unordered_map<std::string, MuxInfo> m_muxes;
+    // Operator cells already built, by primitive, width and operand text:
+    // nets are single-assignment, so the same key is the same value
+    std::unordered_map<std::string, SExpr> m_opCache;
     std::unordered_map<std::string, std::pair<const AstVar*, size_t>> m_readPorts;  // rdata ident -> (mem, port)
     std::vector<SDeferredDff> m_deferred;
     // Procedural context
     bool m_seq = false;
     bool m_latch = false;
+    bool m_comb = false;  // combinational always block: always_comb or always @*
+    bool m_alwaysComb = false;  // ... written as always_comb, which must not need a latch
+    const AstAlways* m_alwaysp = nullptr;  // block being lowered
+    std::unordered_set<std::string> m_localKeys;  // keys of inlined function locals
     SExpr m_clk;
     bool m_negedge = false;
     bool m_hasRst = false;
@@ -429,6 +437,7 @@ public:
         lowerPass(m_modp->stmtsp());
         emitMemories();
         fillStaticInits();
+        shareOperators();
         dce();
         if (m_xilinx) xilinxRelabel();
         print(os);
@@ -542,9 +551,21 @@ private:
     }
 
     // ---- primitives (sv_tran_struct gen_binary_op / gen_unary_op / gen_mux / gen_dff_en) ----
+    static bool commutative(const std::string& prim) {
+        return prim == "adder" || prim == "multiplier" || prim == "multiplier_signed"
+               || prim == "bitwise_and" || prim == "bitwise_or" || prim == "bitwise_xor"
+               || prim == "comparator_eq" || prim == "comparator_neq";
+    }
     SExpr genBinary(const std::string& prim, const SExpr& a, const SExpr& b, int opWidth,
                     int outWidth) {
+        const bool swap = commutative(prim) && b.text < a.text;
+        const std::string key = prim + "|" + std::to_string(opWidth) + "|"
+                                + std::to_string(outWidth) + "|" + (swap ? b.text : a.text) + "|"
+                                + (swap ? a.text : b.text);
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(outWidth);
+        m_opCache.emplace(key, out);
         SItem& it = addCell(prim, newName("op"));
         it.params = {{"WIDTH", std::to_string(opWidth)}};
         pinIn(it, "a", a);
@@ -553,7 +574,12 @@ private:
         return out;
     }
     SExpr genUnary(const std::string& prim, const SExpr& a, int opWidth, int outWidth) {
+        const std::string key = prim + "|" + std::to_string(opWidth) + "|"
+                                + std::to_string(outWidth) + "|" + a.text;
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(outWidth);
+        m_opCache.emplace(key, out);
         SItem& it = addCell(prim, newName("op"));
         if (prim != "logical_not") it.params = {{"WIDTH", std::to_string(opWidth)}};
         pinIn(it, "in", a);
@@ -563,7 +589,12 @@ private:
     SExpr genMux(const SExpr& sel, const SExpr& in0, const SExpr& in1, int width) {
         if (in0.text == in1.text) return in0;
         if (sel.hasVal) return sel.val ? in1 : in0;
+        const std::string key = "mux2|" + std::to_string(width) + "|" + sel.text + "|"
+                                + in0.text + "|" + in1.text;
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(width);
+        m_opCache.emplace(key, out);
         SItem& it = addCell("mux2", newName("mux"));
         it.params = {{"WIDTH", std::to_string(width)}};
         pinIn(it, "sel", sel);
@@ -1679,6 +1710,9 @@ private:
         }
         VL_RESTORER(m_seq);
         VL_RESTORER(m_latch);
+        VL_RESTORER(m_comb);
+        VL_RESTORER(m_alwaysComb);
+        VL_RESTORER(m_alwaysp);
         VL_RESTORER_COPY(m_clk);
         VL_RESTORER(m_negedge);
         VL_RESTORER(m_hasRst);
@@ -1690,6 +1724,9 @@ private:
         VL_RESTORER(m_rstCondp);
         m_seq = cls.kind == BlockKind::SEQ;
         m_latch = cls.kind == BlockKind::LATCH;
+        m_comb = cls.kind == BlockKind::COMB;
+        m_alwaysComb = ap->keyword() == VAlwaysKwd::ALWAYS_COMB;
+        m_alwaysp = ap;
         m_hasRst = false;
         m_rstAsync = false;
         m_rstVarp = nullptr;
@@ -1844,18 +1881,72 @@ private:
                     }
                 }
                 genDff(key, qRefs, d, en, width, resetVal, useRst);
-            } else if (m_latch) {
-                const auto mit = m_muxes.find(val.text);
-                if (mit != m_muxes.end() && mit->second.in0.text == key) {
-                    genLatch(key, qRefs, mit->second.sel, mit->second.in1, width);
+            } else if (m_latch || m_comb) {
+                std::map<std::string, HoldSplit> memo;
+                const HoldSplit hs = splitHold(val, key, memo);
+                if (!hs.holds) {
+                    if (m_latch) {
+                        warnNode(m_alwaysp, "always_latch assigns " + key
+                                                + " on every path; no latch needed, emitted"
+                                                  " as combinational logic");
+                    }
+                    addAssign(key, val, qRefs);
+                } else if (m_alwaysComb) {
+                    m_alwaysp->v3error("always_comb does not assign '"
+                                       << key << "' on every path, so it would need a latch"
+                                       << " (IEEE 1800-2023 9.2.2.2)\n"
+                                       << m_alwaysp->warnMore()
+                                       << "... Suggest assigning it on every path, or using"
+                                          " always_latch");
+                    addAssign(key, hs.d, qRefs);  // keep the netlist well formed
                 } else {
-                    warn("always_latch: no enable structure for " + key + ", using en=1");
-                    genLatch(key, qRefs, constExpr(1, 1), val, width);
+                    if (m_comb) {
+                        warnNode(m_alwaysp, "latch inferred for " + key
+                                                + ": not assigned on every path of a"
+                                                  " combinational always block");
+                    }
+                    genLatch(key, qRefs, materialize(hs.en), hs.d, width);
                 }
             } else {
                 addAssign(key, val, qRefs);
             }
         }
+    }
+
+    // A combinational or latch block's final value for `key` split into where
+    // the block assigns it (en) and what it assigns there (d).  The paths that
+    // hold are the mux-tree leaves that are `key` itself (priorNext).
+    struct HoldSplit final {
+        SExpr en;  // 1 where the block assigns `key`
+        SExpr d;  // value assigned where en is 1
+        bool holds = false;  // some path keeps the old value
+    };
+    HoldSplit splitHold(const SExpr& v, const std::string& key,
+                        std::map<std::string, HoldSplit>& memo) {
+        if (v.text == key) return {constExpr(0, 1), v, true};
+        const auto mit = m_muxes.find(v.text);
+        if (mit == m_muxes.end()) return {constExpr(1, 1), v, false};
+        const auto cit = memo.find(v.text);  // mux trees are DAGs
+        if (cit != memo.end()) return cit->second;
+        const MuxInfo mux = mit->second;  // copied: genMux below inserts into m_muxes
+        const HoldSplit a = splitHold(mux.in0, key, memo);
+        const HoldSplit b = splitHold(mux.in1, key, memo);
+        HoldSplit r{constExpr(1, 1), v, false};
+        if (a.holds || b.holds) {
+            r.holds = true;
+            if (a.en.hasVal && b.en.hasVal) {
+                // Arms both const and different (equal would have merged): sel or !sel
+                r.en = b.en.val ? mux.sel : notBit(mux.sel);
+            } else {
+                r.en = genMux(mux.sel, a.en, b.en, 1);
+            }
+            // Where an arm only holds, d is don't-care there: take the other arm
+            const bool aOnlyHolds = a.en.hasVal && !a.en.val;
+            const bool bOnlyHolds = b.en.hasVal && !b.en.val;
+            r.d = aOnlyHolds ? b.d : bOnlyHolds ? a.d : genMux(mux.sel, a.d, b.d, v.width);
+        }
+        memo.emplace(v.text, r);
+        return r;
     }
 
     // ---- memory transformations ahead of emission ----
@@ -2813,7 +2904,11 @@ private:
                 if (wit != env.next.end()) return sliceOf(wit->second, lo, w);
             }
         }
-        if (m_seq || m_latch) return readKey(key, env, false);  // hold
+        // Hold.  In a combinational block finishBlock finds the paths that
+        // hold and decides whether they are a latch or an error.
+        if (m_seq || m_latch || (m_comb && !m_localKeys.count(rootIdent(key)))) {
+            return readKey(key, env, false);
+        }
         warn("Incomplete if for " + key + " - using default 0");
         return constExpr(0, widthOfKey(key));
     }
@@ -2856,19 +2951,250 @@ private:
         }
     }
 
-    // case: each item becomes (expr == c1) | (expr == c2) ... ; items are
-    // folded from the last to the first into a mux chain
-    // (sv_tran_struct structural_case build_mux_chain), via the generic
-    // if-merge so blocking semantics stay right.
+    // ---- case: static analysis, keyword check, then structure ----
+    //
+    // The labels are analysed before any hardware is built.  "Full" means
+    // every selector value matches some label; "parallel" means no value
+    // matches labels of two different items.  A unique/unique0/priority
+    // keyword is a claim about those properties: when the analysis decides a
+    // property the claim is checked against it and a false claim is an
+    // error; only when the analysis cannot decide is the claim trusted.
+    // full_case/parallel_case comments are not claims the netlist honours.
+    //
+    // Structure: every item becomes a hit signal (expr == c1) | (expr == c2)
+    // ...  A case that is not parallel keeps its priority as a mux chain in
+    // item order.  A parallel case is a balanced tree, each node selecting
+    // on whether any item of its left half hits.  A full case tests no hit
+    // on its last path, and a default it can never reach is dropped; a case
+    // that is not full falls through to its default or, without one, holds.
+    // Everything goes through the generic if-merge so blocking semantics
+    // stay right.
+    enum class CaseProp : uint8_t { NO, YES, UNKNOWN };
+    struct CaseFacts final {
+        CaseProp full = CaseProp::UNKNOWN;  // ignoring any default
+        CaseProp parallel = CaseProp::UNKNOWN;
+        uint64_t unmatched = 0;  // a value no label matches, when full is NO
+        uint64_t overlap = 0;  // a value two items match, when parallel is NO
+    };
+    // A constant label as the selector values it matches: (v & mask) == value
+    struct CaseCube final {
+        uint64_t mask;
+        uint64_t value;
+        int item;  // index of its case item
+    };
+    // Labels that test at most this many selector bits between them are
+    // decided by visiting every combination of those bits
+    static constexpr int CASE_ENUMERATE_MAX_BITS = 16;
+
+    // False when a label is not a constant the analysis models (a variable,
+    // an inside range, or X/Z bits that are not wildcards and so never match
+    // 2-state hardware).  Wildcards follow caseMatch.
+    static bool caseCubes(const AstCase* cp, int width, std::vector<CaseCube>& cubes) {
+        int item = 0;
+        for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem), ++item) {
+            if (ip->isDefault()) continue;
+            for (AstNodeExpr* condp = ip->condsp(); condp;
+                 condp = VN_AS(condp->nextp(), NodeExpr)) {
+                const AstConst* const kp = VN_CAST(condp, Const);
+                if (!kp || kp->num().width() < width) return false;
+                const V3Number& num = kp->num();
+                uint64_t mask = 0;
+                uint64_t value = 0;
+                for (int b = 0; b < width; ++b) {
+                    const bool wild = cp->casex() ? num.bitIsXZ(b) : cp->casez() && num.bitIsZ(b);
+                    if (wild) continue;
+                    if (num.bitIsXZ(b)) return false;
+                    mask |= 1ULL << b;
+                    if (num.bitIs1(b)) value |= 1ULL << b;
+                }
+                cubes.push_back({mask, value, item});
+            }
+        }
+        return true;
+    }
+    static CaseFacts analyzeCase(const AstCase* cp) {
+        CaseFacts f;
+        const int width = cp->exprp()->width();
+        std::vector<CaseCube> cubes;
+        if (width > 64 || !caseCubes(cp, width, cubes)) return f;
+        // Bits no label tests cannot change which labels match
+        std::vector<int> tested;
+        uint64_t testedMask = 0;
+        for (const CaseCube& c : cubes) testedMask |= c.mask;
+        for (int b = 0; b < width; ++b) {
+            if ((testedMask >> b) & 1) tested.push_back(b);
+        }
+        if (static_cast<int>(tested.size()) <= CASE_ENUMERATE_MAX_BITS) {
+            f.full = CaseProp::YES;
+            f.parallel = CaseProp::YES;
+            for (uint64_t k = 0; k < (1ULL << tested.size()); ++k) {
+                uint64_t v = 0;
+                for (size_t i = 0; i < tested.size(); ++i) {
+                    if ((k >> i) & 1) v |= 1ULL << tested[i];
+                }
+                int firstItem = -1;
+                bool twoItems = false;
+                for (const CaseCube& c : cubes) {
+                    if ((v & c.mask) != c.value) continue;
+                    if (firstItem < 0) {
+                        firstItem = c.item;
+                    } else if (c.item != firstItem) {
+                        twoItems = true;
+                        break;
+                    }
+                }
+                if (firstItem < 0 && f.full == CaseProp::YES) {
+                    f.full = CaseProp::NO;
+                    f.unmatched = v;
+                }
+                if (twoItems && f.parallel == CaseProp::YES) {
+                    f.parallel = CaseProp::NO;
+                    f.overlap = v;
+                }
+            }
+            return f;
+        }
+        // Otherwise decided only when every label is an exact value.
+        // Fewer labels than 2^width values cannot be full; sorting finds
+        // values that two items share.
+        const uint64_t all = width == 64 ? ~0ULL : (1ULL << width) - 1;
+        for (const CaseCube& c : cubes) {
+            if (c.mask != all) return f;
+        }
+        std::sort(cubes.begin(), cubes.end(),
+                  [](const CaseCube& a, const CaseCube& b) { return a.value < b.value; });
+        f.full = CaseProp::NO;
+        f.parallel = CaseProp::YES;
+        uint64_t expect = 0;  // smallest value not yet seen
+        bool foundGap = false;
+        for (size_t i = 0; i < cubes.size(); ++i) {
+            if (!foundGap && cubes[i].value > expect) foundGap = true;
+            if (!foundGap && cubes[i].value == expect) ++expect;
+            if (i && cubes[i].value == cubes[i - 1].value && cubes[i].item != cubes[i - 1].item
+                && f.parallel == CaseProp::YES) {
+                f.parallel = CaseProp::NO;
+                f.overlap = cubes[i].value;
+            }
+        }
+        f.unmatched = expect;
+        return f;
+    }
+    // Check the case's keyword against what the analysis proved and decide
+    // which properties the structure may rely on
+    void checkCaseKeyword(AstCase* cp, const CaseFacts& f, bool hasDefault, bool& full,
+                          bool& parallel) {
+        const bool claimsFull = cp->uniquePragma() || cp->priorityPragma();
+        const bool claimsParallel = cp->uniquePragma() || cp->unique0Pragma();
+        const std::string kw = cp->uniquePragma()    ? "unique"
+                               : cp->unique0Pragma() ? "unique0"
+                                                     : "priority";
+        const int width = cp->exprp()->width();
+        if (claimsParallel && f.parallel == CaseProp::NO) {
+            cp->v3error("'" << kw << " case' items overlap: selector value "
+                            << constText(f.overlap, width) << " matches more than one item"
+                            << " (IEEE 1800-2023 12.5.3)");
+        }
+        if (claimsFull && !hasDefault && f.full == CaseProp::NO) {
+            cp->v3error("'" << kw << " case' is not full: selector value "
+                            << constText(f.unmatched, width)
+                            << " matches no item and there is no default"
+                            << " (IEEE 1800-2023 12.5.3)");
+        }
+        if (cp->fullPragma() || cp->parallelPragma()) {
+            warnNode(cp, "full_case/parallel_case comment ignored; the netlist follows the"
+                         " case's own semantics (use unique/unique0/priority)");
+        }
+        full = f.full == CaseProp::YES;
+        parallel = f.parallel == CaseProp::YES;
+        if (f.full == CaseProp::UNKNOWN && claimsFull && !hasDefault) {
+            full = true;
+            warnNode(cp, "fullness of case not decidable; trusting '" + kw + "'");
+        }
+        if (f.parallel == CaseProp::UNKNOWN && claimsParallel) {
+            parallel = true;
+            warnNode(cp, "overlap of case items not decidable; trusting '" + kw + "'");
+        }
+    }
+
+    // The arm (index into CaseArms::arms, -1 for none) that every
+    // combination of the selector bits the labels test selects, first match
+    // first, when the analysis can enumerate them; tested empty otherwise
+    struct CaseTable final {
+        std::vector<int> tested;  // selector bit of each table index bit
+        std::vector<int> arm;  // per combination
+    };
+    static CaseTable caseTable(const AstCase* cp) {
+        CaseTable t;
+        const int width = cp->exprp()->width();
+        std::vector<CaseCube> cubes;
+        if (width > 64 || !caseCubes(cp, width, cubes)) return t;
+        uint64_t testedMask = 0;
+        for (const CaseCube& c : cubes) testedMask |= c.mask;
+        std::vector<int> tested;
+        for (int b = 0; b < width; ++b) {
+            if ((testedMask >> b) & 1) tested.push_back(b);
+        }
+        if (tested.empty() || static_cast<int>(tested.size()) > CASE_ENUMERATE_MAX_BITS) {
+            return t;
+        }
+        std::vector<int> armOfItem;  // case item index -> arm index (defaults skipped)
+        int nextArm = 0;
+        for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) {
+            armOfItem.push_back(ip->isDefault() ? -1 : nextArm++);
+        }
+        t.tested = tested;
+        t.arm.assign(1ULL << tested.size(), -1);
+        for (uint64_t k = 0; k < t.arm.size(); ++k) {
+            uint64_t v = 0;
+            for (size_t i = 0; i < tested.size(); ++i) {
+                if ((k >> i) & 1) v |= 1ULL << tested[i];
+            }
+            for (const CaseCube& c : cubes) {
+                if ((v & c.mask) == c.value) {
+                    t.arm[k] = armOfItem[c.item];
+                    break;
+                }
+            }
+        }
+        return t;
+    }
+    // Leaves of the selector-bit tree over table entries [lo, hi)
+    static size_t caseTreeLeaves(const CaseTable& t, size_t lo, size_t hi) {
+        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi,
+                        [&](int a) { return a == t.arm[lo]; })) {
+            return 1;
+        }
+        const size_t mid = lo + (hi - lo) / 2;
+        return caseTreeLeaves(t, lo, mid) + caseTreeLeaves(t, mid, hi);
+    }
+    struct CaseArms final {
+        std::vector<std::pair<SExpr, AstCaseItem*>> arms;  // (hit, item)
+        AstCaseItem* defaultp = nullptr;  // nullptr when absent or unreachable
+        bool parallel = false;
+        std::map<std::pair<size_t, size_t>, SExpr> anyHit;  // shared OR trees
+    };
     void lowerCase(AstCase* cp, Env& env) {
         const SExpr sel = materialize(lowerExpr(cp->exprp(), env));
-        std::vector<std::pair<SExpr, AstCaseItem*>> arms;
-        AstCaseItem* defaultp = nullptr;
+        CaseArms ca;
         for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) {
             if (ip->isDefault()) {
-                defaultp = ip;
-                continue;
+                ca.defaultp = ip;
+            } else {
+                ca.arms.emplace_back(SExpr{}, ip);
             }
+        }
+        bool full = false;
+        checkCaseKeyword(cp, analyzeCase(cp), ca.defaultp != nullptr, full, ca.parallel);
+        if (full) ca.defaultp = nullptr;  // unreachable
+        // Constant labels testing few selector bits: steer by those bits
+        const CaseTable table = caseTable(cp);
+        if (!table.tested.empty()
+            && caseTreeLeaves(table, 0, table.arm.size()) <= 2 * ca.arms.size() + 2) {
+            lowerCaseBits(ca, table, sel, 0, table.arm.size(), env);
+            return;
+        }
+        for (auto& arm : ca.arms) {
+            AstCaseItem* const ip = arm.second;
             SExpr hit = constExpr(0, 1);
             bool first = true;
             for (AstNodeExpr* condp = ip->condsp(); condp;
@@ -2886,9 +3212,82 @@ private:
                 hit = first ? one : orBits(hit, one);
                 first = false;
             }
-            arms.emplace_back(materialize(hit), ip);
+            arm.first = materialize(hit);
         }
-        lowerCaseArms(arms, 0, defaultp, env);
+        lowerCaseRange(ca, 0, ca.arms.size(), full, env);
+    }
+    // Lower table entries [lo, hi): one arm (or the fall-through) when they
+    // all select it, else a mux on the next selector bit down
+    void lowerCaseBits(CaseArms& ca, const CaseTable& t, const SExpr& sel, size_t lo, size_t hi,
+                       Env& env) {
+        const int arm = t.arm[lo];
+        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi,
+                        [&](int a) { return a == arm; })) {
+            if (arm >= 0) {
+                lowerStmts(ca.arms[arm].second->stmtsp(), env);
+            } else if (ca.defaultp) {
+                lowerStmts(ca.defaultp->stmtsp(), env);
+            }
+            return;
+        }
+        const size_t mid = lo + (hi - lo) / 2;
+        int bit = 0;
+        while ((size_t{2} << bit) < hi - lo) ++bit;
+        const SExpr cond = sliceOf(sel, t.tested[bit], 1);
+        lowerBranches(
+            cond, [&](Env& e) { lowerCaseBits(ca, t, sel, mid, hi, e); },
+            [&](Env& e) { lowerCaseBits(ca, t, sel, lo, mid, e); }, env);
+    }
+    // Lower thenFn under cond and elseFn under !cond, merged as lowerIf does
+    template <typename ThenFn, typename ElseFn>
+    void lowerBranches(const SExpr& cond, ThenFn thenFn, ElseFn elseFn, Env& env) {
+        if (cond.hasVal) {
+            if (cond.val) {
+                thenFn(env);
+            } else {
+                elseFn(env);
+            }
+            return;
+        }
+        Env thenEnv = env;
+        Env elseEnv = env;
+        thenEnv.pending.clear();
+        elseEnv.pending.clear();
+        m_pathCond.emplace_back(cond, false);
+        thenFn(thenEnv);
+        m_pathCond.pop_back();
+        m_pathCond.emplace_back(cond, true);
+        elseFn(elseEnv);
+        m_pathCond.pop_back();
+        mergeBranches(cond, thenEnv, elseEnv, env);
+    }
+    // OR of the hits of arms [lo, hi), shared between tree levels
+    SExpr caseAnyHit(CaseArms& ca, size_t lo, size_t hi) {
+        if (hi - lo == 1) return ca.arms[lo].first;
+        const auto it = ca.anyHit.find({lo, hi});
+        if (it != ca.anyHit.end()) return it->second;
+        const size_t mid = (lo + hi) / 2;
+        const SExpr r = materialize(orBits(caseAnyHit(ca, lo, mid), caseAnyHit(ca, mid, hi)));
+        ca.anyHit.emplace(std::make_pair(lo, hi), r);
+        return r;
+    }
+    // Lower arms [lo, hi) and the fall-through after them; someHit: one of
+    // them is known to match, so there is no fall-through and the last arm
+    // left needs no test.  Earlier arms always go left, so item priority is
+    // kept whichever split is used.
+    void lowerCaseRange(CaseArms& ca, size_t lo, size_t hi, bool someHit, Env& env) {
+        if (lo == hi) {
+            if (ca.defaultp) lowerStmts(ca.defaultp->stmtsp(), env);
+            return;
+        }
+        if (hi - lo == 1 && someHit) {
+            lowerStmts(ca.arms[lo].second->stmtsp(), env);
+            return;
+        }
+        const size_t mid = ca.parallel ? std::max(lo + 1, (lo + hi) / 2) : lo + 1;
+        lowerBranches(
+            caseAnyHit(ca, lo, mid), [&](Env& e) { lowerCaseRange(ca, lo, mid, true, e); },
+            [&](Env& e) { lowerCaseRange(ca, mid, hi, someHit, e); }, env);
     }
     SExpr orBits(const SExpr& a, const SExpr& b) {
         if (a.hasVal) return a.val ? a : b;
@@ -2919,33 +3318,6 @@ private:
         const SExpr c = lowerExpr(condp, env);
         if (sel.hasVal && c.hasVal) return constExpr(sel.val == maskTo(c.val, sel.width), 1);
         return genBinary("comparator_eq", sel, c, sel.width, 1);
-    }
-    void lowerCaseArms(std::vector<std::pair<SExpr, AstCaseItem*>>& arms, size_t i,
-                       AstCaseItem* defaultp, Env& env) {
-        if (i == arms.size()) {
-            if (defaultp) lowerStmts(defaultp->stmtsp(), env);
-            return;
-        }
-        const SExpr& hit = arms[i].first;
-        if (hit.hasVal) {
-            if (hit.val) {
-                lowerStmts(arms[i].second->stmtsp(), env);
-            } else {
-                lowerCaseArms(arms, i + 1, defaultp, env);
-            }
-            return;
-        }
-        Env thenEnv = env;
-        Env elseEnv = env;
-        thenEnv.pending.clear();
-        elseEnv.pending.clear();
-        m_pathCond.emplace_back(hit, false);
-        lowerStmts(arms[i].second->stmtsp(), thenEnv);
-        m_pathCond.pop_back();
-        m_pathCond.emplace_back(hit, true);
-        lowerCaseArms(arms, i + 1, defaultp, elseEnv);
-        m_pathCond.pop_back();
-        mergeBranches(hit, thenEnv, elseEnv, env);
     }
 
     // ---- loops (sv_transform unroll_for_loop, generalised) ----
@@ -3069,6 +3441,7 @@ private:
             if (m_localKey.count(lp)) savedLocal.emplace_back(lp, m_localKey[lp]);
             const std::string key = prefix + sanitizeName(lp->prettyName());
             m_localKey[lp] = key;
+            m_localKeys.insert(key);
             m_widths[key] = lp->width();
         }
         std::string retKey;
@@ -3076,6 +3449,7 @@ private:
             if (m_localKey.count(retp)) savedLocal.emplace_back(retp, m_localKey[retp]);
             retKey = prefix + sanitizeName(retp->prettyName());
             m_localKey[retp] = retKey;
+            m_localKeys.insert(retKey);
             m_widths[retKey] = retp->width();
         }
         // Execute the body on a copy of the environment so returns fold locally
@@ -3122,8 +3496,14 @@ private:
         }
         for (const auto& kv : savedBind) m_bind[kv.first] = kv.second;
         for (const auto& kv : savedAlias) m_alias[kv.first] = kv.second;
-        for (AstVar* const lp : locals) m_localKey.erase(lp);
-        if (retp) m_localKey.erase(retp);
+        for (AstVar* const lp : locals) {
+            m_localKeys.erase(m_localKey.at(lp));
+            m_localKey.erase(lp);
+        }
+        if (retp) {
+            m_localKeys.erase(retKey);
+            m_localKey.erase(retp);
+        }
         for (const auto& kv : savedLocal) m_localKey[kv.first] = kv.second;
         --m_inlineDepth;
         if (retVarOut) *retVarOut = retp;
@@ -4228,6 +4608,162 @@ private:
         return alive;
     }
 
+    // ---- resource sharing ----
+    // mux(s, op(a, b), op(c, d)) -> op(mux(s, a, c), mux(s, b, d)) when both
+    // operators are the same arithmetic primitive and the mux is their only
+    // reader: the arms of an if/else, or of exclusive case items, then use
+    // one adder, ordered compare, multiplier or divider.  An add and a
+    // subtract share an adder_carry (a - b = a + ~b + 1).  Repeated to a
+    // fixpoint, so an N-arm mux chain or tree ends as one operator behind
+    // operand muxes.  Equality compares and logic are not shared: on LUTs they
+    // cost no more than the operand muxes would.  The replaced operators lose
+    // their only reader and dce() removes them.
+    static bool sharable(const std::string& prim) {
+        static const std::set<std::string> prims
+            = {"adder", "adder_carry", "subtractor", "multiplier", "multiplier_signed", "divider",
+               "comparator_lt", "comparator_lte", "comparator_gt", "comparator_gte",
+               "comparator_lt_signed", "comparator_lte_signed", "comparator_gt_signed",
+               "comparator_gte_signed"};
+        return prims.count(prim);
+    }
+    static std::string pinOf(const SItem& it, const std::string& name) {
+        for (const SPin& p : it.pins) {
+            if (p.name == name) return p.expr;
+        }
+        return "";
+    }
+    // Identifiers an operand's text reads (sized literals skipped)
+    static std::vector<std::string> refsOf(const std::string& text) {
+        std::vector<std::string> refs;
+        for (size_t i = 0; i < text.size();) {
+            const char c = text[i];
+            if (std::isdigit(static_cast<unsigned char>(c))) {
+                // a number, and a sized literal's base and digits after it
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
+                                           || text[i] == '\'' || text[i] == '_')) {
+                    ++i;
+                }
+            } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$') {
+                const size_t b = i;
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
+                                           || text[i] == '_' || text[i] == '$')) {
+                    ++i;
+                }
+                refs.push_back(text.substr(b, i - b));
+            } else {
+                ++i;
+            }
+        }
+        return refs;
+    }
+    SExpr operandExpr(const std::string& text, int width) {
+        SExpr e;
+        e.text = text;
+        e.width = width;
+        e.refs = refsOf(text);
+        e.isIdent = e.refs.size() == 1 && e.refs[0] == text;
+        return e;
+    }
+    void shareOperators() {
+        for (bool changed = true; changed;) {
+            changed = false;
+            dce();  // readers that are themselves dead must not block sharing
+            std::unordered_map<std::string, size_t> driver;  // output net -> cell
+            std::unordered_map<std::string, int> uses;
+            for (size_t i = 0; i < m_items.size(); ++i) {
+                const SItem& it = m_items[i];
+                for (const std::string& r : it.reads) ++uses[r];
+                if (it.kind == SItem::CELL) {
+                    const std::string o = pinOf(it, "out");
+                    if (!o.empty()) driver[o] = i;
+                }
+            }
+            for (const auto& d : m_decls) {
+                if (d.dir.isAny()) ++uses[d.name];  // a port is read outside
+            }
+            std::unordered_set<size_t> consumed;
+            const size_t n = m_items.size();
+            for (size_t mi = 0; mi < n; ++mi) {
+                if (m_items[mi].kind != SItem::CELL || m_items[mi].prim != "mux2") continue;
+                const SItem mux = m_items[mi];
+                const std::string x = pinOf(mux, "in0");
+                const std::string y = pinOf(mux, "in1");
+                const auto dxi = driver.find(x);
+                const auto dyi = driver.find(y);
+                if (x == y || dxi == driver.end() || dyi == driver.end()) continue;
+                if (uses[x] != 1 || uses[y] != 1) continue;
+                if (consumed.count(dxi->second) || consumed.count(dyi->second)) continue;
+                const SItem cx = m_items[dxi->second];
+                const SItem cy = m_items[dyi->second];
+                const bool addSub = (cx.prim == "adder" || cx.prim == "subtractor")
+                                    && (cy.prim == "adder" || cy.prim == "subtractor")
+                                    && cx.prim != cy.prim;
+                if (!(cx.prim == cy.prim && sharable(cx.prim)) && !addSub) continue;
+                // A carry-out still read elsewhere keeps its adder
+                if (uses[pinOf(cx, "cout")] || uses[pinOf(cy, "cout")]) continue;
+                if (cx.params != cy.params) continue;
+                const auto wit = std::find_if(cx.params.begin(), cx.params.end(),
+                                              [](const std::pair<std::string, std::string>& kv) {
+                                                  return kv.first == "WIDTH";
+                                              });
+                if (wit == cx.params.end()) continue;
+                const int w = std::stoi(wit->second);
+                std::string a0 = pinOf(cx, "a"), b0 = pinOf(cx, "b");
+                std::string a1 = pinOf(cy, "a"), b1 = pinOf(cy, "b");
+                // Commutative: pair equal operands so they need no mux
+                if (!addSub && commutative(cx.prim) && a0 != a1 && (a0 == b1 || b0 == a1)) {
+                    std::swap(a1, b1);
+                }
+                const SExpr sel = operandExpr(pinOf(mux, "sel"), 1);
+                const auto pick = [&](const std::string& o0, const std::string& o1) {
+                    return o0 == o1 ? operandExpr(o0, w)
+                                    : genMux(sel, operandExpr(o0, w), operandExpr(o1, w), w);
+                };
+                const SExpr a = pick(a0, a1);
+                SItem shared;
+                shared.kind = SItem::CELL;
+                shared.inst = newName("op");
+                const std::string out = pinOf(mux, "out");
+                if (addSub) {
+                    // The subtract arm's b is inverted and its carry-in set
+                    const auto bOf = [&](const SItem& c, const std::string& b) {
+                        return c.prim == "subtractor"
+                                   ? genUnary("bitwise_not", operandExpr(b, w), w, w).text
+                                   : b;
+                    };
+                    const SExpr b = pick(bOf(cx, b0), bOf(cy, b1));
+                    const SExpr cin = cy.prim == "subtractor" ? sel : notBit(sel);
+                    shared.prim = "adder_carry";
+                    shared.params = cx.params;
+                    pinIn(shared, "a", a);
+                    pinIn(shared, "b", b);
+                    pinIn(shared, "cin", cin);
+                    pinOut(shared, "out", out);
+                    pinOut(shared, "cout", newWire(1).text);
+                } else {
+                    shared.prim = cx.prim;
+                    shared.params = cx.params;
+                    pinIn(shared, "a", a);
+                    pinIn(shared, "b", pick(b0, b1));
+                    if (cx.prim == "adder_carry") {
+                        const std::string c0 = pinOf(cx, "cin"), c1 = pinOf(cy, "cin");
+                        pinIn(shared, "cin",
+                              c0 == c1 ? operandExpr(c0, 1)
+                                       : genMux(sel, operandExpr(c0, 1), operandExpr(c1, 1), 1));
+                        pinOut(shared, "out", out);
+                        pinOut(shared, "cout", newWire(1).text);
+                    } else {
+                        pinOut(shared, "out", out);
+                    }
+                }
+                m_items[mi] = shared;
+                consumed.insert(dxi->second);
+                consumed.insert(dyi->second);
+                ++m_sharedOps;
+                changed = true;
+            }
+        }
+    }
     void dce() {
         const std::vector<bool> alive = markLive({});
         std::vector<SItem> kept;
