@@ -324,6 +324,21 @@ class StructModule final {
     // two branches of one if counted once.  One inside a loop writes as many
     // elements as the array has in a single cycle (a reset clearing a register
     // file), which no memory port does, so it counts as that many.
+    // Whether an element (or a bit range of one) of varp is connected to an
+    // output or inout port of an instance.  Such an array is written by the
+    // instance, which no memory primitive can model: it stays one signal per
+    // element whatever its size.
+    bool drivenByInstance(const AstVar* varp) const {
+        bool found = false;
+        m_modp->foreach([&](const AstPin* pinp) {
+            if (found || !pinp->modVarp() || !pinp->exprp()) return;
+            if (!pinp->modVarp()->direction().isWritable()) return;
+            pinp->exprp()->foreach([&](const AstNodeVarRef* rp) {
+                if (rp->varp() == varp) found = true;
+            });
+        });
+        return found;
+    }
     int arrayWriteSites(const AstVar* varp, int depth, bool* twoBlocksp = nullptr) const {
         int n = 0;
         std::vector<BranchPath> ports;  // one per write port: the path it is under
@@ -723,7 +738,7 @@ private:
             // is registers, as a small array is, unless it is too big for that
             bool twoBlocks = false;
             const int ports = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
-            if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS
+            if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS && !drivenByInstance(varp)
                 && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)) {
                 SMem m;
                 m.name = name;
@@ -4326,8 +4341,12 @@ private:
                     have = readHexWords(m.initFile, words);
                 }
                 if (!have || m.dataWidth > 64 || m.addrWidth > 16) {
-                    warn("memory " + m.name + ": asynchronous read-only array without a loadable "
-                         "$readmemh image (" + m.initFile + "); reads are 0");
+                    // Nothing writes it and there is no image to read: every
+                    // read would be 0, which is never what the source meant
+                    v3error("Synthesis: memory '" << m.name
+                            << "' is never written and has no loadable $readmemh image"
+                            << (m.initFile.empty() ? std::string{} : " (" + m.initFile + ")")
+                            << "; its reads would all be 0");
                     for (size_t i = 0; i < nr; ++i) {
                         declRd(i);
                         addAssign(rdName(i), zeroD);
