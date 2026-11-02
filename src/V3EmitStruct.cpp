@@ -464,6 +464,12 @@ private:
         m_warnings.push_back(msg);
         UINFO(4, "struct warning: " << msg);
     }
+    // A construct synthesis does not understand: stop rather than emit a
+    // netlist that silently differs from the source
+    void errNode(const AstNode* nodep, const std::string& msg) {
+        nodep->v3error("Synthesis: " << msg);
+    }
+    static void errMsg(const std::string& msg) { v3error("Synthesis: " << msg); }
     void warnNode(const AstNode* nodep, const std::string& msg) {
         warn(msg + " (" + nodep->prettyTypeName() + " at " + nodep->fileline()->ascii() + ")");
     }
@@ -916,7 +922,7 @@ private:
                     m_mems[mp->varp()].initFile = f;
                     continue;
                 }
-                warnNode(nodep, "$readmem/$writemem dropped");
+                errNode(nodep, "$readmem/$writemem dropped");
                 all = false;
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 all &= harvestReadMem(bp->stmtsp());
@@ -1340,11 +1346,11 @@ private:
         if (!lv.ok) return;
         const SExpr rhs = lowerExpr(rhsp, env);
         if (lv.memVarp) {
-            warnNode(ap, "continuous assign into memory array unsupported");
+            errNode(ap, "continuous assign into memory array unsupported");
             return;
         }
         if (lv.memDynamic) {
-            warnNode(ap, "continuous assign with dynamic array index unsupported");
+            errNode(ap, "continuous assign with dynamic array index unsupported");
             return;
         }
         if (rhs.text != lv.text) addAssign(lv.text, rhs, lv.refs);
@@ -1413,13 +1419,13 @@ private:
                         lo -= pp->width();
                         const SLVal plv = lowerLValue(pp, env);
                         if (!plv.ok || plv.memVarp || plv.memDynamic) {
-                            warnNode(pp, "unsupported output pin connection part");
+                            errNode(pp, "unsupported output pin connection part");
                             continue;
                         }
                         addAssign(plv.text, sliceOf(w, lo, pp->width()), plv.refs);
                     }
                 } else {
-                    warnNode(pinp, "unsupported output pin connection");
+                    errNode(pinp, "unsupported output pin connection");
                 }
             } else {
                 const SExpr e = lowerExpr(ep, env);
@@ -2443,7 +2449,7 @@ private:
                 AstNodeExpr* vp = ip->getIndexDefaultedValuep(static_cast<uint64_t>(k));
 #endif
                 if (!vp) {
-                    warnNode(rhsp, "array pattern leaves element " + std::to_string(k) + " of " + dst.name + " unset");
+                    errNode(rhsp, "array pattern leaves element " + std::to_string(k) + " of " + dst.name + " unset");
                     continue;
                 }
                 setKey(elem(k), materialize(resize(lowerExpr(vp, env), dst.dataWidth, false)), blocking, env);
@@ -2454,7 +2460,7 @@ private:
             for (int k = 0; k < dst.depth; ++k) setKey(elem(k), constExpr(0, dst.dataWidth), blocking, env);
             return;
         }
-        warnNode(rhsp, "whole-array assignment to " + dst.name + " from this expression unsupported");
+        errNode(rhsp, "whole-array assignment to " + dst.name + " from this expression unsupported");
     }
     static void flattenConcat(AstNodeExpr* ep, std::vector<AstNodeExpr*>& out) {
         if (AstConcat* const cp = VN_CAST(ep, Concat)) {
@@ -2470,7 +2476,7 @@ private:
         if (lv.memVarp) {
             // Big memory element write: becomes a write port
             SMem& m = m_mems[lv.memVarp];
-            if (!m_seq) warn("memory " + m.name + " written outside a clocked block");
+            if (!m_seq) errMsg("memory " + m.name + " written outside a clocked block");
             SMem::Write w;
             w.idx = materialize(lv.idx);
             w.data = rhs;
@@ -2649,7 +2655,7 @@ private:
             if (ait != m_alias.end()) return ait->second;
             const auto mit = m_mems.find(varp);
             if (mit != m_mems.end()) {
-                warnNode(lhsp, "whole-array assignment to " + mit->second.name + " unsupported");
+                errNode(lhsp, "whole-array assignment to " + mit->second.name + " unsupported");
                 return lv;
             }
             lv.ok = true;
@@ -2718,7 +2724,7 @@ private:
         if (AstArraySel* const ap = VN_CAST(lhsp, ArraySel)) {
             const AstVarRef* const vp = VN_CAST(ap->fromp(), VarRef);
             if (!vp) {
-                warnNode(lhsp, "multi-dimensional array write unsupported");
+                errNode(lhsp, "multi-dimensional array write unsupported");
                 return lv;
             }
             const auto mit = m_mems.find(vp->varp());
@@ -3753,7 +3759,7 @@ private:
         if (ait != m_alias.end()) return readKey(ait->second.key, env, true);
         const auto mit = m_mems.find(varp);
         if (mit != m_mems.end()) {
-            warnNode(vp, "whole-array read of " + mit->second.name + " replaced by 0");
+            errNode(vp, "whole-array read of " + mit->second.name + " replaced by 0");
             return constExpr(0, vp->width() > 0 ? vp->width() : 1);
         }
         const std::string name = varName(varp);
@@ -3862,7 +3868,7 @@ private:
         const int width = ap->width() > 0 ? ap->width() : 1;
         const AstVarRef* const vp = VN_CAST(ap->fromp(), VarRef);
         if (!vp) {
-            warnNode(ap, "multi-dimensional array read replaced by 0");
+            errNode(ap, "multi-dimensional array read replaced by 0");
             return constExpr(0, width);
         }
         const SExpr idx = materialize(lowerExpr(ap->bitp(), env));
@@ -4232,7 +4238,7 @@ private:
                 warn("memory " + m.name + " is never accessed; dropped");
                 continue;
             }
-            if (nw > 2) warn("memory " + m.name + ": " + std::to_string(nw) + " write ports, only 2 supported");
+            if (nw > 2) errMsg("memory " + m.name + ": " + std::to_string(nw) + " write ports, only 2 supported");
             auto rdName = [&](size_t i) { return m.name + "_rdata" + std::to_string(i + 1); };
             auto declRd = [&](size_t i) {
                 SDecl d;
@@ -4305,7 +4311,7 @@ private:
                 }
             }
             if (nw == 2 && m.writes[0].clk.text != m.writes[1].clk.text) {
-                warn("memory " + m.name + ": written from two clock domains ("
+                errMsg("memory " + m.name + ": written from two clock domains ("
                      + m.writes[0].clk.text + ", " + m.writes[1].clk.text
                      + ") but not as a true dual port; the primitive gets one clock");
             }
@@ -4392,7 +4398,7 @@ private:
                 for (size_t i = 0; i < nr && i < m.sync.size(); ++i) {
                     if (!m.sync[i].clk.text.empty() && !m.writes[0].clk.text.empty()
                         && m.sync[i].clk.text != m.writes[0].clk.text)
-                        warn("memory " + m.name + ": read port " + std::to_string(i + 1) + " clocked by "
+                        errMsg("memory " + m.name + ": read port " + std::to_string(i + 1) + " clocked by "
                              + m.sync[i].clk.text + ", writes by " + m.writes[0].clk.text
                              + "; the primitive has one clock");
                 }
@@ -4483,7 +4489,7 @@ private:
                 }
                 continue;
             }
-            if (nr > 2) warn("memory " + m.name + ": " + std::to_string(nr) + " read ports, only 2 supported with 2 write ports");
+            if (nr > 2) errMsg("memory " + m.name + ": " + std::to_string(nr) + " read ports, only 2 supported with 2 write ports");
             if (nw <= 1 && (nr == 0 || (nr == 1 && (nw == 0 || m.readIdx[0].text == m.writes[0].idx.text)))) {
                 // Single-port: clk, we, addr, wdata, rdata
                 SItem& it = addCell("memory_sp", m.name + "_inst");
