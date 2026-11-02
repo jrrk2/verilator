@@ -1985,7 +1985,7 @@ private:
         const bool sync = c.type.find("_sync") != std::string::npos;
         const bool tdp = c.type == "memory_tdp_sync";
         if (c.type == "memory_2w2r_rf" || c.type == "memory_2w2r") {
-            m_warnings.push_back("memory " + c.name + ": two write ports with independent read addresses are not a block RAM; dropped");
+            v3error("Synthesis: " << "memory " + c.name + ": two write ports with independent read addresses are not a block RAM; dropped");
             return;
         }
         if (!sync) {
@@ -2137,7 +2137,7 @@ private:
             std::string f = p.second;
             if (f.size() >= 2 && f.front() == '"') f = f.substr(1, f.size() - 2);
             if (f.empty()) continue;
-            if (!readHex(f, image)) m_warnings.push_back("memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
+            if (!readHex(f, image)) v3error("Synthesis: " << "memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
         }
         const int wordsPerTile = 32768 / tw;
         auto initParams = [&](int lo, int sw, int d, std::vector<std::pair<std::string, std::string>>& params) {
