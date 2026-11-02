@@ -786,6 +786,7 @@ struct Design {
         Vec q, d;  // per-bit Q (free) and D (next-state function without rst/en)
         int en = 0, rst = 0, clk = 0;  // literals (en/rst may be constants)
         bool async = false, negedge = false;
+        bool latch = false;  // latch_en: transparent while en, no clock
         unsigned long long resetVal = 0;
         unsigned long long initVal = 0;  // power-up value (INIT_VAL)
     };
@@ -798,6 +799,7 @@ struct Design {
     };
     std::vector<Cell> cells2;
     std::vector<std::pair<std::string, int>> clocks;  // hint: nets used as register clocks
+    std::vector<std::string> multiDriven;  // registers whose Q is driven by more than one cell
 };
 
 template <class GB>
@@ -1426,6 +1428,7 @@ private:
             r.en = en;
             r.async = mn.rfind("RTL_REG_ASYNC", 0) == 0 || paramInt(it, "IS_ASYNC", 0, sc) == 1;
             r.negedge = mn == "dffn_en" || mn.find("_N__") != std::string::npos;
+            r.latch = mn == "latch_en";
             r.resetVal = static_cast<unsigned long long>(paramInt(it, "RESET_VAL", 0, sc));
             r.initVal = static_cast<unsigned long long>(paramInt(it, "INIT_VAL", 0, sc));
             const ExprP re0 = pinExpr(it, rtl ? "RST" : "rst");
@@ -1448,7 +1451,10 @@ private:
         }
         // Name the register after its Q target (lvalue text)
         const std::string qname = sc.prefix + lvalText(qe);
-        if (m_d->regNext.count(qname)) warn(m_d->label + ": two registers drive " + qname);
+        if (m_d->regNext.count(qname)) {
+            warn(m_d->label + ": two registers drive " + qname);
+            m_d->multiDriven.push_back(qname);
+        }
         m_d->regNext[qname] = next;
         m_d->regQ[qname] = q;
         if (!m_ffrip) {
