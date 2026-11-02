@@ -208,6 +208,10 @@ public:
     struct Dsp {
         Vec a, b;  // 25 / 18 operand bits (zero-extended)
         Vec p;  // 48 product bits (placeholders)
+        // P register absorbed from the flip-flops the product fed
+        // (Mapper::absorbDspRegs): PREG = 1, clocked by clk, CEP / RSTP
+        bool preg = false;
+        int clk = 0, cep = 1, rstp = 0;
     };
     std::vector<Chain> m_chains;
     std::vector<Dsp> m_dsps;
@@ -316,6 +320,62 @@ public:
         }
         m_dsps.resize(k);
         return dropped;
+    }
+    // lit with its cone re-built through AND(), which folds constants and
+    // complements: gates built while an input was still a placeholder later
+    // bound to a constant (a zero-extended operand) simplify only now.
+    // Depth-limited: only the few gates next to such an input matter.
+    int fold(int lit, std::unordered_map<int, int>& memo, int depth = 8) {
+        const int r = resolve(lit);
+        const int v = r >> 1;
+        if (!v || isPlaceholder(v) || depth == 0) return r;
+        const auto it = memo.find(v);
+        if (it != memo.end()) return it->second ^ (r & 1);
+        const int a = fold(m_fan[v].first, memo, depth - 1);
+        const int b = fold(m_fan[v].second, memo, depth - 1);
+        const int f = AND(a, b);
+        memo[v] = f;
+        return f ^ (r & 1);
+    }
+    // A carry chain that never carries -- carry-in 0, and no bit generates
+    // (DI is 0 wherever S is 0; CO = S ? CI : DI) -- sums to its propagate
+    // bits, O = S, with CO = 0: an add of a constant 0, such as one of the
+    // partial products pruneDsps() tied off.  Drop it and read S.  Repeated,
+    // since an add of a bypassed sum can then become idle too.
+    int bypassIdleChains() {
+        int bypassed = 0;
+        for (int pass = 0; pass < 16; ++pass) {
+            std::unordered_map<int, int> memo;
+            std::vector<Chain> kept;
+            int now = 0;
+            for (Chain& c : m_chains) {
+                bool idle = fold(c.cyinit, memo) == 0;
+                std::vector<int> sf(c.s.size());
+                for (size_t i = 0; i < c.s.size() && idle; ++i) {
+                    sf[i] = fold(c.s[i], memo);
+                    idle = AND(sf[i] ^ 1, fold(c.di[i], memo)) == 0;
+                }
+                if (!idle) {
+                    kept.push_back(std::move(c));
+                    continue;
+                }
+                for (size_t i = 0; i < c.o.size(); ++i) {
+                    const int v = c.o[i] >> 1;
+                    m_pinned.erase(v);
+                    m_alias[v] = sf[i] ^ (c.o[i] & 1);
+                }
+                if (c.co >= 0) {
+                    m_pinned.erase(c.co >> 1);
+                    m_alias[c.co >> 1] = c.co & 1;
+                }
+                ++now;
+            }
+            m_chains = std::move(kept);
+            bypassed += now;
+            if (!now) break;
+        }
+        m_chainHash.clear();  // indices are stale; no chain is built after elaboration
+        return bypassed;
     }
     static bool allConst(const Vec& v) {
         for (const int l : v) if ((l >> 1) != 0) return false;
@@ -554,9 +614,18 @@ public:
         svs_netlist::Elaborator<AigB> e{m_aig, mods, bb, true};
         e.run(m_top, m_d);
         const int deadDsps = m_aig.pruneDsps();
-        if (deadDsps && v3Global.opt.structOnlyReport())
+        const int idleChains = m_aig.bypassIdleChains();
+        if ((deadDsps || idleChains) && v3Global.opt.structOnlyReport())
             std::cerr << "%Info: map-prune: " << deadDsps
-                      << " DSP48E1 partial products with a constant-0 operand removed\n";
+                      << " DSP48E1 partial products with a constant-0 operand removed, " << idleChains
+                      << " carry chains adding 0 bypassed\n";
+        {
+            const int merged = v3Global.opt.mapOnlyKeepEquivRegs() ? 0 : mergeEquivRegs();
+            const int absorbed = absorbDspRegs();
+            if ((merged || absorbed) && v3Global.opt.structOnlyReport())
+                std::cerr << "%Info: map-regs: " << merged << " equivalent flip-flops merged, " << absorbed
+                          << " flip-flops absorbed into DSP48E1 P registers\n";
+        }
         buildPOs();
         const std::string base = filename.empty() ? v3Global.opt.mapOnlyEdif() : filename;
         const std::string aig = base + ".aig";
@@ -606,6 +675,172 @@ private:
     std::vector<std::vector<int>> m_cellInPo;  // per cell: PO index per input pin (consecutive bits)
     std::vector<int> m_topOutPo;  // per top output name (in m_d.outputs order): PO of bit 0
 
+    static bool bitOf(unsigned long long v, size_t b) { return b < 64 && ((v >> b) & 1); }
+    // Keep the bits of r for which keep[b], remembering their original index
+    static void keepRegBits(Design::Reg& r, const std::vector<bool>& keep) {
+        Vec q, d;
+        std::vector<int> no;
+        for (size_t b = 0; b < r.q.size(); ++b) {
+            if (!keep[b]) continue;
+            q.push_back(r.q[b]);
+            d.push_back(r.d[b]);
+            no.push_back(r.bitNo.empty() ? static_cast<int>(b) : r.bitNo[b]);
+        }
+        r.q = q;
+        r.d = d;
+        r.bitNo = no;
+    }
+    void dropEmptyRegs() {
+        std::vector<Design::Reg> kept;
+        for (Design::Reg& r : m_d.regs) if (!r.q.empty()) kept.push_back(std::move(r));
+        m_d.regs = std::move(kept);
+    }
+    // Flip-flops with the same D, clock enable, reset, clock, edge and reset /
+    // power-up values hold the same value every cycle: keep the first and
+    // read it wherever the others were read (Vivado does the same unless
+    // -keep_equivalent_registers).  Only the D literal is compared, so a
+    // register whose next state reads another duplicate (a duplicated
+    // counter) merges only once its inputs did: repeat until nothing changes.
+    int mergeEquivRegs() {
+        int merged = 0;
+        for (int pass = 0; pass < 8; ++pass) {
+            using Key = std::tuple<int, int, int, int, int, int, int>;
+            std::map<Key, int> first;  // -> Q literal of the bit kept
+            int now = 0;
+            for (Design::Reg& r : m_d.regs) {
+                if (r.latch) continue;
+                std::vector<bool> keep(r.q.size(), true);
+                const int en = m_aig.resolve(r.en), rst = m_aig.resolve(r.rst), clk = m_aig.resolve(r.clk);
+                const int flags = (r.async ? 1 : 0) | (r.negedge ? 2 : 0);
+                for (size_t b = 0; b < r.q.size(); ++b) {
+                    const size_t bn = r.bitNo.empty() ? b : static_cast<size_t>(r.bitNo[b]);
+                    const int qv = r.q[b] >> 1;
+                    if ((r.q[b] & 1) || !m_aig.isPlaceholder(qv) || m_aig.hasAlias(qv) || m_aig.m_pinned.count(qv)) continue;
+                    const int vals = (bitOf(r.resetVal, bn) ? 1 : 0) | (bitOf(r.initVal, bn) ? 2 : 0);
+                    const Key k{m_aig.resolve(r.d[b]), en, rst, clk, flags, vals, 0};
+                    const auto it = first.find(k);
+                    if (it == first.end()) {
+                        first.emplace(k, r.q[b]);
+                        continue;
+                    }
+                    m_aig.equate(r.q[b], it->second);  // this Q now reads the kept one
+                    keep[b] = false;
+                    ++now;
+                }
+                if (std::find(keep.begin(), keep.end(), false) != keep.end()) keepRegBits(r, keep);
+            }
+            dropEmptyRegs();
+            merged += now;
+            if (!now) break;
+        }
+        return merged;
+    }
+    // A product register: flip-flops whose D is a DSP48E1 product bit go into
+    // that DSP's P register (PREG = 1) when every product bit read anywhere is
+    // read only by such a flip-flop, all of them on one clock edge with one
+    // clock enable and one synchronous reset (RSTP), resetting and powering
+    // up to 0.  The flip-flops' Q nets become the DSP's P outputs.
+    int absorbDspRegs() {
+        // product bit var -> (dsp, bit)
+        std::unordered_map<int, std::pair<size_t, size_t>> pOf;
+        for (size_t i = 0; i < m_aig.m_dsps.size(); ++i)
+            for (size_t k = 0; k < m_aig.m_dsps[i].p.size(); ++k) pOf[m_aig.m_dsps[i].p[k] >> 1] = {i, k};
+        if (pOf.empty()) return 0;
+        // candidate flip-flop bits: D is exactly (uncomplemented) a product bit
+        struct Cand { size_t ri, b; size_t dsp, k; };
+        std::vector<Cand> cands;
+        std::set<std::pair<size_t, size_t>> isCand;  // (ri, b)
+        for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
+            const Design::Reg& r = m_d.regs[ri];
+            for (size_t b = 0; b < r.q.size(); ++b) {
+                const int d = m_aig.resolve(r.d[b]);
+                if (d & 1) continue;
+                const auto it = pOf.find(d >> 1);
+                if (it == pOf.end()) continue;
+                cands.push_back({ri, b, it->second.first, it->second.second});
+                isCand.insert({ri, b});
+            }
+        }
+        if (cands.empty()) return 0;
+        // product bits read by anything else (logic, other pins, outputs)
+        std::unordered_set<int> seen, usedElse;
+        std::vector<int> stack;
+        auto sink = [&](int lit) { stack.push_back(m_aig.resolve(lit) >> 1); };
+        for (const auto& kv : m_d.outputs) for (const int l : kv.second) sink(l);
+        for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
+            const Design::Reg& r = m_d.regs[ri];
+            for (size_t b = 0; b < r.d.size(); ++b) if (!isCand.count({ri, b})) sink(r.d[b]);
+            sink(r.en); sink(r.rst); sink(r.clk);
+        }
+        for (const Design::Cell& c : m_d.cells2) for (const auto& pin : c.ins) for (const int l : pin.second) sink(l);
+        for (const AigB::Chain& ch : m_aig.m_chains) {
+            for (const int l : ch.s) sink(l);
+            for (const int l : ch.di) sink(l);
+            sink(ch.cyinit);
+        }
+        for (const AigB::Dsp& dd : m_aig.m_dsps) {
+            for (const int l : dd.a) sink(l);
+            for (const int l : dd.b) sink(l);
+        }
+        while (!stack.empty()) {
+            const int v = stack.back();
+            stack.pop_back();
+            if (!v || !seen.insert(v).second) continue;
+            if (pOf.count(v)) usedElse.insert(v);
+            if (m_aig.isPlaceholder(v)) continue;
+            stack.push_back(m_aig.resolve(m_aig.fanin(v).first) >> 1);
+            stack.push_back(m_aig.resolve(m_aig.fanin(v).second) >> 1);
+        }
+        // per DSP: its candidates, if they qualify together
+        std::map<size_t, std::vector<size_t>> byDsp;
+        for (size_t c = 0; c < cands.size(); ++c) byDsp[cands[c].dsp].push_back(c);
+        std::map<size_t, std::vector<bool>> drop;  // ri -> bits taken out
+        int absorbed = 0;
+        for (const auto& kv : byDsp) {
+            AigB::Dsp& dsp = m_aig.m_dsps[kv.first];
+            bool ok = !dsp.preg;
+            std::set<size_t> ks;
+            const Design::Reg& r0 = m_d.regs[cands[kv.second[0]].ri];
+            for (const size_t c : kv.second) {
+                const Cand& cd = cands[c];
+                const Design::Reg& r = m_d.regs[cd.ri];
+                const size_t bn = r.bitNo.empty() ? cd.b : static_cast<size_t>(r.bitNo[cd.b]);
+                const int qv = r.q[cd.b] >> 1;
+                ok = ok && !r.latch && !r.negedge && !(r.async && m_aig.resolve(r.rst) != 0)
+                     && !bitOf(r.resetVal, bn) && !bitOf(r.initVal, bn)
+                     && m_aig.resolve(r.clk) == m_aig.resolve(r0.clk) && m_aig.resolve(r.en) == m_aig.resolve(r0.en)
+                     && m_aig.resolve(r.rst) == m_aig.resolve(r0.rst)
+                     && !(r.q[cd.b] & 1) && m_aig.isPlaceholder(qv) && !m_aig.hasAlias(qv)
+                     && ks.insert(cd.k).second;  // one flip-flop per product bit
+            }
+            for (const int l : dsp.p) ok = ok && !usedElse.count(l >> 1);
+            if (!ok) continue;
+            dsp.preg = true;
+            dsp.clk = r0.clk;
+            dsp.cep = r0.en;
+            dsp.rstp = r0.rst;
+            for (const size_t c : kv.second) {
+                const Cand& cd = cands[c];
+                Design::Reg& r = m_d.regs[cd.ri];
+                const int qlit = r.q[cd.b];
+                m_aig.m_pinned.erase(dsp.p[cd.k] >> 1);
+                dsp.p[cd.k] = qlit;  // P now drives the flip-flop's Q net
+                m_aig.m_pinned.insert(qlit >> 1);
+                auto& dv = drop[cd.ri];
+                if (dv.empty()) dv.assign(r.q.size(), false);
+                dv[cd.b] = true;
+                ++absorbed;
+            }
+        }
+        for (auto& kv : drop) {
+            std::vector<bool> keep(kv.second.size());
+            for (size_t b = 0; b < keep.size(); ++b) keep[b] = !kv.second[b];
+            keepRegBits(m_d.regs[kv.first], keep);
+        }
+        dropEmptyRegs();
+        return absorbed;
+    }
+
     void buildPOs() {
         for (const auto& kv : m_d.outputs) {
             m_topOutPo.push_back(m_po.size());
@@ -642,11 +877,15 @@ private:
             for (const int l : d.a) addPO(l);
             dp.b = m_po.size();
             for (const int l : d.b) addPO(l);
+            if (d.preg) {
+                dp.cep = addPO(d.cep);
+                dp.rstp = addPO(d.rstp);
+            }
             m_dspPo.push_back(dp);
         }
     }
     struct ChainPo { int s, di, cyinit; };
-    struct DspPo { int a, b; };
+    struct DspPo { int a, b, cep = -1, rstp = -1; };
     std::vector<ChainPo> m_chainPo;
     std::vector<DspPo> m_dspPo;
 
@@ -1199,17 +1438,21 @@ private:
                 {"USE_SIMD", "\"ONE48\""}};
             for (const char* r : {"ACASCREG", "ADREG", "ALUMODEREG", "AREG", "BCASCREG", "BREG", "CARRYINREG", "CARRYINSELREG",
                                   "CREG", "DREG", "INMODEREG", "MREG", "OPMODEREG", "PREG"})
-                params.emplace_back(r, binParam(0));
+                params.emplace_back(r, binParam(d.preg && std::string(r) == "PREG" ? 1 : 0));
             std::vector<std::pair<std::string, std::string>> ins = {
                 {"A", bitsJson(a)}, {"B", bitsJson(b)}, {"C", bitsJson(zeros(48))}, {"D", bitsJson(zeros(25))},
                 {"ACIN", bitsJson(zeros(30))}, {"BCIN", bitsJson(zeros(18))}, {"PCIN", bitsJson(zeros(48))},
                 {"ALUMODE", bitsJson(zeros(4))}, {"INMODE", bitsJson(zeros(5))}, {"CARRYINSEL", bitsJson(zeros(3))},
                 {"OPMODE", bitsJson({"\"1\"", "\"0\"", "\"1\"", "\"0\"", "\"0\"", "\"0\"", "\"0\""})},
-                {"CARRYIN", z}, {"CARRYCASCIN", z}, {"MULTSIGNIN", z}, {"CLK", z}};
+                {"CARRYIN", z}, {"CARRYCASCIN", z}, {"MULTSIGNIN", z},
+                {"CLK", d.preg ? "[" + netOfLit(d.clk) + "]" : z}};
             for (const char* ce : {"CEA1", "CEA2", "CEAD", "CEALUMODE", "CEB1", "CEB2", "CEC", "CECARRYIN", "CECTRL", "CED",
                                    "CEINMODE", "CEM", "CEP", "RSTA", "RSTALLCARRYIN", "RSTALUMODE", "RSTB", "RSTC", "RSTCTRL",
                                    "RSTD", "RSTINMODE", "RSTM", "RSTP"})
-                ins.emplace_back(ce, z);
+                ins.emplace_back(ce, !d.preg                         ? z
+                                   : std::string(ce) == "CEP"  ? "[" + m_poNet[dp.cep] + "]"
+                                   : std::string(ce) == "RSTP" ? "[" + m_poNet[dp.rstp] + "]"
+                                                               : z);
             std::vector<std::pair<std::string, std::string>> outs = {
                 {"P", bitsJson(p)}, {"ACOUT", bitsJson(freshN(30))}, {"BCOUT", bitsJson(freshN(18))}, {"PCOUT", bitsJson(freshN(48))},
                 {"CARRYCASCOUT", "[" + newNet() + "]"}, {"CARRYOUT", bitsJson(freshN(4))}, {"MULTSIGNOUT", "[" + newNet() + "]"},
@@ -1238,7 +1481,8 @@ private:
             for (size_t b = 0; b < r.q.size(); ++b) {
                 const std::string q = netOfLit(r.q[b]);
                 const std::string d = m_poNet[ro.d0 + b];
-                const bool setv = (r.resetVal >> b) & 1;
+                const size_t bn = r.bitNo.empty() ? b : static_cast<size_t>(r.bitNo[b]);
+                const bool setv = bitOf(r.resetVal, bn);
                 const bool hasRst = rst != "\"0\"";
                 std::string type;
                 std::vector<std::pair<std::string, std::string>> ins = {{"C", "[" + clk + "]"}, {"CE", "[" + en + "]"}, {"D", "[" + d + "]"}};
@@ -1253,14 +1497,14 @@ private:
                     ins.emplace_back(setv ? "S" : "R", "[" + rst + "]");
                 }
                 if (r.negedge) type += "_1";
-                const bool initv = b < 64 && ((r.initVal >> b) & 1);
+                const bool initv = bitOf(r.initVal, bn);
                 {
                     int lo = 0;
                     const std::string base = leafOf(r.name, lo);
-                    const bool vec = r.q.size() > 1 || r.name.find('[') != std::string::npos;
-                    m_curLeaf = base + "_reg" + (vec ? "[" + std::to_string(lo + static_cast<int>(b)) + "]" : "");
+                    const bool vec = r.q.size() > 1 || !r.bitNo.empty() || r.name.find('[') != std::string::npos;
+                    m_curLeaf = base + "_reg" + (vec ? "[" + std::to_string(lo + static_cast<int>(bn)) + "]" : "");
                 }
-                cell(type, sanitize(r.name) + "_" + std::to_string(b), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}});
+                cell(type, sanitize(r.name) + "_" + std::to_string(bn), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}});
             }
         }
         // 4. memories and pass-through cells
