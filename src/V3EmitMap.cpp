@@ -1218,8 +1218,18 @@ private:
             cell("DSP48E1", "dsp" + std::to_string(di), params, ins, outs);
         }
         // 3. registers
+        // A latch would come out as a flip-flop with no clock, which never
+        // opens, and a second driver of the same Q as a second cell of the
+        // same name: both are wrong netlists, so stop instead.
+        for (const std::string& n : m_d.multiDriven)
+            v3error("Synthesis: more than one register drives '" << n << "'");
         for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
             const Design::Reg& r = m_d.regs[ri];
+            if (r.latch) {
+                v3error("Synthesis: transparent latch '" << r.name
+                        << "' cannot be mapped (no LDCE mapping yet)");
+                continue;
+            }
             m_curPath = pathOf(r.name);
             const RegOut& ro = m_regPo[ri];
             const std::string clk = netOfLit(r.clk);

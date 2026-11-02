@@ -2357,7 +2357,8 @@ private:
             warnNode(nodep, "event control dropped; body kept");
             lowerStmts(ep->stmtsp(), env);
         } else {
-            warnNode(nodep, "unsupported statement dropped");
+            nodep->v3error("Synthesis would drop this statement: unsupported "
+                           << nodep->prettyTypeName());
         }
     }
 
