@@ -701,6 +701,8 @@ private:
     // -keep_equivalent_registers).  Only the D literal is compared, so a
     // register whose next state reads another duplicate (a duplicated
     // counter) merges only once its inputs did: repeat until nothing changes.
+    // kept Q literal -> the names of the equivalent flip-flops merged into it
+    std::map<int, std::vector<std::string>> m_mergedFrom;
     int mergeEquivRegs() {
         int merged = 0;
         for (int pass = 0; pass < 8; ++pass) {
@@ -724,6 +726,9 @@ private:
                         continue;
                     }
                     m_aig.equate(r.q[b], it->second);  // this Q now reads the kept one
+                    // remembered on the kept flip-flop (MERGED_EQUIV), so the
+                    // placer can split it again where its sinks ended up far apart
+                    m_mergedFrom[it->second].push_back(sanitize(r.name) + "_" + std::to_string(bn));
                     keep[b] = false;
                     ++now;
                 }
@@ -1156,7 +1161,8 @@ private:
     void cell(const std::string& type, const std::string& name,
               const std::vector<std::pair<std::string, std::string>>& params,
               const std::vector<std::pair<std::string, std::string>>& ins,
-              const std::vector<std::pair<std::string, std::string>>& outs) {
+              const std::vector<std::pair<std::string, std::string>>& outs,
+              const std::vector<std::pair<std::string, std::string>>& attrs = {}) {
         if (!v3Global.opt.mapOnlyEdif().empty() || !v3Global.opt.mapOnlyVerilog().empty()) {
             CellRec r{type, name, m_curPath, m_curLeaf, params, {}};
             m_curLeaf.clear();
@@ -1187,7 +1193,9 @@ private:
         ++m_counts[type];
         m_cells << "    \"" << name << "\": {\"hide_name\": 0, \"type\": \"" << type << "\", \"parameters\": {";
         for (size_t i = 0; i < params.size(); ++i) m_cells << (i ? ", " : "") << "\"" << params[i].first << "\": " << params[i].second;
-        m_cells << "}, \"attributes\": {}, \"port_directions\": {";
+        m_cells << "}, \"attributes\": {";
+        for (size_t i = 0; i < attrs.size(); ++i) m_cells << (i ? ", " : "") << "\"" << attrs[i].first << "\": " << attrs[i].second;
+        m_cells << "}, \"port_directions\": {";
         bool first = true;
         for (const auto& p : ins) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"input\""; first = false; }
         for (const auto& p : outs) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"output\""; first = false; }
@@ -1504,7 +1512,16 @@ private:
                     const bool vec = r.q.size() > 1 || !r.bitNo.empty() || r.name.find('[') != std::string::npos;
                     m_curLeaf = base + "_reg" + (vec ? "[" + std::to_string(lo + static_cast<int>(bn)) + "]" : "");
                 }
-                cell(type, sanitize(r.name) + "_" + std::to_string(bn), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}});
+                std::vector<std::pair<std::string, std::string>> attrs;
+                {
+                    const auto mf = m_mergedFrom.find(r.q[b]);
+                    if (mf != m_mergedFrom.end()) {
+                        std::string names;
+                        for (const std::string& n : mf->second) names += (names.empty() ? "" : ";") + n;
+                        attrs.emplace_back("MERGED_EQUIV", "\"" + names + "\"");
+                    }
+                }
+                cell(type, sanitize(r.name) + "_" + std::to_string(bn), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}}, attrs);
             }
         }
         // 4. memories and pass-through cells
