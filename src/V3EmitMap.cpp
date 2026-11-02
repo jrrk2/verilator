@@ -35,10 +35,12 @@
 #include "struct_netlist.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -209,6 +211,28 @@ public:
     };
     std::vector<Chain> m_chains;
     std::vector<Dsp> m_dsps;
+    // Chains and DSPs are hashed on their operand literals, so one hard cell
+    // serves every identical add, subtract and ordered compare in the
+    // flattened design (a < b, a >= b and a - b are one chain)
+    std::map<std::tuple<Vec, Vec, int>, size_t> m_chainHash;
+    std::map<std::pair<Vec, Vec>, size_t> m_dspHash;
+    // The chain computing x + y + cin.  Where a bit's propagate S = x ^ y is
+    // 0, x == y, so either is its generate DI: taking the smaller literal
+    // makes x + y and y + x the same chain.
+    size_t chainFor(const Vec& x, const Vec& y, int cin) {
+        Chain c;
+        for (size_t i = 0; i < x.size(); ++i) {
+            c.s.push_back(XOR(x[i], y[i]));
+            c.di.push_back(std::min(x[i], y[i]));
+        }
+        c.cyinit = cin;
+        const auto key = std::make_tuple(c.s, c.di, cin);
+        const auto it = m_chainHash.find(key);
+        if (it != m_chainHash.end()) return it->second;
+        m_chains.push_back(c);
+        m_chainHash.emplace(key, m_chains.size() - 1);
+        return m_chains.size() - 1;
+    }
     bool m_hard = true;
     std::unordered_set<int> m_pinned;  // hard-cell outputs: never aliased by equate
     int pinnedVar() {
@@ -222,9 +246,57 @@ public:
     // unbound placeholder then (a zero-extended operand, an operand read
     // through a net), bound to 0 by equate() later.  After elaboration every
     // alias is known: drop those DSP48E1s and tie their product bits to 0.
+    // Value of a literal once every placeholder alias is known: 0, 1, or -1
+    // when it depends on a primary input.  Gates were built while their
+    // inputs were still placeholders, so a mux of two zero-extended operands
+    // only folds to 0 here.  Iterative: AIG depth can exceed the stack.
+    int constOf(int lit, std::unordered_map<int, int>& memo) {
+        std::vector<int> stack{resolve(lit) >> 1};
+        while (!stack.empty()) {
+            const int v = stack.back();
+            if (v == 0 || memo.count(v)) {
+                stack.pop_back();
+                continue;
+            }
+            if (isPlaceholder(v)) {  // unbound: a primary input
+                memo[v] = -1;
+                stack.pop_back();
+                continue;
+            }
+            const int f0 = resolve(m_fan[v].first);
+            const int f1 = resolve(m_fan[v].second);
+            const auto val = [&](int l, bool& ready) {
+                const int fv = l >> 1;
+                if (fv == 0) return l & 1;
+                const auto it = memo.find(fv);
+                if (it == memo.end()) {
+                    ready = false;
+                    stack.push_back(fv);
+                    return -1;
+                }
+                return it->second < 0 ? -1 : it->second ^ (l & 1);
+            };
+            bool ready = true;
+            const int a = val(f0, ready);
+            if (a == 0 && ready) {  // AND short-circuits on a known 0
+                memo[v] = 0;
+                stack.pop_back();
+                continue;
+            }
+            const int b = val(f1, ready);
+            if (!ready) continue;
+            memo[v] = (a == 0 || b == 0) ? 0 : (a == 1 && b == 1) ? 1 : -1;
+            stack.pop_back();
+        }
+        const int r = resolve(lit);
+        if ((r >> 1) == 0) return r & 1;
+        const int mv = memo[r >> 1];
+        return mv < 0 ? -1 : mv ^ (r & 1);
+    }
     int pruneDsps() {
+        std::unordered_map<int, int> memo;
         const auto zero = [&](const Vec& v) {
-            for (const int l : v) if (resolve(l) != 0) return false;
+            for (const int l : v) if (constOf(l, memo) != 0) return false;
             return true;
         };
         size_t k = 0;
@@ -250,16 +322,27 @@ public:
         return true;
     }
     Vec add(const Vec& a, const Vec& b, int cin = 0) {
-        if (m_hard && a.size() >= MIN_CARRY && !(allConst(a) && allConst(b))) {
-            Chain c;
-            for (size_t i = 0; i < a.size(); ++i) {
-                c.s.push_back(XOR(a[i], b[i]));
-                c.di.push_back(a[i]);
-                c.o.push_back(pinnedVar());
+        if (m_hard && a.size() > MIN_CARRY && a.back() == 0 && b.back() == 0) {
+            // Both top bits 0 (a zero-extended carry out): that sum bit is
+            // the carry out of the rest, so the chain is one bit shorter
+            const Vec la(a.begin(), a.end() - 1), lb(b.begin(), b.end() - 1);
+            if (!(allConst(la) && allConst(lb))) {
+                const size_t k = chainFor(la, lb, cin);
+                if (m_chains[k].o.empty()) {
+                    for (size_t i = 0; i < la.size(); ++i) m_chains[k].o.push_back(pinnedVar());
+                }
+                if (m_chains[k].co < 0) m_chains[k].co = pinnedVar();
+                Vec r = m_chains[k].o;
+                r.push_back(m_chains[k].co);
+                return r;
             }
-            c.cyinit = cin;
-            m_chains.push_back(c);
-            return m_chains.back().o;
+        }
+        if (m_hard && a.size() >= MIN_CARRY && !(allConst(a) && allConst(b))) {
+            const size_t k = chainFor(a, b, cin);
+            if (m_chains[k].o.empty()) {
+                for (size_t i = 0; i < a.size(); ++i) m_chains[k].o.push_back(pinnedVar());
+            }
+            return m_chains[k].o;
         }
         return addGates(a, b, cin);
     }
@@ -292,11 +375,19 @@ public:
                     d.a.push_back(0);  // A[24] = 0: the 24 bits are unsigned
                     d.b = bj;
                     d.b.push_back(0);  // B[17] = 0
-                    for (int k = 0; k < 48; ++k) d.p.push_back(pinnedVar());
-                    m_dsps.push_back(d);
+                    const auto hit = m_dspHash.find({d.a, d.b});
+                    size_t dk;
+                    if (hit != m_dspHash.end()) {
+                        dk = hit->second;
+                    } else {
+                        for (int k = 0; k < 48; ++k) d.p.push_back(pinnedVar());
+                        m_dsps.push_back(d);
+                        dk = m_dsps.size() - 1;
+                        m_dspHash.emplace(std::make_pair(m_dsps[dk].a, m_dsps[dk].b), dk);
+                    }
                     const int sh = 24 * i + 17 * j;
                     Vec part(w, 0);
-                    for (int k = 0; k < 41 && sh + k < w; ++k) part[sh + k] = m_dsps.back().p[k];
+                    for (int k = 0; k < 41 && sh + k < w; ++k) part[sh + k] = m_dsps[dk].p[k];
                     parts.push_back(part);
                 }
             }
@@ -322,15 +413,9 @@ public:
     int ltU(const Vec& a, const Vec& b) {
         if (m_hard && a.size() >= MIN_CARRY && !(allConst(a) && allConst(b))) {
             // a < b  <=>  no carry out of a + ~b + 1
-            Chain c;
-            for (size_t i = 0; i < a.size(); ++i) {
-                c.s.push_back(XOR(a[i], b[i] ^ 1));
-                c.di.push_back(a[i]);
-            }
-            c.cyinit = 1;
-            c.co = pinnedVar();
-            m_chains.push_back(c);
-            return m_chains.back().co ^ 1;
+            const size_t k = chainFor(a, NOTv(b), 1);
+            if (m_chains[k].co < 0) m_chains[k].co = pinnedVar();
+            return m_chains[k].co ^ 1;
         }
         int borrow = 0;
         for (size_t i = 0; i < a.size(); ++i) borrow = OR(AND(a[i] ^ 1, b[i]), AND(OR(a[i] ^ 1, b[i]), borrow));
@@ -689,6 +774,30 @@ private:
             }
         }
     }
+    // A 3-input LUT that is `s ? d1 ^ p1 : d0 ^ p0` for some order of its
+    // inputs and data polarities (abc folds inverters into it):
+    // {s, d0, d1, p0, p1} as input indices and polarities, or s = -1
+    static std::array<int, 5> lutMux(const Lut& l) {
+        if (l.ins.size() != 3) return {-1, -1, -1, 0, 0};
+        const std::string init = lutInit(l);  // bit idx at position 7 - idx
+        for (int sel = 0; sel < 3; ++sel) {
+            for (int d0 = 0; d0 < 3; ++d0) {
+                if (d0 == sel) continue;
+                const int d1 = 3 - sel - d0;
+                for (int pol = 0; pol < 4; ++pol) {
+                    const int p0 = pol & 1, p1 = pol >> 1;
+                    bool isMux = true;
+                    for (int idx = 0; idx < 8 && isMux; ++idx) {
+                        const int want = ((idx >> sel) & 1) ? ((idx >> d1) & 1) ^ p1
+                                                            : ((idx >> d0) & 1) ^ p0;
+                        isMux = (init[7 - idx] == '1') == (want == 1);
+                    }
+                    if (isMux) return {sel, d0, d1, p0, p1};
+                }
+            }
+        }
+        return {-1, -1, -1, 0, 0};
+    }
     static std::string lutInit(const Lut& l) {
         const int k = l.ins.size();
         const int n = 1 << k;
@@ -967,6 +1076,70 @@ private:
                 }
             }
         }
+        std::set<std::string> complemented;  // LUTs whose INIT is inverted (1b)
+        // 1b. Wide muxes: a 3-input LUT that muxes two LUTs read nowhere else
+        // becomes a MUXF7 next to them in the slice, and one that muxes two
+        // such MUXF7s a MUXF8 -- each saves a LUT and a LUT delay.
+        {
+            std::unordered_map<std::string, int> fanout;
+            for (const std::string& o : order) {
+                for (const std::string& i : luts[o].ins) ++fanout[i];
+                if (o.compare(0, 2, "po") == 0) ++fanout[o];
+            }
+            const auto soleLut = [&](const std::string& n) {
+                const auto it = luts.find(n);
+                return it != luts.end() && !skip.count(n) && !it->second.ins.empty()
+                       && fanout[n] == 1;
+            };
+            std::set<std::string> f7;
+            std::set<std::string> f7data;  // LUTs feeding a MUXF7: they stay LUTs
+            std::map<std::string, std::pair<std::string, std::string>> f7feeds;
+            // An inverted mux input is absorbed by complementing the LUT(s)
+            // behind it, which read nothing else
+            const auto invert = [&](const std::string& d) {
+                const auto fit = f7feeds.find(d);
+                if (fit == f7feeds.end()) {
+                    complemented.insert(d).second || complemented.erase(d);
+                } else {
+                    for (const std::string& lut : {fit->second.first, fit->second.second}) {
+                        complemented.insert(lut).second || complemented.erase(lut);
+                    }
+                }
+            };
+            for (const int level : {7, 8}) {
+                for (const std::string& o : order) {
+                    if (skip.count(o)) continue;
+                    const std::array<int, 5> m = lutMux(luts[o]);
+                    if (m[0] < 0) continue;
+                    const std::string& d0 = luts[o].ins[m[1]];
+                    const std::string& d1 = luts[o].ins[m[2]];
+                    const bool ok = level == 7 ? soleLut(d0) && soleLut(d1) && !f7.count(d0)
+                                                     && !f7.count(d1) && !f7data.count(o)
+                                               : f7.count(d0) && f7.count(d1) && fanout[d0] == 1
+                                                     && fanout[d1] == 1;
+                    if (!ok) continue;
+                    const auto oit = owner.find(o);
+                    m_curPath = oit == owner.end() ? std::string() : oit->second;
+                    cell(level == 7 ? "MUXF7" : "MUXF8",
+                         "muxf" + std::to_string(level) + "_" + sanitize(o) + "_"
+                             + std::to_string(m_ncells),
+                         {},
+                         {{"I0", "[" + netOf(d0) + "]"},
+                          {"I1", "[" + netOf(d1) + "]"},
+                          {"S", "[" + netOf(luts[o].ins[m[0]]) + "]"}},
+                         {{"O", "[" + netOfName[o] + "]"}});
+                    skip.insert(o);
+                    if (m[3]) invert(d0);
+                    if (m[4]) invert(d1);
+                    if (level == 7) {
+                        f7.insert(o);
+                        f7data.insert(d0);
+                        f7data.insert(d1);
+                        f7feeds[o] = {d0, d1};
+                    }
+                }
+            }
+        }
         // 2. LUT cells
         for (const std::string& o : order) {
             if (skip.count(o)) continue;
@@ -978,7 +1151,11 @@ private:
             const int k = l.ins.size();
             std::vector<std::pair<std::string, std::string>> ins;
             for (int i = 0; i < k; ++i) ins.emplace_back("I" + std::to_string(i), "[" + netOf(l.ins[i]) + "]");
-            cell("LUT" + std::to_string(k), "lut_" + sanitize(o) + "_" + std::to_string(m_ncells), {{"INIT", "\"" + lutInit(l) + "\""}}, ins, {{"O", "[" + netOfName[o] + "]"}});
+            std::string init = lutInit(l);
+            if (complemented.count(o)) {
+                for (char& c : init) c = c == '1' ? '0' : '1';
+            }
+            cell("LUT" + std::to_string(k), "lut_" + sanitize(o) + "_" + std::to_string(m_ncells), {{"INIT", "\"" + init + "\""}}, ins, {{"O", "[" + netOfName[o] + "]"}});
         }
         // 2b. carry chains: blocks of four bits, the first with CI = 0 and the
         // initial carry on CYINIT, each later one's CI from the previous CO[3];
@@ -1347,6 +1524,8 @@ private:
             in("WCLK"); in("WE");
         } else if (t == "CARRY4") {
             out("CO", 4); out("O", 4); in("CI"); in("CYINIT"); in("DI", 4); in("S", 4);
+        } else if (t == "MUXF7" || t == "MUXF8") {
+            out("O"); in("I0"); in("I1"); in("S");
         } else if (t == "DSP48E1") {
             out("ACOUT", 30); out("BCOUT", 18); out("CARRYCASCOUT"); out("CARRYOUT", 4); out("MULTSIGNOUT"); out("OVERFLOW");
             out("P", 48); out("PATTERNBDETECT"); out("PATTERNDETECT"); out("PCOUT", 48); out("UNDERFLOW");

@@ -283,12 +283,16 @@ class StructModule final {
     int m_inlineDepth = 0;
     int m_callSeq = 0;
     int m_alwaysSeq = 0;
+    int m_sharedOps = 0;  // operators merged by shareOperators()
     std::string m_genPrefix;
     // mux bookkeeping for enable / reset-value folding
     struct MuxInfo final {
         SExpr sel, in0, in1;
     };
     std::unordered_map<std::string, MuxInfo> m_muxes;
+    // Operator cells already built, by primitive, width and operand text:
+    // nets are single-assignment, so the same key is the same value
+    std::unordered_map<std::string, SExpr> m_opCache;
     std::unordered_map<std::string, std::pair<const AstVar*, size_t>> m_readPorts;  // rdata ident -> (mem, port)
     std::vector<SDeferredDff> m_deferred;
     // Procedural context
@@ -433,6 +437,7 @@ public:
         lowerPass(m_modp->stmtsp());
         emitMemories();
         fillStaticInits();
+        shareOperators();
         dce();
         if (m_xilinx) xilinxRelabel();
         print(os);
@@ -546,9 +551,21 @@ private:
     }
 
     // ---- primitives (sv_tran_struct gen_binary_op / gen_unary_op / gen_mux / gen_dff_en) ----
+    static bool commutative(const std::string& prim) {
+        return prim == "adder" || prim == "multiplier" || prim == "multiplier_signed"
+               || prim == "bitwise_and" || prim == "bitwise_or" || prim == "bitwise_xor"
+               || prim == "comparator_eq" || prim == "comparator_neq";
+    }
     SExpr genBinary(const std::string& prim, const SExpr& a, const SExpr& b, int opWidth,
                     int outWidth) {
+        const bool swap = commutative(prim) && b.text < a.text;
+        const std::string key = prim + "|" + std::to_string(opWidth) + "|"
+                                + std::to_string(outWidth) + "|" + (swap ? b.text : a.text) + "|"
+                                + (swap ? a.text : b.text);
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(outWidth);
+        m_opCache.emplace(key, out);
         SItem& it = addCell(prim, newName("op"));
         it.params = {{"WIDTH", std::to_string(opWidth)}};
         pinIn(it, "a", a);
@@ -557,7 +574,12 @@ private:
         return out;
     }
     SExpr genUnary(const std::string& prim, const SExpr& a, int opWidth, int outWidth) {
+        const std::string key = prim + "|" + std::to_string(opWidth) + "|"
+                                + std::to_string(outWidth) + "|" + a.text;
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(outWidth);
+        m_opCache.emplace(key, out);
         SItem& it = addCell(prim, newName("op"));
         if (prim != "logical_not") it.params = {{"WIDTH", std::to_string(opWidth)}};
         pinIn(it, "in", a);
@@ -567,7 +589,12 @@ private:
     SExpr genMux(const SExpr& sel, const SExpr& in0, const SExpr& in1, int width) {
         if (in0.text == in1.text) return in0;
         if (sel.hasVal) return sel.val ? in1 : in0;
+        const std::string key = "mux2|" + std::to_string(width) + "|" + sel.text + "|"
+                                + in0.text + "|" + in1.text;
+        const auto cit = m_opCache.find(key);
+        if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(width);
+        m_opCache.emplace(key, out);
         SItem& it = addCell("mux2", newName("mux"));
         it.params = {{"WIDTH", std::to_string(width)}};
         pinIn(it, "sel", sel);
@@ -3035,6 +3062,57 @@ private:
         }
     }
 
+    // The arm (index into CaseArms::arms, -1 for none) that every
+    // combination of the selector bits the labels test selects, first match
+    // first, when the analysis can enumerate them; tested empty otherwise
+    struct CaseTable final {
+        std::vector<int> tested;  // selector bit of each table index bit
+        std::vector<int> arm;  // per combination
+    };
+    static CaseTable caseTable(const AstCase* cp) {
+        CaseTable t;
+        const int width = cp->exprp()->width();
+        std::vector<CaseCube> cubes;
+        if (width > 64 || !caseCubes(cp, width, cubes)) return t;
+        uint64_t testedMask = 0;
+        for (const CaseCube& c : cubes) testedMask |= c.mask;
+        std::vector<int> tested;
+        for (int b = 0; b < width; ++b) {
+            if ((testedMask >> b) & 1) tested.push_back(b);
+        }
+        if (tested.empty() || static_cast<int>(tested.size()) > CASE_ENUMERATE_MAX_BITS) {
+            return t;
+        }
+        std::vector<int> armOfItem;  // case item index -> arm index (defaults skipped)
+        int nextArm = 0;
+        for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) {
+            armOfItem.push_back(ip->isDefault() ? -1 : nextArm++);
+        }
+        t.tested = tested;
+        t.arm.assign(1ULL << tested.size(), -1);
+        for (uint64_t k = 0; k < t.arm.size(); ++k) {
+            uint64_t v = 0;
+            for (size_t i = 0; i < tested.size(); ++i) {
+                if ((k >> i) & 1) v |= 1ULL << tested[i];
+            }
+            for (const CaseCube& c : cubes) {
+                if ((v & c.mask) == c.value) {
+                    t.arm[k] = armOfItem[c.item];
+                    break;
+                }
+            }
+        }
+        return t;
+    }
+    // Leaves of the selector-bit tree over table entries [lo, hi)
+    static size_t caseTreeLeaves(const CaseTable& t, size_t lo, size_t hi) {
+        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi,
+                        [&](int a) { return a == t.arm[lo]; })) {
+            return 1;
+        }
+        const size_t mid = lo + (hi - lo) / 2;
+        return caseTreeLeaves(t, lo, mid) + caseTreeLeaves(t, mid, hi);
+    }
     struct CaseArms final {
         std::vector<std::pair<SExpr, AstCaseItem*>> arms;  // (hit, item)
         AstCaseItem* defaultp = nullptr;  // nullptr when absent or unreachable
@@ -3047,8 +3125,22 @@ private:
         for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) {
             if (ip->isDefault()) {
                 ca.defaultp = ip;
-                continue;
+            } else {
+                ca.arms.emplace_back(SExpr{}, ip);
             }
+        }
+        bool full = false;
+        checkCaseKeyword(cp, analyzeCase(cp), ca.defaultp != nullptr, full, ca.parallel);
+        if (full) ca.defaultp = nullptr;  // unreachable
+        // Constant labels testing few selector bits: steer by those bits
+        const CaseTable table = caseTable(cp);
+        if (!table.tested.empty()
+            && caseTreeLeaves(table, 0, table.arm.size()) <= 2 * ca.arms.size() + 2) {
+            lowerCaseBits(ca, table, sel, 0, table.arm.size(), env);
+            return;
+        }
+        for (auto& arm : ca.arms) {
+            AstCaseItem* const ip = arm.second;
             SExpr hit = constExpr(0, 1);
             bool first = true;
             for (AstNodeExpr* condp = ip->condsp(); condp;
@@ -3066,12 +3158,54 @@ private:
                 hit = first ? one : orBits(hit, one);
                 first = false;
             }
-            ca.arms.emplace_back(materialize(hit), ip);
+            arm.first = materialize(hit);
         }
-        bool full = false;
-        checkCaseKeyword(cp, analyzeCase(cp), ca.defaultp != nullptr, full, ca.parallel);
-        if (full) ca.defaultp = nullptr;  // unreachable
         lowerCaseRange(ca, 0, ca.arms.size(), full, env);
+    }
+    // Lower table entries [lo, hi): one arm (or the fall-through) when they
+    // all select it, else a mux on the next selector bit down
+    void lowerCaseBits(CaseArms& ca, const CaseTable& t, const SExpr& sel, size_t lo, size_t hi,
+                       Env& env) {
+        const int arm = t.arm[lo];
+        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi,
+                        [&](int a) { return a == arm; })) {
+            if (arm >= 0) {
+                lowerStmts(ca.arms[arm].second->stmtsp(), env);
+            } else if (ca.defaultp) {
+                lowerStmts(ca.defaultp->stmtsp(), env);
+            }
+            return;
+        }
+        const size_t mid = lo + (hi - lo) / 2;
+        int bit = 0;
+        while ((size_t{2} << bit) < hi - lo) ++bit;
+        const SExpr cond = sliceOf(sel, t.tested[bit], 1);
+        lowerBranches(
+            cond, [&](Env& e) { lowerCaseBits(ca, t, sel, mid, hi, e); },
+            [&](Env& e) { lowerCaseBits(ca, t, sel, lo, mid, e); }, env);
+    }
+    // Lower thenFn under cond and elseFn under !cond, merged as lowerIf does
+    template <typename ThenFn, typename ElseFn>
+    void lowerBranches(const SExpr& cond, ThenFn thenFn, ElseFn elseFn, Env& env) {
+        if (cond.hasVal) {
+            if (cond.val) {
+                thenFn(env);
+            } else {
+                elseFn(env);
+            }
+            return;
+        }
+        Env thenEnv = env;
+        Env elseEnv = env;
+        thenEnv.pending.clear();
+        elseEnv.pending.clear();
+        m_pathCond.emplace_back(cond, false);
+        thenFn(thenEnv);
+        m_pathCond.pop_back();
+        m_pathCond.emplace_back(cond, true);
+        elseFn(elseEnv);
+        m_pathCond.pop_back();
+        mergeBranches(cond, thenEnv, elseEnv, env);
     }
     // OR of the hits of arms [lo, hi), shared between tree levels
     SExpr caseAnyHit(CaseArms& ca, size_t lo, size_t hi) {
@@ -3097,26 +3231,9 @@ private:
             return;
         }
         const size_t mid = ca.parallel ? std::max(lo + 1, (lo + hi) / 2) : lo + 1;
-        const SExpr cond = caseAnyHit(ca, lo, mid);
-        if (cond.hasVal) {
-            if (cond.val) {
-                lowerCaseRange(ca, lo, mid, true, env);
-            } else {
-                lowerCaseRange(ca, mid, hi, someHit, env);
-            }
-            return;
-        }
-        Env thenEnv = env;
-        Env elseEnv = env;
-        thenEnv.pending.clear();
-        elseEnv.pending.clear();
-        m_pathCond.emplace_back(cond, false);
-        lowerCaseRange(ca, lo, mid, true, thenEnv);
-        m_pathCond.pop_back();
-        m_pathCond.emplace_back(cond, true);
-        lowerCaseRange(ca, mid, hi, someHit, elseEnv);
-        m_pathCond.pop_back();
-        mergeBranches(cond, thenEnv, elseEnv, env);
+        lowerBranches(
+            caseAnyHit(ca, lo, mid), [&](Env& e) { lowerCaseRange(ca, lo, mid, true, e); },
+            [&](Env& e) { lowerCaseRange(ca, mid, hi, someHit, e); }, env);
     }
     SExpr orBits(const SExpr& a, const SExpr& b) {
         if (a.hasVal) return a.val ? a : b;
@@ -4437,6 +4554,162 @@ private:
         return alive;
     }
 
+    // ---- resource sharing ----
+    // mux(s, op(a, b), op(c, d)) -> op(mux(s, a, c), mux(s, b, d)) when both
+    // operators are the same arithmetic primitive and the mux is their only
+    // reader: the arms of an if/else, or of exclusive case items, then use
+    // one adder, ordered compare, multiplier or divider.  An add and a
+    // subtract share an adder_carry (a - b = a + ~b + 1).  Repeated to a
+    // fixpoint, so an N-arm mux chain or tree ends as one operator behind
+    // operand muxes.  Equality compares and logic are not shared: on LUTs they
+    // cost no more than the operand muxes would.  The replaced operators lose
+    // their only reader and dce() removes them.
+    static bool sharable(const std::string& prim) {
+        static const std::set<std::string> prims
+            = {"adder", "adder_carry", "subtractor", "multiplier", "multiplier_signed", "divider",
+               "comparator_lt", "comparator_lte", "comparator_gt", "comparator_gte",
+               "comparator_lt_signed", "comparator_lte_signed", "comparator_gt_signed",
+               "comparator_gte_signed"};
+        return prims.count(prim);
+    }
+    static std::string pinOf(const SItem& it, const std::string& name) {
+        for (const SPin& p : it.pins) {
+            if (p.name == name) return p.expr;
+        }
+        return "";
+    }
+    // Identifiers an operand's text reads (sized literals skipped)
+    static std::vector<std::string> refsOf(const std::string& text) {
+        std::vector<std::string> refs;
+        for (size_t i = 0; i < text.size();) {
+            const char c = text[i];
+            if (std::isdigit(static_cast<unsigned char>(c))) {
+                // a number, and a sized literal's base and digits after it
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
+                                           || text[i] == '\'' || text[i] == '_')) {
+                    ++i;
+                }
+            } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$') {
+                const size_t b = i;
+                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
+                                           || text[i] == '_' || text[i] == '$')) {
+                    ++i;
+                }
+                refs.push_back(text.substr(b, i - b));
+            } else {
+                ++i;
+            }
+        }
+        return refs;
+    }
+    SExpr operandExpr(const std::string& text, int width) {
+        SExpr e;
+        e.text = text;
+        e.width = width;
+        e.refs = refsOf(text);
+        e.isIdent = e.refs.size() == 1 && e.refs[0] == text;
+        return e;
+    }
+    void shareOperators() {
+        for (bool changed = true; changed;) {
+            changed = false;
+            dce();  // readers that are themselves dead must not block sharing
+            std::unordered_map<std::string, size_t> driver;  // output net -> cell
+            std::unordered_map<std::string, int> uses;
+            for (size_t i = 0; i < m_items.size(); ++i) {
+                const SItem& it = m_items[i];
+                for (const std::string& r : it.reads) ++uses[r];
+                if (it.kind == SItem::CELL) {
+                    const std::string o = pinOf(it, "out");
+                    if (!o.empty()) driver[o] = i;
+                }
+            }
+            for (const auto& d : m_decls) {
+                if (d.dir.isAny()) ++uses[d.name];  // a port is read outside
+            }
+            std::unordered_set<size_t> consumed;
+            const size_t n = m_items.size();
+            for (size_t mi = 0; mi < n; ++mi) {
+                if (m_items[mi].kind != SItem::CELL || m_items[mi].prim != "mux2") continue;
+                const SItem mux = m_items[mi];
+                const std::string x = pinOf(mux, "in0");
+                const std::string y = pinOf(mux, "in1");
+                const auto dxi = driver.find(x);
+                const auto dyi = driver.find(y);
+                if (x == y || dxi == driver.end() || dyi == driver.end()) continue;
+                if (uses[x] != 1 || uses[y] != 1) continue;
+                if (consumed.count(dxi->second) || consumed.count(dyi->second)) continue;
+                const SItem cx = m_items[dxi->second];
+                const SItem cy = m_items[dyi->second];
+                const bool addSub = (cx.prim == "adder" || cx.prim == "subtractor")
+                                    && (cy.prim == "adder" || cy.prim == "subtractor")
+                                    && cx.prim != cy.prim;
+                if (!(cx.prim == cy.prim && sharable(cx.prim)) && !addSub) continue;
+                // A carry-out still read elsewhere keeps its adder
+                if (uses[pinOf(cx, "cout")] || uses[pinOf(cy, "cout")]) continue;
+                if (cx.params != cy.params) continue;
+                const auto wit = std::find_if(cx.params.begin(), cx.params.end(),
+                                              [](const std::pair<std::string, std::string>& kv) {
+                                                  return kv.first == "WIDTH";
+                                              });
+                if (wit == cx.params.end()) continue;
+                const int w = std::stoi(wit->second);
+                std::string a0 = pinOf(cx, "a"), b0 = pinOf(cx, "b");
+                std::string a1 = pinOf(cy, "a"), b1 = pinOf(cy, "b");
+                // Commutative: pair equal operands so they need no mux
+                if (!addSub && commutative(cx.prim) && a0 != a1 && (a0 == b1 || b0 == a1)) {
+                    std::swap(a1, b1);
+                }
+                const SExpr sel = operandExpr(pinOf(mux, "sel"), 1);
+                const auto pick = [&](const std::string& o0, const std::string& o1) {
+                    return o0 == o1 ? operandExpr(o0, w)
+                                    : genMux(sel, operandExpr(o0, w), operandExpr(o1, w), w);
+                };
+                const SExpr a = pick(a0, a1);
+                SItem shared;
+                shared.kind = SItem::CELL;
+                shared.inst = newName("op");
+                const std::string out = pinOf(mux, "out");
+                if (addSub) {
+                    // The subtract arm's b is inverted and its carry-in set
+                    const auto bOf = [&](const SItem& c, const std::string& b) {
+                        return c.prim == "subtractor"
+                                   ? genUnary("bitwise_not", operandExpr(b, w), w, w).text
+                                   : b;
+                    };
+                    const SExpr b = pick(bOf(cx, b0), bOf(cy, b1));
+                    const SExpr cin = cy.prim == "subtractor" ? sel : notBit(sel);
+                    shared.prim = "adder_carry";
+                    shared.params = cx.params;
+                    pinIn(shared, "a", a);
+                    pinIn(shared, "b", b);
+                    pinIn(shared, "cin", cin);
+                    pinOut(shared, "out", out);
+                    pinOut(shared, "cout", newWire(1).text);
+                } else {
+                    shared.prim = cx.prim;
+                    shared.params = cx.params;
+                    pinIn(shared, "a", a);
+                    pinIn(shared, "b", pick(b0, b1));
+                    if (cx.prim == "adder_carry") {
+                        const std::string c0 = pinOf(cx, "cin"), c1 = pinOf(cy, "cin");
+                        pinIn(shared, "cin",
+                              c0 == c1 ? operandExpr(c0, 1)
+                                       : genMux(sel, operandExpr(c0, 1), operandExpr(c1, 1), 1));
+                        pinOut(shared, "out", out);
+                        pinOut(shared, "cout", newWire(1).text);
+                    } else {
+                        pinOut(shared, "out", out);
+                    }
+                }
+                m_items[mi] = shared;
+                consumed.insert(dxi->second);
+                consumed.insert(dyi->second);
+                ++m_sharedOps;
+                changed = true;
+            }
+        }
+    }
     void dce() {
         const std::vector<bool> alive = markLive({});
         std::vector<SItem> kept;
