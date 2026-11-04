@@ -4404,10 +4404,26 @@ private:
                 }
             }
             if (allSync) {
-                // Synchronous-read primitives, up to two read ports per bank
-                for (size_t bank = 0; bank * 2 < nr; ++bank) {
-                    const size_t r0 = bank * 2;
-                    const bool two = r0 + 1 < nr;
+                // Synchronous-read primitives.  A block has two ports and the write takes one,
+                // so only a read at the write address can share a bank with another read
+                // (its port does the write and the read together); every other read gets
+                // its own copy of the memory, all copies sharing the write.
+                std::vector<std::vector<size_t>> banks;
+                size_t shared = nr;
+                if (nw) for (size_t i = 0; i < nr && shared == nr; ++i)
+                    if (m.readIdx[i].text == m.writes[0].idx.text) shared = i;
+                if (shared != nr) {
+                    std::vector<size_t> b{shared};
+                    for (size_t i = 0; i < nr && b.size() < 2; ++i) if (i != shared) b.push_back(i);
+                    banks.push_back(b);
+                }
+                for (size_t i = 0; i < nr; ++i) {
+                    bool used = false;
+                    for (const auto& b : banks) for (const size_t r : b) used = used || r == i;
+                    if (!used) banks.push_back({i});
+                }
+                for (size_t bank = 0; bank < banks.size(); ++bank) {
+                    const bool two = banks[bank].size() == 2;
                     SItem& it = addCell(two ? "memory_1w2r_sync" : "memory_1w1r_sync",
                                         m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
                     it.keep = true;
@@ -4419,10 +4435,11 @@ private:
                     const char* reN[2] = {"re1", "re2"};
                     const char* raN[2] = {"raddr1", "raddr2"};
                     const char* rdN[2] = {"rdata1", "rdata2"};
-                    for (size_t k = 0; k < (two ? 2u : 1u); ++k) {
-                        const SMem::SyncRead& sr = m.sync[r0 + k];
+                    for (size_t k = 0; k < banks[bank].size(); ++k) {
+                        const size_t r = banks[bank][k];
+                        const SMem::SyncRead& sr = m.sync[r];
                         pinIn(it, two ? reN[k] : "re", sr.en);
-                        pinIn(it, two ? raN[k] : "raddr", addr(m.readIdx[r0 + k]));
+                        pinIn(it, two ? raN[k] : "raddr", addr(m.readIdx[r]));
                         pinOut(it, two ? rdN[k] : "rdata", sr.q, sr.qRefs);
                         m_regsInBlock.emplace_back(sr.q, m.dataWidth);
                     }
