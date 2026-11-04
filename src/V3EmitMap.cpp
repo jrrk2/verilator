@@ -2304,15 +2304,10 @@ private:
                 P[1].addr = firstShares ? ra2 : ra1;
                 P[1].dout = firstShares ? rd2 : rd1;
             } else if (twoReads) {
-                // two reads at their own addresses: port A takes the write and,
-                // in a cycle without one, the first read (NO_CHANGE keeps it)
-                P[0].en = orNet(weBit, re1Bit);
-                P[0].addr = muxAddr(weBit, waddr, ra1);
-                P[0].dout = rd1;
-                P[0].mode = "NO_CHANGE";
-                P[1].en = re2Bit;
-                P[1].addr = ra2;
-                P[1].dout = rd2;
+                // Two reads at their own addresses and a write need three ports: a read would
+                // be lost in every write cycle.  V3EmitStruct replicates these into 1w1r copies.
+                v3error("Synthesis: memory " + c.name + ": a write and two reads at independent addresses do not fit one block RAM");
+                return;
             } else {
                 P[0].en = weBit;
                 P[0].addr = waddr;
