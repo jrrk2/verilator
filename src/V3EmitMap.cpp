@@ -2270,7 +2270,7 @@ private:
                 P[k].addr = pinNets(("addr" + sfx).c_str());
                 P[k].din = pinNets(("wdata" + sfx).c_str());
                 P[k].dout = outNets(("rdata" + sfx).c_str());
-                P[k].mode = "NO_CHANGE";
+                P[k].mode = paramOf(c, ("READ_FIRST" + sfx).c_str(), 0) ? "READ_FIRST" : "NO_CHANGE";
             }
         } else {
             const std::string clk = bit0(pinNets("clk"), "\"0\"");
@@ -2296,6 +2296,10 @@ private:
                 // the write: READ_FIRST gives the word before the write, as the
                 // synchronous read does, and the other read has port B to itself
                 const bool firstShares = ra1 == waddr;
+                if ((firstShares ? re1Bit : re2Bit) != "\"1\"") {
+                    v3error("Synthesis: memory " + c.name + ": a read sharing the write's port must have no enable; its output would change in every write");
+                    return;
+                }
                 P[0].en = orNet(weBit, firstShares ? re1Bit : re2Bit);
                 P[0].addr = waddr;
                 P[0].dout = firstShares ? rd1 : rd2;
