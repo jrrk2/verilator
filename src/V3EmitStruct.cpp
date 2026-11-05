@@ -176,6 +176,8 @@ struct SMem final {
         std::string q;
         std::vector<std::string> qRefs;
         SExpr clk;
+        // the if-conditions its enable is under, outermost first: (condition, in the else branch)
+        std::vector<std::pair<std::string, bool>> path;
     };
     std::vector<SyncRead> sync;
 };
@@ -269,7 +271,8 @@ class StructModule final {
     const bool m_report;
     std::vector<SDecl> m_decls;  // declared vars/ports/params (source order)
     std::vector<SDecl> m_wires;  // generated wires
-    std::vector<SItem> m_items;
+    // a deque: a cell under construction keeps its reference while its inputs add more items
+    std::deque<SItem> m_items;
     std::vector<std::string> m_warnings;
     std::unordered_map<std::string, int> m_widths;  // identifier -> width
     std::unordered_map<const AstVar*, std::string> m_varName;
@@ -641,6 +644,25 @@ private:
         pinIn(it, "en", en);
         pinIn(it, "d", d);
         pinOut(it, "q", q, qRefs);
+    }
+    // A free-running flip-flop on a given clock, for logic made after the clocked blocks are done
+    void plainDff(const std::string& q, const std::vector<std::string>& qRefs, const SExpr& d,
+                  const SExpr& clk, int width) {
+        SItem& it = addCell("dff_en", newName("dff"));
+        it.params = {{"WIDTH", std::to_string(width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+        pinIn(it, "clk", clk);
+        it.pins.push_back({"rst", "1'b0"});
+        pinIn(it, "en", constExpr(1, 1));
+        pinIn(it, "d", d);
+        pinOut(it, "q", q, qRefs);
+    }
+    // Is every write of a port also a read of it, from the if-conditions each is under?
+    // Conditions that cannot be matched answer no, whose mapping is right whatever they mean.
+    static bool writeImpliesRead(const std::vector<std::pair<std::string, bool>>& rd,
+                                 const std::vector<std::pair<std::string, bool>>& wr) {
+        if (rd.size() > wr.size()) return false;
+        for (size_t i = 0; i < rd.size(); ++i) if (rd[i] != wr[i]) return false;
+        return true;
     }
     void genLatch(const std::string& q, const std::vector<std::string>& qRefs, const SExpr& en,
                   const SExpr& d, int width) {
@@ -1828,16 +1850,19 @@ private:
                 }
                 // `if (en) q <= d;` -> dff_en with EN; nested holds
                 // (`if (en) if (we) ... else q <= d;`) fold into one enable
+                std::vector<std::pair<std::string, bool>> enPath;
                 for (int level = 0; level < 4; ++level) {
                     const auto mit = m_muxes.find(d.text);
                     if (mit == m_muxes.end()) break;
                     SExpr lvlEn;
                     if (mit->second.in0.text == key && (level > 0 || mit->second.sel.isIdent)) {
                         lvlEn = mit->second.sel;
+                        enPath.emplace_back(mit->second.sel.text, false);
                         d = mit->second.in1;
                     } else if (mit->second.in1.text == key) {
                         // hold in the taken branch: enable is the inverted select
                         lvlEn = materialize(notBit(mit->second.sel));
+                        enPath.emplace_back(mit->second.sel.text, true);
                         d = mit->second.in0;
                     } else {
                         break;
@@ -1867,6 +1892,7 @@ private:
                             declWire(raw, width);
                             sr.used = true;
                             sr.en = en;
+                            sr.path = enPath;
                             sr.q = raw;
                             sr.qRefs = {raw};
                             sr.clk = m_clk;
@@ -1893,6 +1919,7 @@ private:
                     if (!sr.used) {
                         sr.used = true;
                         sr.en = en;
+                        sr.path = enPath;
                         sr.q = key;
                         sr.qRefs = qRefs;
                         sr.clk = m_clk;
@@ -4299,13 +4326,36 @@ private:
                     for (int k = 0; k < 2; ++k) {
                         const std::string sfx = std::to_string(k + 1);
                         const SMem::SyncRead& sr = m.sync[pair[k]];
-                        pinIn(it, "clk" + sfx, m.writes[k].clk.text.empty() ? clk : m.writes[k].clk);
+                        const SExpr portClk = m.writes[k].clk.text.empty() ? clk : m.writes[k].clk;
+                        pinIn(it, "clk" + sfx, portClk);
                         pinIn(it, "en" + sfx, materialize(orBits(m.writes[k].en, sr.en)));
                         pinIn(it, "we" + sfx, m.writes[k].en);
                         pinIn(it, "addr" + sfx, addr(m.writes[k].idx));
                         pinIn(it, "wdata" + sfx, m.writes[k].data);
-                        pinOut(it, "rdata" + sfx, sr.q, sr.qRefs);
-                        m_regsInBlock.emplace_back(sr.q, m.dataWidth);
+                        // READ_FIRST on both ports: it alone gives the other port's read at this
+                        // address the old word, as the RTL does.  It also loads this port's output in
+                        // every write, which is right when a write is also a read.  When a write can
+                        // come without the read, the output is held outside the block RAM in the
+                        // cycle after such a write.
+                        it.params.emplace_back("READ_FIRST" + sfx, "1");
+                        if (!writeImpliesRead(sr.path, m.writes[k].path)) {
+                            const std::string raw = sr.q + "__rd";
+                            declWire(raw, m.dataWidth);
+                            pinOut(it, "rdata" + sfx, raw, {raw});
+                            m_regsInBlock.emplace_back(raw, m.dataWidth);
+                            SExpr rawE = identExpr(raw, m.dataWidth);
+                            rawE.refs = {raw};
+                            SExpr qE = identExpr(sr.q, m.dataWidth);
+                            qE.refs = sr.qRefs;
+                            const SExpr readQ = newWire(1);
+                            plainDff(readQ.text, {readQ.text}, sr.en, portClk, 1);
+                            const SExpr heldQ = newWire(m.dataWidth);
+                            plainDff(heldQ.text, {heldQ.text}, qE, portClk, m.dataWidth);
+                            addAssign(sr.q, genMux(readQ, heldQ, rawE, m.dataWidth), sr.qRefs);
+                        } else {
+                            pinOut(it, "rdata" + sfx, sr.q, sr.qRefs);
+                            m_regsInBlock.emplace_back(sr.q, m.dataWidth);
+                        }
                     }
                     continue;
                 }
@@ -4407,11 +4457,12 @@ private:
                 // Synchronous-read primitives.  A block has two ports and the write takes one,
                 // so only a read at the write address can share a bank with another read
                 // (its port does the write and the read together); every other read gets
-                // its own copy of the memory, all copies sharing the write.
+                // its own copy of the memory, all copies sharing the write.  The shared port's
+                // output changes in every write, so its read must have no enable of its own.
                 std::vector<std::vector<size_t>> banks;
                 size_t shared = nr;
                 if (nw) for (size_t i = 0; i < nr && shared == nr; ++i)
-                    if (m.readIdx[i].text == m.writes[0].idx.text) shared = i;
+                    if (m.readIdx[i].text == m.writes[0].idx.text && m.sync[i].en.hasVal && m.sync[i].en.val) shared = i;
                 if (shared != nr) {
                     std::vector<size_t> b{shared};
                     for (size_t i = 0; i < nr && b.size() < 2; ++i) if (i != shared) b.push_back(i);
@@ -4809,7 +4860,7 @@ private:
     }
     void dce() {
         const std::vector<bool> alive = markLive({});
-        std::vector<SItem> kept;
+        std::deque<SItem> kept;
         for (size_t i = 0; i < m_items.size(); ++i) {
             if (alive[i]) kept.push_back(m_items[i]);
         }
