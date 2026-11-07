@@ -3598,7 +3598,8 @@ private:
         }
         for (const std::string& k : fenv.order) {
             if (k.compare(0, prefix.size(), prefix) == 0) continue;
-            env.setNext(k, fenv.next.at(k));
+            const auto nit = fenv.next.find(k);  // as in finishBlock: order can outlive next
+            if (nit != fenv.next.end()) env.setNext(k, nit->second);
         }
         // Unbind
         for (AstVar* const fp : formals) {
