@@ -899,11 +899,15 @@ private:
         // topological order of AND nodes reachable from the POs
         std::vector<int> order;
         std::unordered_map<int, int> mark;  // var -> 1 visiting, 2 done
+        bool looped = false;
         std::function<void(int)> dfs = [&](int lit) {
             const int v = m_aig.resolve(lit) >> 1;
             if (!v) return;
             const auto it = mark.find(v);
-            if (it != mark.end()) return;
+            if (it != mark.end()) {
+                if (it->second == 1) looped = true;
+                return;
+            }
             if (m_aig.isPlaceholder(v)) {
                 mark[v] = 2;
                 piIndex(v);
@@ -916,6 +920,8 @@ private:
             order.push_back(v);
         };
         for (const int l : m_po) dfs(l);
+        // ABC's reader takes such a file for out-of-range literals and asserts
+        if (looped) v3fatal("Synthesis: the design has a combinational loop, which cannot be mapped");
         // register all known sources as PIs even if unreferenced (stable numbering)
         std::unordered_map<int, int> avar;  // var -> aiger var
         for (size_t i = 0; i < m_piVar.size(); ++i) avar[m_piVar[i]] = i + 1;
