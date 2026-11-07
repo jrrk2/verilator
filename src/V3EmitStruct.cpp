@@ -984,7 +984,7 @@ private:
             const AstNodeAssign* const ap = VN_CAST(sp, NodeAssign);
             if (!ap) continue;
             const AstArraySel* const selp = VN_AS(ap->lhsp(), ArraySel);
-            const long long idx = VN_AS(selp->bitp(), Const)->num().toSQuad() - m.lo;
+            const long long idx = VN_AS(selp->bitp(), Const)->num().toSQuad();
             if (idx < 0 || idx >= m.depth) continue;
             m.initWords[idx] = VN_AS(ap->rhsp(), Const)->num().toUQuad();
         }
@@ -2568,7 +2568,7 @@ private:
             const SExpr idx = materialize(lv.idx);
             for (int k = 0; k < m.depth; ++k) {
                 const std::string& reg = m.regNames[k];
-                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k + m.lo));
+                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k));
                 const SExpr prior = readKey(reg, env, blocking ? true : false);
                 const SExpr v = genMux(hit, prior, rhs, m.dataWidth);
                 SLVal e;
@@ -2783,7 +2783,7 @@ private:
                 return lv;
             }
             if (idx.hasVal) {
-                const int64_t k = static_cast<int64_t>(idx.val) - m.lo;
+                const int64_t k = static_cast<int64_t>(idx.val);
                 if (k < 0 || k >= m.depth) {
                     warnNode(lhsp, "constant index out of range for " + m.name);
                     return lv;
@@ -3919,7 +3919,7 @@ private:
         SMem& m = mit->second;
         if (m.asRegs) {
             if (idx.hasVal) {
-                const int64_t k = static_cast<int64_t>(idx.val) - m.lo;
+                const int64_t k = static_cast<int64_t>(idx.val);
                 if (k < 0 || k >= m.depth) {
                     warnNode(ap, "constant index out of range for " + m.name);
                     return constExpr(0, width);
@@ -3929,7 +3929,7 @@ private:
             // mux chain over the elements
             SExpr acc = readKey(m.regNames[0], env, true);
             for (int k = 1; k < m.depth; ++k) {
-                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k + m.lo));
+                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k));
                 acc = genMux(hit, materialize(acc), materialize(readKey(m.regNames[k], env, true)),
                              m.dataWidth);
             }
