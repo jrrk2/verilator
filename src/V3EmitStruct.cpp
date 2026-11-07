@@ -146,6 +146,8 @@ struct SLVal final {
     bool sliceDynamic = false;  // vector[idx +: w] with a non-constant idx
     std::string baseKey;  // sliceDynamic: the vector's key
     int baseWidth = 0;  // sliceDynamic: the vector's width
+    int baseOff = 0;  // sliceDynamic: where in baseKey's variable those bits start
+    long long slotMin = 0, slotMax = -1;  // sliceDynamic: the values idx can take
 };
 
 // Memory candidate (sv_memory.memory_info)
@@ -496,7 +498,7 @@ class StructModule final {
     }
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
-    static constexpr int MAX_SLICE_SLOTS = 32;  // dynamic slice writes expanded to per-slot enables up to this
+    static constexpr int MAX_SLICE_SLOTS = 1024;  // dynamic slice writes expanded to per-slot enables up to this
 
 public:
     StructModule(AstNodeModule* modp, bool xilinx, bool wideMem, bool report)
@@ -2606,11 +2608,15 @@ private:
             const int w = lv.width;
             const SExpr idx = materialize(lv.idx);
             for (int lo = 0; lo + w <= lv.baseWidth; lo += w) {
+                // A slot the index can't reach is left alone: not even read, as a later
+                // statement may be what assigns it (mk[g] = '0; mk[g][i] = v; for each g)
+                if (lo < lv.slotMin || lo > lv.slotMax) continue;
                 const SExpr hit = eqConst(idx, static_cast<uint64_t>(lo));
                 SLVal e;
                 e.ok = true;
-                e.key = lv.baseKey + "[" + std::to_string(lo) + "+:" + std::to_string(w) + "]";
-                e.text = lv.baseKey + "[" + std::to_string(lo) + " +: " + std::to_string(w) + "]";
+                const std::string at = std::to_string(lv.baseOff + lo);
+                e.key = lv.baseKey + "[" + at + "+:" + std::to_string(w) + "]";
+                e.text = lv.baseKey + "[" + at + " +: " + std::to_string(w) + "]";
                 e.width = w;
                 const SExpr prior = readKey(e.key, env, true);
                 setKey(e, genMux(hit, materialize(prior), rhs, w), blocking, env);
@@ -2677,6 +2683,71 @@ private:
             env.cur[base] = cv;
         }
     }
+    // Write base[lo +: w] over the slices in mp that it overlaps, however they are cut: one slice
+    // covering them all takes their place, with the new bits on top.  The bits of it that no old
+    // slice held are all new, so nothing here reads the variable itself.
+    SLVal mergeSliceInto(std::map<std::string, SExpr>& mp, const std::string& base, int lo, int w, const SExpr& rhs) {
+        struct Piece final {
+            int lo;
+            int w;
+            SExpr val;
+        };
+        std::vector<std::pair<int, int>> iv;
+        sliceIntervals(mp, base, iv);
+        std::sort(iv.begin(), iv.end());
+        int cLo = lo, cEnd = lo + w;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (const auto& e : iv) {
+                const int eEnd = e.first + e.second;
+                if (e.first < cEnd && cLo < eEnd && (e.first < cLo || eEnd > cEnd)) {
+                    cLo = std::min(cLo, e.first);
+                    cEnd = std::max(cEnd, eEnd);
+                    grew = true;
+                }
+            }
+        }
+        std::vector<Piece> pieces;
+        pieces.push_back({lo, w, materialize(rhs)});
+        for (const auto& e : iv) {
+            const int eEnd = e.first + e.second;
+            if (e.first >= cEnd || eEnd <= cLo) continue;
+            const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+            const SExpr old = materialize(mp.at(k));
+            mp.erase(k);
+            if (e.first < lo) {
+                pieces.push_back({e.first, std::min(eEnd, lo) - e.first, sliceOf(old, 0, std::min(eEnd, lo) - e.first)});
+            }
+            if (eEnd > lo + w) {
+                const int from = std::max(e.first, lo + w);
+                pieces.push_back({from, eEnd - from, sliceOf(old, from - e.first, eEnd - from)});
+            }
+        }
+        std::sort(pieces.begin(), pieces.end(), [](const Piece& a, const Piece& b) { return a.lo < b.lo; });
+        SLVal out;
+        out.ok = true;
+        out.key = base + "[" + std::to_string(cLo) + "+:" + std::to_string(cEnd - cLo) + "]";
+        out.text = base + "[" + std::to_string(cLo) + " +: " + std::to_string(cEnd - cLo) + "]";
+        out.width = cEnd - cLo;
+        SExpr v;
+        if (pieces.size() == 1) {
+            v = pieces[0].val;
+        } else {
+            v.text = "{";
+            v.width = cEnd - cLo;
+            for (auto it = pieces.rbegin(); it != pieces.rend(); ++it) {
+                const SExpr part = materialize(it->val);
+                v.text += (it == pieces.rbegin() ? "" : ", ") + part.text;
+                addRefs(v.refs, part.refs);
+            }
+            v.text += "}";
+            const SExpr wire = newWire(v.width);
+            addAssign(wire.text, v);
+            v = wire;
+        }
+        mp[out.key] = v;
+        return out;
+    }
     void setKey(const SLVal& lv, const SExpr& rhs, bool blocking, Env& env) {
         {
             std::string base;
@@ -2689,7 +2760,14 @@ private:
                     return slicesOverlap(iv);
                 };
                 const bool inCur = blocking || !m_seq;
-                if (clash(env.next) || (inCur && clash(env.cur))) foldToWhole(env, base, inCur);
+                if (clash(env.next) || (inCur && clash(env.cur))) {
+                    // Only the range the slices overlap in, not the whole variable: other blocks
+                    // may drive the rest of it (pv[p] = '0; pv[p][b] = 1; in one block per p)
+                    SLVal merged = mergeSliceInto(env.next, base, lo, w, rhs);
+                    if (inCur) mergeSliceInto(env.cur, base, lo, w, rhs);
+                    env.setNext(merged.key, env.next.at(merged.key));
+                    return;
+                }
             }
         }
         if (lv.key.find('[') == std::string::npos) {
@@ -2726,6 +2804,22 @@ private:
             if (splitSliceKey(key, base, lo, w)) {
                 const auto wit = mp.find(base);
                 if (wit != mp.end()) return sliceOf(wit->second, lo, w);
+                // inside, or across, slices of another cut: never the net, which those bits drive
+                std::vector<std::pair<int, int>> iv;
+                sliceIntervals(mp, base, iv);
+                for (const auto& e : iv) {
+                    if (e.first <= lo && lo + w <= e.first + e.second) {
+                        const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+                        return sliceOf(mp.at(k), lo - e.first, w);
+                    }
+                }
+                for (const auto& e : iv) {
+                    if (e.first < lo + w && lo < e.first + e.second) {
+                        SExpr whole = identExpr(base, widthOfKey(base));
+                        whole.refs = {rootIdent(base)};
+                        return sliceOf(assembleFromMap(base, whole, mp), lo, w);
+                    }
+                }
             }
         }
         SExpr e = identExpr(key, widthOfKey(key));
@@ -2733,6 +2827,40 @@ private:
         e.refs = {rootIdent(key)};
         for (const std::string& r : keyRefs(key)) e.refs.push_back(r);
         return withSlices(e);
+    }
+
+    // The values an index expression can take, as narrowly as its form shows: all that its
+    // width allows unless it is built from constants, widening and arithmetic that can't wrap
+    std::pair<long long, long long> exprRange(AstNodeExpr* np, Env& env) {
+        const int width = np->width();
+        const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
+        const std::pair<long long, long long> full{0, top};
+        const auto within = [&](long long lo, long long hi) -> std::pair<long long, long long> {
+            if (lo < 0 || hi > top) return full;
+            return {lo, hi};
+        };
+        const SExpr v = lowerExpr(np, env);
+        if (v.hasVal) return {static_cast<long long>(v.val), static_cast<long long>(v.val)};
+        if (const AstExtend* const ep = VN_CAST(np, Extend)) return exprRange(ep->lhsp(), env);
+        if (const AstAdd* const ap = VN_CAST(np, Add)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            if (a.second > top - b.second) return full;
+            return within(a.first + b.first, a.second + b.second);
+        }
+        if (const AstSub* const ap = VN_CAST(np, Sub)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            return within(a.first - b.second, a.second - b.first);
+        }
+        if (const AstMul* const ap = VN_CAST(np, Mul)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            if (a.second && b.second > top / a.second) return full;
+            return within(a.first * b.first, a.second * b.second);
+        }
+        if (const AstCond* const cp = VN_CAST(np, Cond)) {
+            const auto a = exprRange(cp->thenp(), env), b = exprRange(cp->elsep(), env);
+            return {std::min(a.first, b.first), std::max(a.second, b.second)};
+        }
+        return full;
     }
 
     // ---- lvalues ----
@@ -2787,13 +2915,21 @@ private:
                 return lv;
             }
             const SExpr idx = materialize(lsbE);
-            if (base.key.find('[') == std::string::npos && base.width > 0 && w > 0
-                && base.width / w <= MAX_SLICE_SLOTS) {
+            std::string sliceBase;
+            int sliceLo = 0, sliceW = 0;
+            const bool onSlice = splitSliceKey(base.key, sliceBase, sliceLo, sliceW);
+            const auto slots = exprRange(sp->lsbp(), env);
+            if ((base.key.find('[') == std::string::npos || onSlice) && base.width > 0 && w > 0
+                && std::min<long long>(slots.second, base.width - w) / w - slots.first / w < MAX_SLICE_SLOTS) {
                 // vector[idx +: w] = v  ->  one conditional write per aligned slot
-                // (Verilator emits idx as element*w for packed arrays)
+                // (Verilator emits idx as element*w for packed arrays), and likewise
+                // within a constant slice of a vector (amk[g][idx] = v)
                 lv.ok = true;
                 lv.sliceDynamic = true;
-                lv.baseKey = base.key;
+                lv.baseKey = onSlice ? sliceBase : base.key;
+                lv.baseOff = sliceLo;
+                lv.slotMin = slots.first;
+                lv.slotMax = slots.second;
                 lv.baseWidth = base.width;
                 lv.idx = idx;
                 lv.width = w;
