@@ -343,6 +343,60 @@ class StructModule final {
         });
         return found;
     }
+    // The node's parent in the tree.  backp() alone is also the previous sibling, so walking
+    // it would pass through every earlier statement of the module.
+    static const AstNode* parentOf(const AstNode* np) {
+        while (np->backp() && np->backp()->nextp() == np) np = np->backp();
+        return np->backp();
+    }
+    // A block RAM is written on a clock edge and read a word at a time, so an array written
+    // by a continuous assign or a combinational block, or used whole outside an initial
+    // block, is a bus of wires or registers whatever its size.
+    bool arrayCannotBeRam(const AstVar* varp) const {
+        const auto inInitial = [](const AstNode* np) {
+            for (const AstNode* up = parentOf(np); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic))
+                    return true;
+            }
+            return false;
+        };
+        bool found = false;
+        m_modp->foreach([&](const AstNodeVarRef* rp) {
+            if (found || rp->varp() != varp || inInitial(rp)) return;
+            const AstNode* top = rp;
+            while (const AstArraySel* const sp = VN_CAST(top->backp(), ArraySel)) {
+                if (sp->fromp() != top) break;
+                top = sp;
+            }
+            if (top != rp && !VN_IS(top->dtypep()->skipRefp(), UnpackArrayDType)) return;
+            if (!VN_IS(top->backp(), NodeReadWriteMem)) found = true;
+        });
+        m_modp->foreach([&](const AstNodeAssign* ap) {
+            if (found) return;
+            const AstNode* lhs = ap->lhsp();
+            while (VN_IS(lhs, ArraySel) || VN_IS(lhs, Sel)) {
+                lhs = VN_IS(lhs, ArraySel) ? VN_AS(lhs, ArraySel)->fromp() : VN_AS(lhs, Sel)->fromp();
+            }
+            const AstNodeVarRef* const rp = VN_CAST(lhs, NodeVarRef);
+            if (!rp || rp->varp() != varp || inInitial(ap)) return;
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+                const AstAlways* const alwaysp = VN_CAST(up, Always);
+                if (!alwaysp) continue;
+                const AstSenTree* const stp = alwaysp->sentreep();
+                if (stp) {
+                    for (const AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
+                        if (ip->edgeType() == VEdgeType::ET_POSEDGE
+                            || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
+                            return;
+                        }
+                    }
+                }
+                break;
+            }
+            found = true;
+        });
+        return found;
+    }
     int arrayWriteSites(const AstVar* varp, int depth, bool* twoBlocksp = nullptr) const {
         int n = 0;
         std::vector<BranchPath> ports;  // one per write port: the path it is under
@@ -362,7 +416,7 @@ class StructModule final {
             if (!rp || rp->varp() != varp) return;
             bool inLoop = false, initial = false;
             const AstNode* procp = nullptr;
-            for (const AstNode* up = ap->backp(); up && !VN_IS(up, NodeModule); up = up->backp()) {
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
                 if (VN_IS(up, Loop) || VN_IS(up, Repeat)) inLoop = true;
                 if (!procp && VN_IS(up, NodeProcedure)) procp = up;
                 // an initial block sets the contents, it is not a write port (a ROM's table)
@@ -768,6 +822,7 @@ private:
             bool twoBlocks = false;
             const int ports = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
             if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS && !drivenByInstance(varp)
+                && !arrayCannotBeRam(varp)
                 && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)) {
                 SMem m;
                 m.name = name;
