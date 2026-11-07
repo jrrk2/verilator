@@ -305,6 +305,7 @@ class StructModule final {
     bool m_alwaysComb = false;  // ... written as always_comb, which must not need a latch
     const AstAlways* m_alwaysp = nullptr;  // block being lowered
     std::unordered_set<std::string> m_localKeys;  // keys of inlined function locals
+    std::unordered_set<std::string> m_loopIdxKeys;  // keys of this block's for loop indices
     SExpr m_clk;
     bool m_negedge = false;
     bool m_hasRst = false;
@@ -1776,6 +1777,7 @@ private:
         m_rstCondp = nullptr;
         m_pathCond.clear();
         m_regsInBlock.clear();
+        m_loopIdxKeys.clear();
         ++m_alwaysSeq;
         Env env;
         if (m_seq) {
@@ -1932,7 +1934,11 @@ private:
             } else if (m_latch || m_comb) {
                 std::map<std::string, HoldSplit> memo;
                 const HoldSplit hs = splitHold(val, key, memo);
-                if (!hs.holds) {
+                if (m_loopIdxKeys.count(key)) {
+                    // A loop index only assigned on some paths (a loop under an if, or
+                    // inside another loop) holds nothing: its uses are already unrolled
+                    addAssign(key, hs.d, qRefs);
+                } else if (!hs.holds) {
                     if (m_latch) {
                         warnNode(m_alwaysp, "always_latch assigns " + key
                                                 + " on every path; no latch needed, emitted"
@@ -2413,6 +2419,7 @@ private:
     // ---- assignment ----
     void lowerAssign(AstNodeExpr* lhsp, AstNodeExpr* rhsp, bool blocking, Env& env) {
         if (AstVarRef* const lvp = VN_CAST(lhsp, VarRef)) {
+            if (lvp->varp()->isUsedLoopIdx()) m_loopIdxKeys.insert(varName(lvp->varp()));
             const auto mit = m_mems.find(lvp->varp());
             if (mit != m_mems.end() && mit->second.asRegs) {
                 lowerArrayCopy(mit->second, rhsp, blocking, env);
