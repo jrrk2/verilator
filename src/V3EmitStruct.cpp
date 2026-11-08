@@ -143,9 +143,12 @@ struct SLVal final {
     int memLo = 0, memW = 0;  // memVarp: bits [memLo +: memW] of the element (memW 0: all of it)
     bool memDynamic = false;  // small array with dynamic index
     const AstVar* memSmallVarp = nullptr;
+    std::vector<SExpr> dimIdx;  // memDynamic, several dimensions: the indexes, outermost first
     bool sliceDynamic = false;  // vector[idx +: w] with a non-constant idx
     std::string baseKey;  // sliceDynamic: the vector's key
     int baseWidth = 0;  // sliceDynamic: the vector's width
+    int baseOff = 0;  // sliceDynamic: where in baseKey's variable those bits start
+    long long slotMin = 0, slotMax = -1;  // sliceDynamic: the values idx can take
 };
 
 // Memory candidate (sv_memory.memory_info)
@@ -156,6 +159,7 @@ struct SMem final {
     int addrWidth = 0;
     int lo = 0;  // lowest declared index
     bool asRegs = false;  // below threshold: one register per element
+    bool isPort = false;  // asRegs: a port array, its elements x[k] of the declared array
     std::vector<std::string> regNames;  // asRegs: element wire names
     std::vector<SExpr> readIdx;  // primitive: read ports (dedup by index text)
     struct Write final {
@@ -280,6 +284,7 @@ class StructModule final {
     std::unordered_set<const AstVar*> m_declared;
     std::unordered_set<std::string> m_declNames;
     std::unordered_map<const AstVar*, SExpr> m_bind;  // function formals -> value
+    std::unordered_map<const AstVar*, std::vector<SExpr>> m_arrBind;  // array formals -> elements
     std::unordered_map<const AstVar*, SLVal> m_alias;  // task output formals -> lvalue
     std::unordered_map<const AstVar*, std::string> m_localKey;  // inlined locals
     int m_counter = 0;
@@ -305,6 +310,7 @@ class StructModule final {
     bool m_alwaysComb = false;  // ... written as always_comb, which must not need a latch
     const AstAlways* m_alwaysp = nullptr;  // block being lowered
     std::unordered_set<std::string> m_localKeys;  // keys of inlined function locals
+    std::unordered_set<std::string> m_loopIdxKeys;  // keys of this block's for loop indices
     SExpr m_clk;
     bool m_negedge = false;
     bool m_hasRst = false;
@@ -342,6 +348,60 @@ class StructModule final {
         });
         return found;
     }
+    // The node's parent in the tree.  backp() alone is also the previous sibling, so walking
+    // it would pass through every earlier statement of the module.
+    static const AstNode* parentOf(const AstNode* np) {
+        while (np->backp() && np->backp()->nextp() == np) np = np->backp();
+        return np->backp();
+    }
+    // A block RAM is written on a clock edge and read a word at a time, so an array written
+    // by a continuous assign or a combinational block, or used whole outside an initial
+    // block, is a bus of wires or registers whatever its size.
+    bool arrayCannotBeRam(const AstVar* varp) const {
+        const auto inInitial = [](const AstNode* np) {
+            for (const AstNode* up = parentOf(np); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic))
+                    return true;
+            }
+            return false;
+        };
+        bool found = false;
+        m_modp->foreach([&](const AstNodeVarRef* rp) {
+            if (found || rp->varp() != varp || inInitial(rp)) return;
+            const AstNode* top = rp;
+            while (const AstArraySel* const sp = VN_CAST(top->backp(), ArraySel)) {
+                if (sp->fromp() != top) break;
+                top = sp;
+            }
+            if (top != rp && !VN_IS(top->dtypep()->skipRefp(), UnpackArrayDType)) return;
+            if (!VN_IS(top->backp(), NodeReadWriteMem)) found = true;
+        });
+        m_modp->foreach([&](const AstNodeAssign* ap) {
+            if (found) return;
+            const AstNode* lhs = ap->lhsp();
+            while (VN_IS(lhs, ArraySel) || VN_IS(lhs, Sel)) {
+                lhs = VN_IS(lhs, ArraySel) ? VN_AS(lhs, ArraySel)->fromp() : VN_AS(lhs, Sel)->fromp();
+            }
+            const AstNodeVarRef* const rp = VN_CAST(lhs, NodeVarRef);
+            if (!rp || rp->varp() != varp || inInitial(ap)) return;
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+                const AstAlways* const alwaysp = VN_CAST(up, Always);
+                if (!alwaysp) continue;
+                const AstSenTree* const stp = alwaysp->sentreep();
+                if (stp) {
+                    for (const AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
+                        if (ip->edgeType() == VEdgeType::ET_POSEDGE
+                            || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
+                            return;
+                        }
+                    }
+                }
+                break;
+            }
+            found = true;
+        });
+        return found;
+    }
     int arrayWriteSites(const AstVar* varp, int depth, bool* twoBlocksp = nullptr) const {
         int n = 0;
         std::vector<BranchPath> ports;  // one per write port: the path it is under
@@ -361,7 +421,7 @@ class StructModule final {
             if (!rp || rp->varp() != varp) return;
             bool inLoop = false, initial = false;
             const AstNode* procp = nullptr;
-            for (const AstNode* up = ap->backp(); up && !VN_IS(up, NodeModule); up = up->backp()) {
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
                 if (VN_IS(up, Loop) || VN_IS(up, Repeat)) inLoop = true;
                 if (!procp && VN_IS(up, NodeProcedure)) procp = up;
                 // an initial block sets the contents, it is not a write port (a ROM's table)
@@ -441,7 +501,7 @@ class StructModule final {
     }
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
-    static constexpr int MAX_SLICE_SLOTS = 32;  // dynamic slice writes expanded to per-slot enables up to this
+    static constexpr int MAX_SLICE_SLOTS = 1024;  // dynamic slice writes expanded to per-slot enables up to this
 
 public:
     StructModule(AstNodeModule* modp, bool xilinx, bool wideMem, bool report)
@@ -717,6 +777,40 @@ private:
         return d;
     }
 
+    // An unpacked type's dimensions, outermost first.  Elements are stored flat, last index
+    // fastest.  An ArraySel's index already counts from the dimension's low bound (V3WidthSel)
+    struct ArrayDim final {
+        int size;
+        bool ascending;
+    };
+    static std::vector<ArrayDim> arrayDims(const AstNodeDType* dtp) {
+        std::vector<ArrayDim> dims;
+        const AstNodeDType* d = dtp->skipRefp();
+        while (const AstUnpackArrayDType* const ap = VN_CAST(d, UnpackArrayDType)) {
+            dims.push_back({ap->elementsConst(), ap->declRange().ascending()});
+            d = ap->subDTypep()->skipRefp();
+        }
+        return dims;
+    }
+    static bool isUnpacked(const AstNodeExpr* ep) {
+        return ep->dtypep() && VN_IS(ep->dtypep()->skipRefp(), UnpackArrayDType);
+    }
+    // x[i][j]: the variable and its indexes, outermost first (nullptr unless the base is a variable)
+    static const AstVarRef* arrayChain(AstNodeExpr* ep, std::vector<AstNodeExpr*>& idx) {
+        while (AstArraySel* const ap = VN_CAST(ep, ArraySel)) {
+            idx.insert(idx.begin(), ap->bitp());
+            ep = ap->fromp();
+        }
+        return VN_CAST(ep, VarRef);
+    }
+    // A flat word address is the indexes side by side, so needs power-of-two inner dimensions
+    static bool arrayAddressable(const std::vector<ArrayDim>& dims) {
+        for (size_t i = 0; i < dims.size(); ++i) {
+            if (i && (dims[i].size & (dims[i].size - 1))) return false;
+        }
+        return true;
+    }
+
     void declareVar(AstVar* varp, bool procedural) {
         if (m_declared.count(varp)) return;
         m_declared.insert(varp);
@@ -766,7 +860,9 @@ private:
             // is registers, as a small array is, unless it is too big for that
             bool twoBlocks = false;
             const int ports = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
+            const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
             if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS && !drivenByInstance(varp)
+                && !arrayCannotBeRam(varp) && (dims.size() < 2 || arrayAddressable(dims))
                 && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)) {
                 SMem m;
                 m.name = name;
@@ -797,6 +893,18 @@ private:
                 return;
             }
             d.unpacked = " [" + std::to_string(lo) + ":" + std::to_string(lo + depth - 1) + "]";
+            SMem m;
+            m.name = name;
+            m.depth = depth;
+            m.dataWidth = elemWidth;
+            m.lo = lo;
+            m.asRegs = true;
+            m.isPort = true;
+            for (int i = 0; i < depth; ++i) {
+                m.regNames.push_back(name + "[" + std::to_string(lo + i) + "]");
+                m_widths[m.regNames.back()] = elemWidth;
+            }
+            m_mems[varp] = m;
         } else if (m_wideMem && !varp->isIO() && elemWidth > 512 && elemWidth <= 65536) {
             // sv_memory wide-packed-array heuristic (opt-in): infer
             // DATA_WIDTH from a DATA_WIDTH / DATAWIDTH parameter, else 64/32/16/8
@@ -983,7 +1091,7 @@ private:
             const AstNodeAssign* const ap = VN_CAST(sp, NodeAssign);
             if (!ap) continue;
             const AstArraySel* const selp = VN_AS(ap->lhsp(), ArraySel);
-            const long long idx = VN_AS(selp->bitp(), Const)->num().toSQuad() - m.lo;
+            const long long idx = VN_AS(selp->bitp(), Const)->num().toSQuad();
             if (idx < 0 || idx >= m.depth) continue;
             m.initWords[idx] = VN_AS(ap->rhsp(), Const)->num().toUQuad();
         }
@@ -1364,6 +1472,20 @@ private:
     void lowerContAssign(AstAssignW* ap) { lowerContAssign(ap, ap->lhsp(), ap->rhsp()); }
     void lowerContAssign(const AstNode* ap, AstNodeExpr* lhsp, AstNodeExpr* rhsp) {
         Env env;
+        if (isUnpacked(lhsp)) {
+            std::vector<SLVal> dst;
+            std::vector<SExpr> src;
+            if (!arrayAssignParts(lhsp, rhsp, env, dst, src)) return;
+            for (size_t k = 0; k < dst.size(); ++k) {
+                const SExpr rhs = materialize(resize(src[k], dst[k].width, false));
+                if (dst[k].memVarp || dst[k].memDynamic) {
+                    errNode(ap, "continuous assign with dynamic array index unsupported");
+                    return;
+                }
+                if (rhs.text != dst[k].text) addAssign(dst[k].text, rhs, dst[k].refs);
+            }
+            return;
+        }
         const SLVal lv = lowerLValue(lhsp, env);
         if (!lv.ok) return;
         const SExpr rhs = lowerExpr(rhsp, env);
@@ -1425,6 +1547,73 @@ private:
             AstNodeExpr* const ep = VN_CAST(pinp->exprp(), NodeExpr);
             if (!ep) continue;
             const bool isOut = pinp->modVarp() && pinp->modVarp()->direction().isWritable();
+            if (isUnpacked(ep) && pinp->modVarp() && !arraysAlign(ep->dtypep(), pinp->modVarp()->dtypep())) {
+                errNode(pinp, "array on pin " + pinName + " has another shape or direction");
+                continue;
+            }
+            if (const AstVarRef* const pvp = VN_CAST(ep, VarRef)) {
+                // a port array goes straight on to the child's
+                const auto pit = m_mems.find(pvp->varp());
+                if (pit != m_mems.end() && pit->second.isPort) {
+                    if (isOut) {
+                        pinOut(it, pinName, pit->second.name, {});
+                    } else {
+                        pinIn(it, pinName, identExpr(pit->second.name, pit->second.dataWidth));
+                    }
+                    continue;
+                }
+            }
+            if (isUnpacked(ep)) {
+                // .PIN(x) or .PIN(x[i]) with an array: an array of wires for the pin, joined to its elements
+                std::vector<ArrayDim> dims = arrayDims(ep->dtypep());
+                int n = 1;
+                for (const ArrayDim& d : dims) n *= d.size;
+                int ew = 0;
+                {
+                    int depth, lo;
+                    ew = unpackedOf(ep->dtypep(), depth, lo)->width();
+                }
+                SDecl d;
+                d.name = newName("pinarr");
+                d.width = ew;
+                d.dir = VDirection::NONE;
+                d.unpacked = " [0:" + std::to_string(n - 1) + "]";
+                m_decls.push_back(d);
+                m_widths[d.name] = ew;
+                const auto el = [&](int k) { return d.name + "[" + std::to_string(k) + "]"; };
+                if (isOut) {
+                    std::vector<SLVal> dst;
+                    if (!arrayTargets(ep, env, dst) || static_cast<int>(dst.size()) != n) {
+                        errNode(pinp, "unsupported output pin connection");
+                        continue;
+                    }
+                    pinOut(it, pinName, d.name, {});
+                    for (int k = 0; k < n; ++k) {
+                        if (dst[k].memVarp || dst[k].memDynamic) {
+                            errNode(pinp, "unsupported output pin connection");
+                            break;
+                        }
+                        SExpr e;
+                        e.text = el(k);
+                        e.width = ew;
+                        e.refs = {d.name};
+                        addAssign(dst[k].text, e, dst[k].refs);
+                    }
+                } else {
+                    std::vector<SExpr> src;
+                    if (!arrayElems(ep, env, src) || static_cast<int>(src.size()) != n) {
+                        errNode(pinp, "unsupported input pin connection");
+                        continue;
+                    }
+                    for (int k = 0; k < n; ++k) addAssign(el(k), materialize(src[k]), {d.name});
+                    SExpr e;
+                    e.text = d.name;
+                    e.width = ew;
+                    e.refs = {d.name};
+                    pinIn(it, pinName, e);
+                }
+                continue;
+            }
             if (isOut) {
                 SLVal lv;
                 if (!VN_IS(ep, Concat)) lv = lowerLValue(ep, env);
@@ -1776,6 +1965,7 @@ private:
         m_rstCondp = nullptr;
         m_pathCond.clear();
         m_regsInBlock.clear();
+        m_loopIdxKeys.clear();
         ++m_alwaysSeq;
         Env env;
         if (m_seq) {
@@ -1932,7 +2122,11 @@ private:
             } else if (m_latch || m_comb) {
                 std::map<std::string, HoldSplit> memo;
                 const HoldSplit hs = splitHold(val, key, memo);
-                if (!hs.holds) {
+                if (m_loopIdxKeys.count(key)) {
+                    // A loop index only assigned on some paths (a loop under an if, or
+                    // inside another loop) holds nothing: its uses are already unrolled
+                    addAssign(key, hs.d, qRefs);
+                } else if (!hs.holds) {
                     if (m_latch) {
                         warnNode(m_alwaysp, "always_latch assigns " + key
                                                 + " on every path; no latch needed, emitted"
@@ -2413,11 +2607,18 @@ private:
     // ---- assignment ----
     void lowerAssign(AstNodeExpr* lhsp, AstNodeExpr* rhsp, bool blocking, Env& env) {
         if (AstVarRef* const lvp = VN_CAST(lhsp, VarRef)) {
-            const auto mit = m_mems.find(lvp->varp());
-            if (mit != m_mems.end() && mit->second.asRegs) {
-                lowerArrayCopy(mit->second, rhsp, blocking, env);
-                return;
+            if (lvp->varp()->isUsedLoopIdx()) m_loopIdxKeys.insert(varName(lvp->varp()));
+        }
+        if (isUnpacked(lhsp)) {
+            std::vector<SLVal> dst;
+            std::vector<SExpr> src;
+            if (!arrayAssignParts(lhsp, rhsp, env, dst, src)) return;
+            // every element is read before any is written: a <= b; with b overlapping a, or a swap
+            for (SExpr& e : src) e = materialize(e);
+            for (size_t k = 0; k < dst.size(); ++k) {
+                assignTo(dst[k], materialize(resize(src[k], dst[k].width, false)), blocking, env);
             }
+            return;
         }
         if (AstConcat* const cp = VN_CAST(lhsp, Concat)) {
             // {a, b} = rhs  ->  a = rhs[hi:..]; b = rhs[..:0]
@@ -2447,47 +2648,223 @@ private:
         const SExpr rhs = lowerExpr(rhsp, env);
         assignTo(lv, rhs, blocking, env);
     }
-    // `arr = other_arr` / `arr = '{default: v, i: v}` on a register-expanded array
-    void lowerArrayCopy(const SMem& dst, AstNodeExpr* rhsp, bool blocking, Env& env) {
-        auto elem = [&](int k) {
-            SLVal e;
-            e.ok = true;
-            e.key = dst.regNames[k];
-            e.text = e.key;
-            e.width = dst.dataWidth;
-            return e;
-        };
-        if (AstVarRef* const rvp = VN_CAST(rhsp, VarRef)) {
-            const auto sit = m_mems.find(rvp->varp());
-            if (sit != m_mems.end() && sit->second.asRegs && sit->second.depth == dst.depth) {
-                for (int k = 0; k < dst.depth; ++k) {
-                    setKey(elem(k), materialize(readKey(sit->second.regNames[k], env, true)), blocking, env);
-                }
-                return;
+    // ---- unpacked arrays ----
+    // Element `flat` of varp, as a read sees it now
+    SExpr arrayLeaf(const AstVar* varp, int flat, Env& env) {
+        const auto bit = m_arrBind.find(varp);
+        if (bit != m_arrBind.end()) return bit->second[flat];
+        return readKey(m_mems.at(varp).regNames[flat], env, true);
+    }
+    // Whether varp's elements can be taken one at a time
+    bool arrayHasElems(const AstVar* varp) const {
+        if (m_arrBind.count(varp)) return true;
+        const auto mit = m_mems.find(varp);
+        return mit != m_mems.end() && mit->second.asRegs;
+    }
+    // The element at these indexes, then `tail` further on when they stop short of the last
+    // dimension: only the elements an index can reach are read, muxed by the index
+    SExpr arrayPick(const AstNode* nodep, const AstVar* varp, const std::vector<ArrayDim>& dims,
+                    const std::vector<SExpr>& idx, size_t pos, int flat, int tail, int width, Env& env) {
+        if (pos >= idx.size()) return arrayLeaf(varp, flat + tail, env);
+        int stride = 1;
+        for (size_t d = pos + 1; d < dims.size(); ++d) stride *= dims[d].size;
+        const ArrayDim& dim = dims[pos];
+        if (idx[pos].hasVal) {
+            const int64_t k = static_cast<int64_t>(idx[pos].val);
+            if (k < 0 || k >= dim.size) {
+                warnNode(nodep, "constant index out of range for " + varName(varp));
+                return constExpr(0, width);
             }
+            return arrayPick(nodep, varp, dims, idx, pos + 1, flat + static_cast<int>(k) * stride, tail, width, env);
+        }
+        SExpr acc = arrayPick(nodep, varp, dims, idx, pos + 1, flat, tail, width, env);
+        for (int k = 1; k < dim.size; ++k) {
+            const SExpr hit = eqConst(idx[pos], static_cast<uint64_t>(k));
+            const SExpr v = arrayPick(nodep, varp, dims, idx, pos + 1, flat + k * stride, tail, width, env);
+            acc = genMux(hit, materialize(acc), materialize(v), width);
+        }
+        return acc;
+    }
+    // A flat word address: the indexes side by side (see arrayAddressable)
+    SExpr arrayFlatIndex(const std::vector<ArrayDim>& dims, const std::vector<SExpr>& idx) {
+        SExpr e;
+        e.text = "{";
+        bool first = true;
+        int total = 0;
+        for (size_t d = 0; d < dims.size(); ++d) {
+            int bits = idx[d].width;
+            if (d) {
+                bits = 0;
+                while ((1 << bits) < dims[d].size) ++bits;
+                if (!bits) continue;
+            }
+            const SExpr part = materialize(resize(idx[d], bits, false));
+            e.text += (first ? "" : ", ") + part.text;
+            first = false;
+            total += bits;
+            addRefs(e.refs, part.refs);
+        }
+        e.text += "}";
+        e.width = total;
+        const SExpr w = newWire(total);
+        addAssign(w.text, e);
+        return w;
+    }
+    // The elements of an array-valued expression, flat.  False if it isn't one this can take apart
+    bool arrayElems(AstNodeExpr* ep, Env& env, std::vector<SExpr>& out) {
+        int depth, lo;
+        const int width = unpackedOf(ep->dtypep(), depth, lo)->width();
+        if (VN_IS(ep, CReset)) {
+            for (int k = 0; k < depth; ++k) out.push_back(constExpr(0, width));
+            return true;
+        }
+        if (AstCond* const cp = VN_CAST(ep, Cond)) {
+            std::vector<SExpr> t, f;
+            if (!arrayElems(cp->thenp(), env, t) || !arrayElems(cp->elsep(), env, f) || t.size() != f.size()) return false;
+            const SExpr sel = materialize(toBool(lowerExpr(cp->condp(), env)));
+            for (size_t k = 0; k < t.size(); ++k) out.push_back(genMux(sel, materialize(f[k]), materialize(t[k]), width));
+            return true;
         }
 #if VERILATOR_VERSION_INTEGER >= 5053000  // AstInitArray became AstConsArray (verilator #8809)
-        if (AstConsArray* const ip = VN_CAST(rhsp, ConsArray)) {
-            for (int k = 0; k < dst.depth; ++k) {
-                AstNodeExpr* vp = ip->valuep(static_cast<uint64_t>(k));
+        if (AstConsArray* const ip = VN_CAST(ep, ConsArray)) {
+#define STRUCT_ARRAY_VALUE(k) ip->valuep(static_cast<uint64_t>(k))
 #else
-        if (AstInitArray* const ip = VN_CAST(rhsp, InitArray)) {
-            for (int k = 0; k < dst.depth; ++k) {
-                AstNodeExpr* vp = ip->getIndexDefaultedValuep(static_cast<uint64_t>(k));
+        if (AstInitArray* const ip = VN_CAST(ep, InitArray)) {
+#define STRUCT_ARRAY_VALUE(k) ip->getIndexDefaultedValuep(static_cast<uint64_t>(k))
 #endif
+            const int outer = arrayDims(ep->dtypep())[0].size;
+            for (int k = 0; k < outer; ++k) {
+                AstNodeExpr* const vp = STRUCT_ARRAY_VALUE(k);
                 if (!vp) {
-                    errNode(rhsp, "array pattern leaves element " + std::to_string(k) + " of " + dst.name + " unset");
-                    continue;
+                    errNode(ep, "array pattern leaves element " + std::to_string(k) + " unset");
+                    return false;
                 }
-                setKey(elem(k), materialize(resize(lowerExpr(vp, env), dst.dataWidth, false)), blocking, env);
+                if (isUnpacked(vp)) {
+                    if (!arrayElems(vp, env, out)) return false;
+                } else {
+                    out.push_back(materialize(resize(lowerExpr(vp, env), width, false)));
+                }
             }
-            return;
+            return true;
+#undef STRUCT_ARRAY_VALUE
         }
-        if (VN_IS(rhsp, CReset)) {
-            for (int k = 0; k < dst.depth; ++k) setKey(elem(k), constExpr(0, dst.dataWidth), blocking, env);
-            return;
+        std::vector<AstNodeExpr*> chain;
+        const AstVarRef* const vp = arrayChain(ep, chain);
+        if (!vp) return false;
+        const AstVar* const varp = vp->varp();
+        if (!arrayHasElems(varp)) return false;
+        const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
+        std::vector<SExpr> idx;
+        for (AstNodeExpr* const ip : chain) idx.push_back(materialize(lowerExpr(ip, env)));
+        for (int j = 0; j < depth; ++j) out.push_back(arrayPick(ep, varp, dims, idx, 0, 0, j, width, env));
+        return true;
+    }
+    // One element of an array of several dimensions as an lvalue, given all its indexes
+    SLVal arrayElemLValue(const AstNode* nodep, const AstVar* varp, const std::vector<ArrayDim>& dims,
+                          const std::vector<SExpr>& idx) {
+        SLVal lv;
+        int flat = 0;
+        bool allConst = true;
+        for (size_t d = 0; d < dims.size(); ++d) {
+            if (!idx[d].hasVal) {
+                allConst = false;
+                continue;
+            }
+            const int64_t k = static_cast<int64_t>(idx[d].val);
+            if (k < 0 || k >= dims[d].size) {
+                warnNode(nodep, "constant index out of range for " + varName(varp));
+                return lv;
+            }
+            flat = flat * dims[d].size + static_cast<int>(k);
         }
-        errNode(rhsp, "whole-array assignment to " + dst.name + " from this expression unsupported");
+        int depth, lo;
+        const int width = unpackedOf(varp->dtypep(), depth, lo)->width();
+        const auto mit = m_mems.find(varp);
+        lv.width = width;
+        if (mit == m_mems.end()) {
+            errNode(nodep, "array write to " + varName(varp) + " unsupported");
+            return lv;
+        }
+        const SMem& m = mit->second;
+        lv.ok = true;
+        if (!m.asRegs) {
+            lv.memVarp = varp;
+            lv.idx = arrayFlatIndex(dims, idx);
+            lv.key = m.name + "[" + lv.idx.text + "]";
+            lv.text = lv.key;
+            return lv;
+        }
+        if (allConst) {
+            lv.key = m.regNames[flat];
+            lv.text = lv.key;
+            return lv;
+        }
+        lv.memDynamic = true;
+        lv.memSmallVarp = varp;
+        lv.dimIdx = idx;
+        lv.key = m.name;
+        for (const SExpr& e : idx) lv.key += "[" + e.text + "]";
+        lv.text = lv.key;
+        return lv;
+    }
+    // The elements an array-typed lvalue covers, flat
+    bool arrayTargets(AstNodeExpr* lhsp, Env& env, std::vector<SLVal>& out) {
+        std::vector<AstNodeExpr*> chain;
+        const AstVarRef* const vp = arrayChain(lhsp, chain);
+        if (!vp) return false;
+        const AstVar* const varp = vp->varp();
+        const auto mit = m_mems.find(varp);
+        if (mit == m_mems.end() || !mit->second.asRegs) return false;
+        const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
+        std::vector<SExpr> idx;
+        for (AstNodeExpr* const ip : chain) idx.push_back(materialize(lowerExpr(ip, env)));
+        int depth, lo;
+        unpackedOf(lhsp->dtypep(), depth, lo);
+        for (int j = 0; j < depth; ++j) {
+            std::vector<SExpr> full = idx;
+            int rest = depth;
+            for (size_t d = idx.size(); d < dims.size(); ++d) {
+                rest /= dims[d].size;
+                full.push_back(constExpr(static_cast<uint64_t>((j / rest) % dims[d].size), 32));
+            }
+            SLVal lv = arrayElemLValue(lhsp, varp, dims, full);
+            if (!lv.ok) return false;
+            out.push_back(lv);
+        }
+        return true;
+    }
+    // A whole-array copy pairs elements left to right, the flat order pairs them by index:
+    // the same thing only when each pair of dimensions runs the same way
+    static bool arraysAlign(const AstNodeDType* ap, const AstNodeDType* bp) {
+        const std::vector<ArrayDim> a = arrayDims(ap), b = arrayDims(bp);
+        if (a.size() != b.size()) return false;
+        for (size_t d = 0; d < a.size(); ++d) {
+            if (a[d].size != b[d].size || a[d].ascending != b[d].ascending) return false;
+        }
+        return true;
+    }
+    bool arrayAssignParts(AstNodeExpr* lhsp, AstNodeExpr* rhsp, Env& env, std::vector<SLVal>& dst, std::vector<SExpr>& src) {
+        std::vector<AstNodeExpr*> chain;
+        const AstVarRef* const vp = arrayChain(lhsp, chain);
+        const std::string name = vp ? varName(vp->varp()) : std::string{"array"};
+#if VERILATOR_VERSION_INTEGER >= 5053000  // AstInitArray became AstConsArray (verilator #8809)
+        const bool pattern = VN_IS(rhsp, ConsArray);
+#else
+        const bool pattern = VN_IS(rhsp, InitArray);
+#endif
+        if (!VN_IS(rhsp, CReset) && !pattern && !arraysAlign(lhsp->dtypep(), rhsp->dtypep())) {
+            errNode(rhsp, "whole-array assignment to " + name + " from an array of another shape or direction unsupported");
+            return false;
+        }
+        if (!arrayTargets(lhsp, env, dst)) {
+            errNode(lhsp, "whole-array assignment to " + name + " unsupported");
+            return false;
+        }
+        if (!arrayElems(rhsp, env, src) || src.size() != dst.size()) {
+            errNode(rhsp, "whole-array assignment to " + name + " from this expression unsupported");
+            return false;
+        }
+        return true;
     }
     static void flattenConcat(AstNodeExpr* ep, std::vector<AstNodeExpr*>& out) {
         if (AstConcat* const cp = VN_CAST(ep, Concat)) {
@@ -2544,11 +2921,15 @@ private:
             const int w = lv.width;
             const SExpr idx = materialize(lv.idx);
             for (int lo = 0; lo + w <= lv.baseWidth; lo += w) {
+                // A slot the index can't reach is left alone: not even read, as a later
+                // statement may be what assigns it (mk[g] = '0; mk[g][i] = v; for each g)
+                if (lo < lv.slotMin || lo > lv.slotMax) continue;
                 const SExpr hit = eqConst(idx, static_cast<uint64_t>(lo));
                 SLVal e;
                 e.ok = true;
-                e.key = lv.baseKey + "[" + std::to_string(lo) + "+:" + std::to_string(w) + "]";
-                e.text = lv.baseKey + "[" + std::to_string(lo) + " +: " + std::to_string(w) + "]";
+                const std::string at = std::to_string(lv.baseOff + lo);
+                e.key = lv.baseKey + "[" + at + "+:" + std::to_string(w) + "]";
+                e.text = lv.baseKey + "[" + at + " +: " + std::to_string(w) + "]";
                 e.width = w;
                 const SExpr prior = readKey(e.key, env, true);
                 setKey(e, genMux(hit, materialize(prior), rhs, w), blocking, env);
@@ -2558,17 +2939,36 @@ private:
         if (lv.memDynamic) {
             // Small array with a dynamic index: conditional write to every element
             const SMem& m = m_mems.at(lv.memSmallVarp);
-            const SExpr idx = materialize(lv.idx);
+            const SExpr idx = lv.dimIdx.empty() ? materialize(lv.idx) : SExpr{};
+            const std::vector<ArrayDim> dims = arrayDims(lv.memSmallVarp->dtypep());
+            const int w = lv.memW ? lv.memW : m.dataWidth;
             for (int k = 0; k < m.depth; ++k) {
-                const std::string& reg = m.regNames[k];
-                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k + m.lo));
-                const SExpr prior = readKey(reg, env, blocking ? true : false);
-                const SExpr v = genMux(hit, prior, rhs, m.dataWidth);
+                std::string reg = m.regNames[k];
+                if (lv.memW) reg += "[" + std::to_string(lv.memLo) + "+:" + std::to_string(lv.memW) + "]";
+                SExpr hit;
+                if (lv.dimIdx.empty()) {
+                    hit = eqConst(idx, static_cast<uint64_t>(k));
+                } else {
+                    hit = constExpr(1, 1);
+                    int rest = m.depth;
+                    for (size_t d = 0; d < dims.size(); ++d) {
+                        rest /= dims[d].size;
+                        const int at = (k / rest) % dims[d].size;
+                        hit = materialize(andBits(hit, eqConst(lv.dimIdx[d], static_cast<uint64_t>(at))));
+                    }
+                    if (hit.hasVal && !hit.val) continue;  // a constant index rules this element out
+                }
                 SLVal e;
                 e.ok = true;
                 e.key = reg;
                 e.text = reg;
-                e.width = m.dataWidth;
+                e.width = w;
+                if (hit.hasVal) {
+                    setKey(e, rhs, blocking, env);
+                    continue;
+                }
+                const SExpr prior = readKey(reg, env, blocking ? true : false);
+                const SExpr v = genMux(hit, prior, rhs, w);
                 setKey(e, v, blocking, env);
             }
             return;
@@ -2615,6 +3015,71 @@ private:
             env.cur[base] = cv;
         }
     }
+    // Write base[lo +: w] over the slices in mp that it overlaps, however they are cut: one slice
+    // covering them all takes their place, with the new bits on top.  The bits of it that no old
+    // slice held are all new, so nothing here reads the variable itself.
+    SLVal mergeSliceInto(std::map<std::string, SExpr>& mp, const std::string& base, int lo, int w, const SExpr& rhs) {
+        struct Piece final {
+            int lo;
+            int w;
+            SExpr val;
+        };
+        std::vector<std::pair<int, int>> iv;
+        sliceIntervals(mp, base, iv);
+        std::sort(iv.begin(), iv.end());
+        int cLo = lo, cEnd = lo + w;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (const auto& e : iv) {
+                const int eEnd = e.first + e.second;
+                if (e.first < cEnd && cLo < eEnd && (e.first < cLo || eEnd > cEnd)) {
+                    cLo = std::min(cLo, e.first);
+                    cEnd = std::max(cEnd, eEnd);
+                    grew = true;
+                }
+            }
+        }
+        std::vector<Piece> pieces;
+        pieces.push_back({lo, w, materialize(rhs)});
+        for (const auto& e : iv) {
+            const int eEnd = e.first + e.second;
+            if (e.first >= cEnd || eEnd <= cLo) continue;
+            const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+            const SExpr old = materialize(mp.at(k));
+            mp.erase(k);
+            if (e.first < lo) {
+                pieces.push_back({e.first, std::min(eEnd, lo) - e.first, sliceOf(old, 0, std::min(eEnd, lo) - e.first)});
+            }
+            if (eEnd > lo + w) {
+                const int from = std::max(e.first, lo + w);
+                pieces.push_back({from, eEnd - from, sliceOf(old, from - e.first, eEnd - from)});
+            }
+        }
+        std::sort(pieces.begin(), pieces.end(), [](const Piece& a, const Piece& b) { return a.lo < b.lo; });
+        SLVal out;
+        out.ok = true;
+        out.key = base + "[" + std::to_string(cLo) + "+:" + std::to_string(cEnd - cLo) + "]";
+        out.text = base + "[" + std::to_string(cLo) + " +: " + std::to_string(cEnd - cLo) + "]";
+        out.width = cEnd - cLo;
+        SExpr v;
+        if (pieces.size() == 1) {
+            v = pieces[0].val;
+        } else {
+            v.text = "{";
+            v.width = cEnd - cLo;
+            for (auto it = pieces.rbegin(); it != pieces.rend(); ++it) {
+                const SExpr part = materialize(it->val);
+                v.text += (it == pieces.rbegin() ? "" : ", ") + part.text;
+                addRefs(v.refs, part.refs);
+            }
+            v.text += "}";
+            const SExpr wire = newWire(v.width);
+            addAssign(wire.text, v);
+            v = wire;
+        }
+        mp[out.key] = v;
+        return out;
+    }
     void setKey(const SLVal& lv, const SExpr& rhs, bool blocking, Env& env) {
         {
             std::string base;
@@ -2627,7 +3092,14 @@ private:
                     return slicesOverlap(iv);
                 };
                 const bool inCur = blocking || !m_seq;
-                if (clash(env.next) || (inCur && clash(env.cur))) foldToWhole(env, base, inCur);
+                if (clash(env.next) || (inCur && clash(env.cur))) {
+                    // Only the range the slices overlap in, not the whole variable: other blocks
+                    // may drive the rest of it (pv[p] = '0; pv[p][b] = 1; in one block per p)
+                    SLVal merged = mergeSliceInto(env.next, base, lo, w, rhs);
+                    if (inCur) mergeSliceInto(env.cur, base, lo, w, rhs);
+                    env.setNext(merged.key, env.next.at(merged.key));
+                    return;
+                }
             }
         }
         if (lv.key.find('[') == std::string::npos) {
@@ -2664,6 +3136,22 @@ private:
             if (splitSliceKey(key, base, lo, w)) {
                 const auto wit = mp.find(base);
                 if (wit != mp.end()) return sliceOf(wit->second, lo, w);
+                // inside, or across, slices of another cut: never the net, which those bits drive
+                std::vector<std::pair<int, int>> iv;
+                sliceIntervals(mp, base, iv);
+                for (const auto& e : iv) {
+                    if (e.first <= lo && lo + w <= e.first + e.second) {
+                        const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+                        return sliceOf(mp.at(k), lo - e.first, w);
+                    }
+                }
+                for (const auto& e : iv) {
+                    if (e.first < lo + w && lo < e.first + e.second) {
+                        SExpr whole = identExpr(base, widthOfKey(base));
+                        whole.refs = {rootIdent(base)};
+                        return sliceOf(assembleFromMap(base, whole, mp), lo, w);
+                    }
+                }
             }
         }
         SExpr e = identExpr(key, widthOfKey(key));
@@ -2671,6 +3159,40 @@ private:
         e.refs = {rootIdent(key)};
         for (const std::string& r : keyRefs(key)) e.refs.push_back(r);
         return withSlices(e);
+    }
+
+    // The values an index expression can take, as narrowly as its form shows: all that its
+    // width allows unless it is built from constants, widening and arithmetic that can't wrap
+    std::pair<long long, long long> exprRange(AstNodeExpr* np, Env& env) {
+        const int width = np->width();
+        const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
+        const std::pair<long long, long long> full{0, top};
+        const auto within = [&](long long lo, long long hi) -> std::pair<long long, long long> {
+            if (lo < 0 || hi > top) return full;
+            return {lo, hi};
+        };
+        const SExpr v = lowerExpr(np, env);
+        if (v.hasVal) return {static_cast<long long>(v.val), static_cast<long long>(v.val)};
+        if (const AstExtend* const ep = VN_CAST(np, Extend)) return exprRange(ep->lhsp(), env);
+        if (const AstAdd* const ap = VN_CAST(np, Add)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            if (a.second > top - b.second) return full;
+            return within(a.first + b.first, a.second + b.second);
+        }
+        if (const AstSub* const ap = VN_CAST(np, Sub)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            return within(a.first - b.second, a.second - b.first);
+        }
+        if (const AstMul* const ap = VN_CAST(np, Mul)) {
+            const auto a = exprRange(ap->lhsp(), env), b = exprRange(ap->rhsp(), env);
+            if (a.second && b.second > top / a.second) return full;
+            return within(a.first * b.first, a.second * b.second);
+        }
+        if (const AstCond* const cp = VN_CAST(np, Cond)) {
+            const auto a = exprRange(cp->thenp(), env), b = exprRange(cp->elsep(), env);
+            return {std::min(a.first, b.first), std::max(a.second, b.second)};
+        }
+        return full;
     }
 
     // ---- lvalues ----
@@ -2706,6 +3228,16 @@ private:
                     return base;
                 }
             }
+            if (base.memDynamic && !base.memW) {
+                // arr[i][lsb +: w] <= d with a constant lsb: those bits of whichever element
+                const SExpr lsbE = lowerExpr(sp->lsbp(), env);
+                if (lsbE.hasVal) {
+                    base.memLo = static_cast<int>(lsbE.val);
+                    base.memW = sp->widthConst();
+                    base.width = base.memW;
+                    return base;
+                }
+            }
             if (base.memVarp || base.memDynamic) {
                 // never silently: a dropped write turns a RAM into a ROM of zeros
                 lhsp->v3error("structural backend: part-select write into array element with a"
@@ -2725,13 +3257,21 @@ private:
                 return lv;
             }
             const SExpr idx = materialize(lsbE);
-            if (base.key.find('[') == std::string::npos && base.width > 0 && w > 0
-                && base.width / w <= MAX_SLICE_SLOTS) {
+            std::string sliceBase;
+            int sliceLo = 0, sliceW = 0;
+            const bool onSlice = splitSliceKey(base.key, sliceBase, sliceLo, sliceW);
+            const auto slots = exprRange(sp->lsbp(), env);
+            if ((base.key.find('[') == std::string::npos || onSlice) && base.width > 0 && w > 0
+                && std::min<long long>(slots.second, base.width - w) / w - slots.first / w < MAX_SLICE_SLOTS) {
                 // vector[idx +: w] = v  ->  one conditional write per aligned slot
-                // (Verilator emits idx as element*w for packed arrays)
+                // (Verilator emits idx as element*w for packed arrays), and likewise
+                // within a constant slice of a vector (amk[g][idx] = v)
                 lv.ok = true;
                 lv.sliceDynamic = true;
-                lv.baseKey = base.key;
+                lv.baseKey = onSlice ? sliceBase : base.key;
+                lv.baseOff = sliceLo;
+                lv.slotMin = slots.first;
+                lv.slotMax = slots.second;
                 lv.baseWidth = base.width;
                 lv.idx = idx;
                 lv.width = w;
@@ -2749,10 +3289,21 @@ private:
             return lv;
         }
         if (AstArraySel* const ap = VN_CAST(lhsp, ArraySel)) {
-            const AstVarRef* const vp = VN_CAST(ap->fromp(), VarRef);
+            std::vector<AstNodeExpr*> chain;
+            const AstVarRef* const vp = arrayChain(ap, chain);
             if (!vp) {
-                errNode(lhsp, "multi-dimensional array write unsupported");
+                errNode(lhsp, "array write through this expression unsupported");
                 return lv;
+            }
+            const std::vector<ArrayDim> dims = arrayDims(vp->varp()->dtypep());
+            if (dims.size() > 1) {
+                if (chain.size() != dims.size()) {
+                    errNode(lhsp, "part of an array used as a single value");
+                    return lv;
+                }
+                std::vector<SExpr> indexes;
+                for (AstNodeExpr* const ip : chain) indexes.push_back(materialize(lowerExpr(ip, env)));
+                return arrayElemLValue(lhsp, vp->varp(), dims, indexes);
             }
             const auto mit = m_mems.find(vp->varp());
             const SExpr idx = lowerExpr(ap->bitp(), env);
@@ -2776,7 +3327,7 @@ private:
                 return lv;
             }
             if (idx.hasVal) {
-                const int64_t k = static_cast<int64_t>(idx.val) - m.lo;
+                const int64_t k = static_cast<int64_t>(idx.val);
                 if (k < 0 || k >= m.depth) {
                     warnNode(lhsp, "constant index out of range for " + m.name);
                     return lv;
@@ -3458,6 +4009,7 @@ private:
         // Bind formals
         std::vector<std::pair<const AstVar*, bool>> bound;  // (var, wasBind)
         std::vector<std::pair<const AstVar*, SExpr>> savedBind;
+        std::vector<std::pair<const AstVar*, std::vector<SExpr>>> savedArrBind;
         std::vector<std::pair<const AstVar*, SLVal>> savedAlias;
         std::vector<std::pair<const AstVar*, std::string>> savedLocal;
         for (size_t i = 0; i < formals.size(); ++i) {
@@ -3480,6 +4032,18 @@ private:
                     const SExpr v = materialize(lowerExpr(args[i], env));
                     env.cur[lv.key] = v;
                 }
+            } else if (VN_IS(fp->dtypep()->skipRefp(), UnpackArrayDType)) {
+                // an array argument: its elements, read now, as a by-value argument is
+                std::vector<SExpr> elems;
+                if (!args[i] || !arrayElems(args[i], env, elems)) {
+                    errNode(refp, "array argument " + fp->prettyName() + " unsupported");
+                    int depth, lo;
+                    const int ew = unpackedOf(fp->dtypep(), depth, lo)->width();
+                    elems.assign(depth, constExpr(0, ew));
+                }
+                for (SExpr& e : elems) e = materialize(e);
+                if (m_arrBind.count(fp)) savedArrBind.emplace_back(fp, m_arrBind[fp]);
+                m_arrBind[fp] = elems;
             } else {
                 SExpr v = args[i] ? materialize(lowerExpr(args[i], env)) : constExpr(0, fp->width());
                 if (m_bind.count(fp)) savedBind.emplace_back(fp, m_bind[fp]);
@@ -3536,14 +4100,17 @@ private:
         }
         for (const std::string& k : fenv.order) {
             if (k.compare(0, prefix.size(), prefix) == 0) continue;
-            env.setNext(k, fenv.next.at(k));
+            const auto nit = fenv.next.find(k);  // as in finishBlock: order can outlive next
+            if (nit != fenv.next.end()) env.setNext(k, nit->second);
         }
         // Unbind
         for (AstVar* const fp : formals) {
             m_bind.erase(fp);
+            m_arrBind.erase(fp);
             m_alias.erase(fp);
         }
         for (const auto& kv : savedBind) m_bind[kv.first] = kv.second;
+        for (const auto& kv : savedArrBind) m_arrBind[kv.first] = kv.second;
         for (const auto& kv : savedAlias) m_alias[kv.first] = kv.second;
         for (AstVar* const lp : locals) {
             m_localKeys.erase(m_localKey.at(lp));
@@ -3893,13 +4460,29 @@ private:
 
     SExpr lowerArraySel(AstArraySel* ap, Env& env) {
         const int width = ap->width() > 0 ? ap->width() : 1;
-        const AstVarRef* const vp = VN_CAST(ap->fromp(), VarRef);
+        std::vector<AstNodeExpr*> chain;
+        const AstVarRef* const vp = arrayChain(ap, chain);
         if (!vp) {
-            errNode(ap, "multi-dimensional array read replaced by 0");
+            errNode(ap, "array read through this expression replaced by 0");
             return constExpr(0, width);
         }
-        const SExpr idx = materialize(lowerExpr(ap->bitp(), env));
+        const std::vector<ArrayDim> dims = arrayDims(vp->varp()->dtypep());
         const auto mit = m_mems.find(vp->varp());
+        const bool ram = mit != m_mems.end() && !mit->second.asRegs;
+        std::vector<SExpr> indexes;
+        for (AstNodeExpr* const ip : chain) indexes.push_back(materialize(lowerExpr(ip, env)));
+        if (chain.size() != dims.size()) {
+            errNode(ap, "part of an array used as a single value, replaced by 0");
+            return constExpr(0, width);
+        }
+        if (dims.size() > 1 && !ram && !arrayHasElems(vp->varp())) {
+            errNode(ap, "array read of " + varName(vp->varp()) + " replaced by 0");
+            return constExpr(0, width);
+        }
+        if (m_arrBind.count(vp->varp()) || (dims.size() > 1 && !ram)) {
+            return arrayPick(ap, vp->varp(), dims, indexes, 0, 0, 0, width, env);
+        }
+        const SExpr idx = dims.size() > 1 ? arrayFlatIndex(dims, indexes) : indexes[0];
         if (mit == m_mems.end()) {
             // array-typed port
             SExpr e;
@@ -3912,7 +4495,7 @@ private:
         SMem& m = mit->second;
         if (m.asRegs) {
             if (idx.hasVal) {
-                const int64_t k = static_cast<int64_t>(idx.val) - m.lo;
+                const int64_t k = static_cast<int64_t>(idx.val);
                 if (k < 0 || k >= m.depth) {
                     warnNode(ap, "constant index out of range for " + m.name);
                     return constExpr(0, width);
@@ -3922,7 +4505,7 @@ private:
             // mux chain over the elements
             SExpr acc = readKey(m.regNames[0], env, true);
             for (int k = 1; k < m.depth; ++k) {
-                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k + m.lo));
+                const SExpr hit = eqConst(idx, static_cast<uint64_t>(k));
                 acc = genMux(hit, materialize(acc), materialize(readKey(m.regNames[k], env, true)),
                              m.dataWidth);
             }
