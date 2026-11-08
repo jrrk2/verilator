@@ -196,7 +196,8 @@ public:
     // into the LUTs in front of the chain.  A multiply of at least MIN_DSP
     // bits is split into 24 x 17 partial products on DSP48E1s (pairs whose
     // shift is past the result width, or whose operand slice is constant 0,
-    // are skipped) summed with such adders.
+    // are skipped) summed with such adders, unless one operand is a constant
+    // (mulConst).
     static constexpr size_t MIN_CARRY = 4;
     static constexpr size_t MIN_DSP = 8;
     struct Chain {
@@ -382,6 +383,22 @@ public:
         return true;
     }
     Vec add(const Vec& a, const Vec& b, int cin = 0) {
+        if (isConst(cin)) {
+            // Low bits where the carry can't change -- carry 0 and an operand bit 0, or carry 1
+            // and an operand bit 1 -- sum to the other operand bit: wires, not chain (a shifted
+            // operand, a constant's trailing bits)
+            size_t k = 0;
+            while (k < a.size() && (a[k] == cin || b[k] == cin)) ++k;
+            if (k) {
+                Vec r(a.size());
+                for (size_t i = 0; i < k; ++i) r[i] = a[i] == cin ? b[i] : a[i];
+                if (k < a.size()) {
+                    const Vec hi = add(Vec(a.begin() + k, a.end()), Vec(b.begin() + k, b.end()), cin);
+                    std::copy(hi.begin(), hi.end(), r.begin() + k);
+                }
+                return r;
+            }
+        }
         if (m_hard && a.size() > MIN_CARRY && a.back() == 0 && b.back() == 0) {
             // Both top bits 0 (a zero-extended carry out): that sum bit is
             // the carry out of the rest, so the chain is one bit shorter
@@ -418,7 +435,62 @@ public:
     }
     Vec sub(const Vec& a, const Vec& b) { return add(a, NOTv(b), 1); }
     Vec neg(const Vec& a) { return add(NOTv(a), constVec(0, a.size()), 1); }
+    // A constant with at most this many signed digits multiplies by shifts and adds
+    static constexpr int MAX_CONST_TERMS = 4;
     Vec mul(const Vec& a, const Vec& b) {
+        if (allConst(b) && !allConst(a)) return mulConst(a, b);
+        if (allConst(a) && !allConst(b)) return mulConst(b, a);
+        return mulVar(a, b);
+    }
+    // x * c for a constant c: the sum of x shifted by c's signed digits (canonical, so 7 is
+    // 8 - 1), as wires and adders whose constant bits stay visible to the mapper -- a DSP48E1
+    // would hide them, and 32 * i as an index would select any bit, not one of every 32.
+    // A constant of more digits goes to DSP48E1s, less its trailing zeros.
+    Vec mulConst(const Vec& x, const Vec& c) {
+        const int w = x.size();
+        std::vector<int> digit(w, 0);
+        int carry = 0, terms = 0;
+        for (int i = 0; i < w; ++i) {
+            const int bit = (c[i] == 1 ? 1 : 0) + carry;
+            const bool next = i + 1 < w && c[i + 1] == 1;
+            if (bit == 1) {
+                digit[i] = next ? -1 : 1;
+                carry = next ? 1 : 0;
+            } else {
+                carry = bit == 2 ? 1 : 0;
+            }
+            if (digit[i]) ++terms;
+        }
+        if (!terms) return constVec(0, w);
+        if (terms > MAX_CONST_TERMS && m_hard && static_cast<size_t>(w) >= MIN_DSP) {
+            int t = 0;
+            while (t < w && c[t] == 0) ++t;
+            if (!t) return mulVar(x, c);
+            const Vec hi = mul(Vec(x.begin(), x.end() - t), Vec(c.begin() + t, c.end()));
+            Vec r(w, 0);
+            std::copy(hi.begin(), hi.end(), r.begin() + t);
+            return r;
+        }
+        std::vector<Vec> pos, neg;
+        for (int i = 0; i < w; ++i) {
+            if (!digit[i]) continue;
+            Vec s(w, 0);
+            for (int j = 0; i + j < w; ++j) s[i + j] = x[j];
+            (digit[i] > 0 ? pos : neg).push_back(s);
+        }
+        const auto sum = [&](std::vector<Vec> parts) {
+            while (parts.size() > 1) {  // balanced adder tree
+                std::vector<Vec> next;
+                for (size_t k = 0; k + 1 < parts.size(); k += 2) next.push_back(add(parts[k], parts[k + 1]));
+                if (parts.size() % 2) next.push_back(parts.back());
+                parts.swap(next);
+            }
+            return parts[0];
+        };
+        const Vec p = pos.empty() ? constVec(0, w) : sum(pos);
+        return neg.empty() ? p : sub(p, sum(neg));
+    }
+    Vec mulVar(const Vec& a, const Vec& b) {
         const int w = a.size();
         if (m_hard && static_cast<size_t>(w) >= MIN_DSP) {
             std::vector<Vec> parts;  // shifted partial products, w bits each
@@ -899,11 +971,15 @@ private:
         // topological order of AND nodes reachable from the POs
         std::vector<int> order;
         std::unordered_map<int, int> mark;  // var -> 1 visiting, 2 done
+        bool looped = false;
         std::function<void(int)> dfs = [&](int lit) {
             const int v = m_aig.resolve(lit) >> 1;
             if (!v) return;
             const auto it = mark.find(v);
-            if (it != mark.end()) return;
+            if (it != mark.end()) {
+                if (it->second == 1) looped = true;
+                return;
+            }
             if (m_aig.isPlaceholder(v)) {
                 mark[v] = 2;
                 piIndex(v);
@@ -916,6 +992,8 @@ private:
             order.push_back(v);
         };
         for (const int l : m_po) dfs(l);
+        // ABC's reader takes such a file for out-of-range literals and asserts
+        if (looped) v3fatal("Synthesis: the design has a combinational loop, which cannot be mapped");
         // register all known sources as PIs even if unreferenced (stable numbering)
         std::unordered_map<int, int> avar;  // var -> aiger var
         for (size_t i = 0; i < m_piVar.size(); ++i) avar[m_piVar[i]] = i + 1;
