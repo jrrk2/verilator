@@ -306,6 +306,8 @@ private:
     bool m_structOnlyWidePackedMem = false;  // main switch: --struct-only-wide-packed-mem
     bool m_structOnlyReport = false;  // main switch: --struct-only-report
     bool m_mapOnlyKeepTemps = false;  // main switch: --map-only-keep-temps
+    bool m_mapOnlyWholeProgram = false;  // main switch: --map-only-whole-program
+    int m_mapOnlyPartitionMin = 1000;  // main switch: --map-only-partition-min
     bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
     bool m_mapOnlyKeepEquivRegs = false;  // main switch: --map-only-keep-equivalent-registers
@@ -429,6 +431,7 @@ private:
     string      m_mapOnlyOutput;  // main switch: --map-only-output
     string      m_mapOnlyEdif;  // main switch: --map-only-edif
     string      m_mapOnlyVerilog;  // main switch: --map-only-verilog
+    string      m_mapOnlyMemInit;  // main switch: --map-only-meminit
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
     std::set<string> m_structOnlyBlackbox;  // main switch: --struct-only-blackbox
@@ -755,9 +758,12 @@ public:
     string mapOnlyOutput() const { return m_mapOnlyOutput; }
     string mapOnlyEdif() const { return m_mapOnlyEdif; }
     string mapOnlyVerilog() const { return m_mapOnlyVerilog; }
+    string mapOnlyMemInit() const { return m_mapOnlyMemInit; }
     bool mapOnlyEdifFlat() const { return m_mapOnlyEdifFlat; }
     string mapOnlyAbcScript() const { return m_mapOnlyAbcScript; }
     bool mapOnlyKeepTemps() const { return m_mapOnlyKeepTemps; }
+    bool mapOnlyWholeProgram() const { return m_mapOnlyWholeProgram; }
+    int mapOnlyPartitionMin() const { return m_mapOnlyPartitionMin; }
     bool mapOnlyBramCascade() const { return m_mapOnlyBramCascade; }
     bool mapOnlyNoIobuf() const { return m_mapOnlyNoIobuf; }
     bool mapOnlyKeepEquivRegs() const { return m_mapOnlyKeepEquivRegs; }

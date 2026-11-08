@@ -30,12 +30,17 @@
 
 #include "V3EmitStruct.h"
 #include "V3Global.h"
+#include "V3Os.h"
 #include <unistd.h>
+#include <climits>
+#include <cstdlib>
 
 #include "struct_netlist.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <iomanip>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -78,12 +83,17 @@ public:
     AigB() {
         m_fan.emplace_back(-1, -1);  // var 0: constant
         m_alias.push_back(-1);
+        m_owner.push_back(0);
     }
     int newVar() {
         m_fan.emplace_back(-1, -1);
         m_alias.push_back(-1);
+        m_owner.push_back(m_scope);
         return 2 * static_cast<int>(m_fan.size() - 1);
     }
+    // The instance scope new nodes are attributed to (partitioned mapping)
+    void setScope(int s) { m_scope = s; }
+    int scopeOf(int v) const { return m_owner[v]; }
     int T() const { return 1; }
     int F() const { return 0; }
     bool isConst(int l) const { return (l >> 1) == 0; }
@@ -115,6 +125,7 @@ public:
         if (it != m_hash.end()) return it->second;
         m_fan.emplace_back(key.first, key.second);
         m_alias.push_back(-1);
+        m_owner.push_back(m_scope);
         const int lit = 2 * static_cast<int>(m_fan.size() - 1);
         m_hash[key] = lit;
         return lit;
@@ -623,6 +634,8 @@ public:
 private:
     std::vector<std::pair<int, int>> m_fan;  // per var: (lit0, lit1) or (-1,-1) placeholder
     std::vector<int> m_alias;  // per placeholder var: driver literal or -1
+    std::vector<int> m_owner;  // per var: the instance scope it was built in
+    int m_scope = 0;
     std::map<std::pair<int, int>, int> m_hash;
 };
 
@@ -647,6 +660,11 @@ class Mapper final {
     int m_ncells = 0;
     std::unordered_map<std::string, int> m_counts;
     std::vector<std::string> m_warnings;
+    // --map-only-meminit: one JSON object per memory (see writeMemInit), collected as the memories are emitted
+    std::vector<std::string> m_memInit;
+    // instance scopes (partitioned mapping): id -> (prefix "a.b.", module type); 0 = top
+    std::vector<std::pair<std::string, std::string>> m_scopes;
+    std::unordered_map<std::string, int> m_scopeId;
     // Electrical rule check on the flat netlist: every bit a cell input reads
     // must be driven by a cell output or a top-level input (or be a constant).
     // The first reader of each net, for the report, and every driven net.
@@ -684,6 +702,16 @@ public:
         m_d.label = "design";
         std::set<std::string> bb;
         svs_netlist::Elaborator<AigB> e{m_aig, mods, bb, true};
+        m_scopes.emplace_back("", m_top);
+        m_scopeId[""] = 0;
+        e.onScope = [this](const std::string& prefix, const std::string& type) {
+            auto it = m_scopeId.find(prefix);
+            if (it == m_scopeId.end()) {
+                it = m_scopeId.emplace(prefix, static_cast<int>(m_scopes.size())).first;
+                m_scopes.emplace_back(prefix, type);
+            }
+            m_aig.setScope(it->second);
+        };
         e.run(m_top, m_d);
         const int deadDsps = m_aig.pruneDsps();
         const int idleChains = m_aig.bypassIdleChains();
@@ -700,15 +728,16 @@ public:
         }
         buildPOs();
         const std::string base = filename.empty() ? v3Global.opt.mapOnlyEdif() : filename;
-        const std::string aig = base + ".aig";
-        const std::string blif = base + ".blif";
         std::map<std::string, Lut> luts;
         std::vector<std::string> lutOrder;
         // Nothing comes out of the fabric (no top outputs, register inputs or
         // hard-cell pins: a module with no outputs, or one whose logic all
         // folded away): no LUTs to map, and ABC asserts on a network with no
         // outputs (Abc_NtkCheckNames), so it is not run
-        if (!m_po.empty()) {
+        if (m_po.empty()) {
+        } else if (v3Global.opt.mapOnlyWholeProgram()) {
+            const std::string aig = base + ".aig";
+            const std::string blif = base + ".blif";
             writeAiger(aig);
             runAbc(aig, blif);
             readBlif(blif, luts, lutOrder);
@@ -716,6 +745,8 @@ public:
                 unlink(aig.c_str());
                 unlink(blif.c_str());
             }
+        } else {
+            mapPartitioned(base, luts, lutOrder);
         }
         emitJson(filename, luts, lutOrder);
         for (const std::string& w : m_warnings) std::cerr << "%Warning-MAP: " << w << "\n";
@@ -967,8 +998,9 @@ private:
     std::vector<DspPo> m_dspPo;
 
     // ---- AIGER (binary) ----
-    void writeAiger(const std::string& path) {
-        // topological order of AND nodes reachable from the POs
+    // Topological order of the AND nodes reachable from the POs; every
+    // placeholder met on the way is registered as a primary input
+    std::vector<int> topoOrder() {
         std::vector<int> order;
         std::unordered_map<int, int> mark;  // var -> 1 visiting, 2 done
         bool looped = false;
@@ -994,7 +1026,10 @@ private:
         for (const int l : m_po) dfs(l);
         // ABC's reader takes such a file for out-of-range literals and asserts
         if (looped) v3fatal("Synthesis: the design has a combinational loop, which cannot be mapped");
-        // register all known sources as PIs even if unreferenced (stable numbering)
+        return order;
+    }
+    void writeAiger(const std::string& path) {
+        const std::vector<int> order = topoOrder();
         std::unordered_map<int, int> avar;  // var -> aiger var
         for (size_t i = 0; i < m_piVar.size(); ++i) avar[m_piVar[i]] = i + 1;
         const int I = m_piVar.size();
@@ -1048,12 +1083,190 @@ private:
         }
     }
 
-    // ---- BLIF back ----
+    // one abc LUT: inputs, output, and the on-set cover (in-pattern, value)
     struct Lut {
         std::vector<std::string> ins;
         std::string out;
         std::vector<std::pair<std::string, char>> cover;
     };
+
+    // ---- partitioned mapping: abc once per instance ----
+    // The flat AIG is cut at instance boundaries: every node belongs to the
+    // scope that built it, and a scope below --map-only-partition-min AND
+    // nodes is folded into its parent's partition so LUTs can still span
+    // small modules.  Each partition is handed to abc on its own, with its
+    // boundary nodes named v<var> (global AIG variables) so the partitions'
+    // LUT netlists join up by name; abc's internal names get a partition
+    // prefix.  Top outputs, register and cell inputs keep their po<i> names.
+    void mapPartitioned(const std::string& base, std::map<std::string, Lut>& luts,
+                        std::vector<std::string>& order) {
+        const std::vector<int> topo = topoOrder();
+        const int nScopes = m_scopes.size();
+        std::vector<long long> ands(nScopes, 0);
+        for (const int v : topo) ++ands[m_aig.scopeOf(v)];
+        // parent of each scope: the prefix one instance shorter
+        std::vector<int> parentOf(nScopes, 0);
+        for (int s = 1; s < nScopes; ++s) {
+            std::string p = m_scopes[s].first;
+            if (!p.empty()) p.pop_back();
+            const size_t dot = p.rfind('.');
+            p = dot == std::string::npos ? std::string() : p.substr(0, dot + 1);
+            const auto it = m_scopeId.find(p);
+            parentOf[s] = it == m_scopeId.end() ? 0 : it->second;
+        }
+        // fold small scopes upward, children first
+        const long long minAnds = v3Global.opt.mapOnlyPartitionMin();
+        std::vector<int> part(nScopes);
+        std::vector<long long> partAnds = ands;
+        std::vector<int> byDepth(nScopes);
+        for (int s = 0; s < nScopes; ++s) part[s] = byDepth[s] = s;
+        std::sort(byDepth.begin(), byDepth.end(), [&](int a, int b) {
+            return m_scopes[a].first.size() > m_scopes[b].first.size();
+        });
+        for (const int s : byDepth) {
+            if (s == 0 || partAnds[s] >= minAnds) continue;
+            const int p = parentOf[s];
+            partAnds[p] += partAnds[s];
+            partAnds[s] = 0;
+            part[s] = p;
+        }
+        auto root = [&](int s) {
+            while (part[s] != s) s = part[s];
+            return s;
+        };
+        auto partOf = [&](int v) { return root(m_aig.scopeOf(v)); };
+        {
+            std::map<std::string, std::pair<int, long long>> byType;  // type -> (instances, ANDs)
+            for (int s = 0; s < nScopes; ++s) {
+                auto& e = byType[m_scopes[s].second];
+                ++e.first;
+                e.second += ands[s];
+            }
+            std::vector<std::pair<long long, std::string>> big;
+            for (const auto& kv : byType) big.emplace_back(kv.second.second, kv.first);
+            std::sort(big.rbegin(), big.rend());
+            int nParts = 0;
+            for (int s = 0; s < nScopes; ++s) nParts += part[s] == s && partAnds[s] > 0;
+            std::cerr << "%Info: partition: " << topo.size() << " AND nodes in " << nScopes
+                      << " instances, " << nParts << " partitions (min " << minAnds << " ANDs)\n";
+            for (size_t i = 0; i < big.size() && i < 25 && big[i].first; ++i) {
+                std::cerr << "%Info: partition: " << big[i].second << " x" << byType[big[i].second].first
+                          << " ands=" << big[i].first << "\n";
+            }
+        }
+        struct Part {
+            std::vector<int> ins, ands, outs;
+            std::unordered_set<int> inSet, outSet;
+            std::vector<std::pair<int, std::string>> pos;  // (literal, po<i>)
+        };
+        std::map<int, Part> parts;
+        auto noteIn = [&](Part& P, int v) {
+            if (P.inSet.insert(v).second) P.ins.push_back(v);
+        };
+        auto noteOut = [&](int v) {
+            Part& O = parts[partOf(v)];
+            if (O.outSet.insert(v).second) O.outs.push_back(v);
+        };
+        for (const int v : topo) {
+            const int p = partOf(v);
+            Part& P = parts[p];
+            P.ands.push_back(v);
+            for (const int f : {m_aig.fanin(v).first, m_aig.fanin(v).second}) {
+                const int fv = m_aig.resolve(f) >> 1;
+                if (!fv) continue;
+                if (m_aig.isPlaceholder(fv)) {
+                    noteIn(P, fv);
+                } else if (partOf(fv) != p) {
+                    noteIn(P, fv);
+                    noteOut(fv);
+                }
+            }
+        }
+        for (size_t i = 0; i < m_po.size(); ++i) {
+            const int r = m_aig.resolve(m_po[i]);
+            const int v = r >> 1;
+            if (!v || m_aig.isPlaceholder(v)) continue;  // constant / input: passed through by emitJson
+            parts[partOf(v)].pos.emplace_back(r, "po" + std::to_string(i));
+        }
+        int k = 0;
+        for (auto& kv : parts) {
+            Part& P = kv.second;
+            if (P.ands.empty()) continue;
+            const std::string tag = "p" + std::to_string(k++);
+            const std::string aig = base + "." + tag + ".aig";
+            const std::string blif = base + "." + tag + ".blif";
+            std::unordered_map<int, int> avar;
+            for (size_t i = 0; i < P.ins.size(); ++i) avar[P.ins[i]] = i + 1;
+            const int I = P.ins.size();
+            for (size_t j = 0; j < P.ands.size(); ++j) avar[P.ands[j]] = I + 1 + j;
+            auto alit = [&](int lit) {
+                const int r = m_aig.resolve(lit);
+                const int v = r >> 1;
+                if (!v) return r & 1;
+                return 2 * avar.at(v) + (r & 1);
+            };
+            std::vector<std::pair<int, std::string>> outs;
+            for (const int v : P.outs) outs.emplace_back(2 * v, "v" + std::to_string(v));
+            for (const auto& po : P.pos) outs.push_back(po);
+            {
+                std::ofstream os{aig, std::ios::binary};
+                os << "aig " << (I + P.ands.size()) << " " << I << " 0 " << outs.size() << " "
+                   << P.ands.size() << "\n";
+                for (const auto& o : outs) os << alit(o.first) << "\n";
+                auto leb = [&](unsigned x) {
+                    while (x >= 0x80) {
+                        os.put(static_cast<char>((x & 0x7f) | 0x80));
+                        x >>= 7;
+                    }
+                    os.put(static_cast<char>(x));
+                };
+                for (size_t j = 0; j < P.ands.size(); ++j) {
+                    const int v = P.ands[j];
+                    const int lhs = 2 * (I + 1 + j);
+                    int r0 = alit(m_aig.fanin(v).first), r1 = alit(m_aig.fanin(v).second);
+                    if (r0 < r1) std::swap(r0, r1);
+                    leb(lhs - r0);
+                    leb(r0 - r1);
+                }
+                for (size_t i = 0; i < P.ins.size(); ++i) os << "i" << i << " v" << P.ins[i] << "\n";
+                for (size_t i = 0; i < outs.size(); ++i) os << "o" << i << " " << outs[i].second << "\n";
+                os << "c\nverilator --map-only-output " << tag << "\n";
+            }
+            const auto t0 = std::chrono::steady_clock::now();
+            runAbc(aig, blif);
+            std::map<std::string, Lut> pl;
+            std::vector<std::string> po;
+            readBlif(blif, pl, po);
+            if (!v3Global.opt.mapOnlyKeepTemps()) {
+                unlink(aig.c_str());
+                unlink(blif.c_str());
+            }
+            {
+                const auto& sc = m_scopes[kv.first];
+                const double secs
+                    = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                std::cerr << "%Info: partition: " << tag << " " << sc.second << " "
+                          << (sc.first.empty() ? std::string("<top>") : sc.first) << " ands="
+                          << P.ands.size() << " ins=" << P.ins.size() << " outs=" << outs.size()
+                          << " luts=" << po.size() << " abc=" << std::fixed << std::setprecision(1)
+                          << secs << "s" << std::endl;
+            }
+            std::unordered_set<std::string> boundary;
+            for (const int v : P.ins) boundary.insert("v" + std::to_string(v));
+            for (const auto& o : outs) boundary.insert(o.second);
+            auto rn = [&](const std::string& n) { return boundary.count(n) ? n : tag + "_" + n; };
+            for (const std::string& o : po) {
+                Lut l = pl[o];
+                l.out = rn(o);
+                for (std::string& in : l.ins) in = rn(in);
+                luts[l.out] = l;
+                order.push_back(l.out);
+            }
+        }
+        UINFO(1, "map: " << k << " partitions mapped, " << order.size() << " LUT nodes");
+    }
+
+    // ---- BLIF back ----
     void readBlif(const std::string& path, std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
         std::ifstream in{path};
         if (!in) v3fatal("abc produced no BLIF: " << path);
@@ -1297,6 +1510,7 @@ private:
             auto it = m_netOfVar.find(v);
             if (it == m_netOfVar.end()) it = m_netOfVar.emplace(v, newNet()).first;
             netOfName["pi" + std::to_string(i)] = it->second;
+            netOfName["v" + std::to_string(v)] = it->second;  // the partitions' name for it
         }
         auto netOf = [&](const std::string& n) -> std::string {
             const auto it = netOfName.find(n);
@@ -1775,6 +1989,7 @@ private:
         }
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
         if (!v3Global.opt.mapOnlyVerilog().empty()) writeVerilog(v3Global.opt.mapOnlyVerilog());
+        if (!v3Global.opt.mapOnlyMemInit().empty()) writeMemInit(v3Global.opt.mapOnlyMemInit());
         if (filename.empty()) return;  // --map-only-edif / --map-only-verilog alone
         std::ofstream os{filename};
         os << "{\n  \"creator\": \"verilator --map-only-output\",\n  \"modules\": {\n    \"" << m_top << "\": {\n"
@@ -2298,6 +2513,61 @@ private:
         for (const auto& p : c.params) if (p.first == name) return std::atoi(p.second.c_str());
         return dflt;
     }
+    static std::string jsonStr(const std::string& v) {
+        std::string o = "\"";
+        for (const char ch : v) {
+            if (ch == '"' || ch == '\\') { o += '\\'; o += ch; }
+            else if (static_cast<unsigned char>(ch) < 0x20) o += ' ';
+            else o += ch;
+        }
+        return o + "\"";
+    }
+    // The file $readmemh named, as readHex finds it: as given, else under $MEM_INIT_DIR; made absolute so that a tool
+    // run from another directory finds the same file
+    static std::string resolveInitFile(const std::string& f) {
+        if (f.empty()) return f;
+        std::vector<std::string> cands{f};
+        if (const char* d = std::getenv("MEM_INIT_DIR")) cands.push_back(std::string(d) + "/" + f);
+        for (const std::string& cand : cands) {
+            if (!std::ifstream{cand}) continue;
+            return V3Os::filenameRealPath(cand);   // realpath, or _fullpath on Windows
+        }
+        return f;
+    }
+    // One memory of the manifest.  The cells of the memory are named <cell>_t<lane tile>[_d<depth block>]: lane tile t holds
+    // data bits [t*tw, t*tw+tw) of every word (the last one fewer: width), depth block d the words [d*words_per_tile,
+    // (d+1)*words_per_tile).  Word k of a block is in bits [k*tw, k*tw+tw) of the block RAM's INIT_xx lines (the data layout
+    // of UG473 for a port of tw data bits), which is what a tool needs to place a new image into a placed design.
+    void recordMemInit(const Design::Cell& c, const std::string& initFile, const char* prim, int dw, int depth, int tw,
+                       int ntiles, int nblocks, int wordsPerTile, bool cascade) {
+        std::ostringstream o;
+        const std::string cellBase = sanitize(c.name);
+        o << "    {\"name\": " << jsonStr(c.name) << ", \"type\": " << jsonStr(c.type) << ", \"kind\": \"bram\""
+          << ", \"primitive\": " << jsonStr(prim) << ", \"init_file\": " << jsonStr(initFile)
+          << ", \"init_path\": " << jsonStr(resolveInitFile(initFile)) << ", \"width\": " << dw << ", \"depth\": " << depth
+          << ", \"lane_bits\": " << tw << ", \"lanes\": " << ntiles << ", \"blocks\": " << nblocks
+          << ", \"words_per_block\": " << wordsPerTile << ", \"cascade\": " << (cascade ? "true" : "false") << ",\n"
+          << "     \"cells\": [";
+        bool first = true;
+        for (int t = 0; t < ntiles; ++t) {
+            for (int d = 0; d < nblocks; ++d) {
+                const int lo = t * tw;
+                o << (first ? "\n" : ",\n") << "       {\"cell\": "
+                  << jsonStr(cellBase + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : ""))
+                  << ", \"lane\": " << t << ", \"block\": " << d << ", \"bit_lo\": " << lo
+                  << ", \"bits\": " << std::min(tw, dw - lo) << ", \"word_lo\": " << d * wordsPerTile << "}";
+                first = false;
+            }
+        }
+        o << "\n     ]}";
+        m_memInit.push_back(o.str());
+    }
+    void writeMemInit(const std::string& filename) {
+        std::ofstream os{filename};
+        os << "{\n  \"creator\": \"verilator --map-only-meminit\",\n  \"top\": " << jsonStr(m_top) << ",\n  \"memories\": [\n";
+        for (size_t i = 0; i < m_memInit.size(); ++i) os << m_memInit[i] << (i + 1 < m_memInit.size() ? ",\n" : "\n");
+        os << "  ]\n}\n";
+    }
     void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) {
         const int aw = paramOf(c, "ADDR_WIDTH", 1);
         const int dw = paramOf(c, "DATA_WIDTH", 1);
@@ -2470,14 +2740,17 @@ private:
         // tiles' INIT_xx strings: lane bit i of word k sits at INIT bit k*tw+i
         // (x1/x9/x36 data layout; parity bits unused, INITP left 0)
         std::vector<uint64_t> image;
+        std::string initFile;
         for (const auto& p : c.params) {
             if (p.first != "INIT_FILE") continue;
             std::string f = p.second;
             if (f.size() >= 2 && f.front() == '"') f = f.substr(1, f.size() - 2);
             if (f.empty()) continue;
+            initFile = f;
             if (!readHex(f, image)) v3error("Synthesis: " << "memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
         }
         const int wordsPerTile = 32768 / tw;
+        if (!v3Global.opt.mapOnlyMemInit().empty()) recordMemInit(c, initFile, prim, dw, depth, tw, ntiles, nblocks, wordsPerTile, cascade);
         auto initParams = [&](int lo, int sw, int d, std::vector<std::pair<std::string, std::string>>& params) {
             if (image.empty()) return;
             for (int line = 0; line < 128; ++line) {
