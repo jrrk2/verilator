@@ -2767,6 +2767,17 @@ private:
             }
             return {};
         };
+        // a pin's bits as resolved AIG literals: equal addresses compare equal here even where
+        // per-instance abc runs gave their nets different names
+        auto pinLits = [&](const char* name) -> std::vector<int> {
+            for (const auto& in : c.ins) {
+                if (in.first != name) continue;
+                std::vector<int> lits;
+                for (const int l : in.second) lits.push_back(m_aig.resolve(l));
+                return lits;
+            }
+            return {};
+        };
         auto outNets = [&](const char* name) -> std::vector<std::string> {
             for (const auto& o : c.outs) if (o.first == name) {
                 std::vector<std::string> nets;
@@ -2823,13 +2834,18 @@ private:
             P[0].we = weBit;
             P[0].din = wdata;
             P[1].we = "\"0\"";
-            if (twoReads && (ra1 == waddr || ra2 == waddr)) {
+            const std::vector<int> wl = pinLits(c.type == "memory_sp" ? "addr" : "waddr");
+            const bool share1 = !wl.empty() && pinLits(is1w1r ? "raddr" : "raddr1") == wl;
+            const bool share2 = !wl.empty() && pinLits("raddr2") == wl;
+            if (twoReads && (share1 || share2)) {
                 // A read at the write address (LiteEth's buffers, the second
                 // port a registered-address read became) shares port A with
                 // the write: READ_FIRST gives the word before the write, as the
                 // synchronous read does, and the other read has port B to itself
-                const bool firstShares = ra1 == waddr;
-                if ((firstShares ? re1Bit : re2Bit) != "\"1\"") {
+                const bool firstShares = share1;
+                // HELDn: V3EmitStruct holds that read's output outside the block RAM after a
+                // write-only cycle, so the port may load in every write
+                if ((firstShares ? re1Bit : re2Bit) != "\"1\"" && !paramOf(c, firstShares ? "HELD1" : "HELD2", 0)) {
                     v3error("Synthesis: memory " + c.name + ": a read sharing the write's port must have no enable; its output would change in every write");
                     return;
                 }

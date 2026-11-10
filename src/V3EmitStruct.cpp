@@ -5179,12 +5179,24 @@ private:
                 // Synchronous-read primitives.  A block has two ports and the write takes one,
                 // so only a read at the write address can share a bank with another read
                 // (its port does the write and the read together); every other read gets
-                // its own copy of the memory, all copies sharing the write.  The shared port's
-                // output changes in every write, so its read must have no enable of its own.
+                // its own copy of the memory, all copies sharing the write.  The shared port is
+                // READ_FIRST (the other port's read of the word being written gets the old word,
+                // which NO_CHANGE would not give) and its output changes in every write, so a
+                // read there with an enable of its own is held outside the block RAM after a
+                // cycle that wrote without reading, as the TDP case does.
                 std::vector<std::vector<size_t>> banks;
                 size_t shared = nr;
+                bool sharedHeld = false;
                 if (nw) for (size_t i = 0; i < nr && shared == nr; ++i)
                     if (m.readIdx[i].text == m.writes[0].idx.text && m.sync[i].en.hasVal && m.sync[i].en.val) shared = i;
+                if (nw && nr >= 2 && shared == nr) {
+                    for (size_t i = 0; i < nr && shared == nr; ++i) {
+                        if (m.readIdx[i].text == m.writes[0].idx.text) {
+                            shared = i;
+                            sharedHeld = true;
+                        }
+                    }
+                }
                 if (shared != nr) {
                     std::vector<size_t> b{shared};
                     for (size_t i = 0; i < nr && b.size() < 2; ++i) if (i != shared) b.push_back(i);
@@ -5213,6 +5225,24 @@ private:
                         const SMem::SyncRead& sr = m.sync[r];
                         pinIn(it, two ? reN[k] : "re", sr.en);
                         pinIn(it, two ? raN[k] : "raddr", addr(m.readIdx[r]));
+                        if (two && sharedHeld && r == shared) {
+                            // q = the block RAM's output after a read, else the value q had
+                            it.params.emplace_back("HELD" + std::to_string(k + 1), "1");
+                            const std::string raw = sr.q + "__rd";
+                            declWire(raw, m.dataWidth);
+                            pinOut(it, rdN[k], raw, {raw});
+                            m_regsInBlock.emplace_back(raw, m.dataWidth);
+                            SExpr rawE = identExpr(raw, m.dataWidth);
+                            rawE.refs = {raw};
+                            SExpr qE = identExpr(sr.q, m.dataWidth);
+                            qE.refs = sr.qRefs;
+                            const SExpr readQ = newWire(1);
+                            plainDff(readQ.text, {readQ.text}, sr.en, clk, 1);
+                            const SExpr heldQ = newWire(m.dataWidth);
+                            plainDff(heldQ.text, {heldQ.text}, qE, clk, m.dataWidth);
+                            addAssign(sr.q, genMux(readQ, heldQ, rawE, m.dataWidth), sr.qRefs);
+                            continue;
+                        }
                         pinOut(it, two ? rdN[k] : "rdata", sr.q, sr.qRefs);
                         m_regsInBlock.emplace_back(sr.q, m.dataWidth);
                     }
