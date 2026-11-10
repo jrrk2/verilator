@@ -311,6 +311,7 @@ private:
     bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
     bool m_mapOnlyKeepEquivRegs = false;  // main switch: --map-only-keep-equivalent-registers
+    bool m_mapOnlyKeepSumChains = false;  // main switch: --map-only-keep-sum-chains
     bool m_lintOnly = false;        // main switch: --lint-only
     bool m_gmake = false;           // main switch: --make gmake
     bool m_makeJson = false;        // main switch: --make json
@@ -767,6 +768,7 @@ public:
     bool mapOnlyBramCascade() const { return m_mapOnlyBramCascade; }
     bool mapOnlyNoIobuf() const { return m_mapOnlyNoIobuf; }
     bool mapOnlyKeepEquivRegs() const { return m_mapOnlyKeepEquivRegs; }
+    bool mapOnlyKeepSumChains() const { return m_mapOnlyKeepSumChains; }
     const std::set<string>& structOnlyBlackbox() const { return m_structOnlyBlackbox; }
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }

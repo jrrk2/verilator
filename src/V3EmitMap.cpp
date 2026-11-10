@@ -212,6 +212,7 @@ public:
     static constexpr size_t MIN_CARRY = 4;
     static constexpr size_t MIN_DSP = 8;
     struct Chain {
+        Vec x, y;  // the operands it adds (with cyinit), for balanceSums
         Vec s, di;  // per bit
         int cyinit = 0;
         Vec o;  // sum bits (placeholders), empty for a compare
@@ -245,6 +246,8 @@ public:
         const auto key = std::make_tuple(c.s, c.di, cin);
         const auto it = m_chainHash.find(key);
         if (it != m_chainHash.end()) return it->second;
+        c.x = x;
+        c.y = y;
         m_chains.push_back(c);
         m_chainHash.emplace(key, m_chains.size() - 1);
         return m_chains.size() - 1;
@@ -388,6 +391,168 @@ public:
         }
         m_chainHash.clear();  // indices are stale; no chain is built after elaboration
         return bypassed;
+    }
+    // A sum of many terms written as a series of adds -- c = c + x[i] in a
+    // loop, ((a + b) + c) + d -- elaborates to carry chains in series, each
+    // waiting for the one before: n terms, n - 1 chains deep.  Addition
+    // modulo 2^W is associative and commutative, so a chain whose sum is used
+    // only as a whole operand of one other add, at least as wide as that
+    // add's result, is a node of a sum tree (an inner sum).  Each tree is
+    // rebuilt over its terms, the two narrowest added first: about log2(n)
+    // adds deep, and the narrow sums near the leaves are gates that ABC packs
+    // into LUTs.  roots: every literal the design reads (outputs, register
+    // inputs, hard-cell pins).  Returns the number of trees rebuilt.
+    int balanceSums(const Vec& roots) {
+        const size_t n = m_chains.size();
+        // A chain with sum bits is a sum: o, then co when it is used, the
+        // exact (w + 1)-bit x + y + cyinit.  One without (an ordered compare)
+        // only reads its operands.
+        const auto isSum = [&](size_t j) { return !m_chains[j].o.empty(); };
+        const auto resultOf = [&](size_t j) {
+            Vec r = m_chains[j].o;
+            if (m_chains[j].co >= 0) r.push_back(m_chains[j].co);
+            return r;
+        };
+        std::unordered_map<int, size_t> chainOfBit;  // o and co placeholder var -> chain
+        for (size_t j = 0; j < n; ++j) {
+            for (const int l : resultOf(j)) chainOfBit.emplace(l >> 1, j);
+        }
+        // The sum whose result op is (all of it or its low bits), or n
+        const auto sumOf = [&](const Vec& op) {
+            if (op.empty()) return n;
+            const auto it = chainOfBit.find(resolve(op[0]) >> 1);
+            if (it == chainOfBit.end() || !isSum(it->second)) return n;
+            const Vec r = resultOf(it->second);
+            if (op.size() > r.size()) return n;
+            for (size_t i = 0; i < op.size(); ++i) {
+                if (resolve(op[i]) != r[i]) return n;
+            }
+            return it->second;
+        };
+        // Which results are read, and how: as the whole operand of one add
+        // (wholeUses, consumer), or any other way (otherUse)
+        std::vector<char> live(n, 0), otherUse(n, 0);
+        std::vector<int> wholeUses(n, 0);
+        std::vector<char> seen(m_fan.size(), 0);
+        std::vector<int> vars;
+        std::vector<size_t> chains;
+        for (const int l : roots) vars.push_back(resolve(l) >> 1);
+        for (const Dsp& d : m_dsps) {
+            for (const Vec* const pinp : {&d.a, &d.b}) {
+                for (const int l : *pinp) vars.push_back(resolve(l) >> 1);
+            }
+        }
+        while (!vars.empty() || !chains.empty()) {
+            if (!chains.empty()) {
+                const size_t k = chains.back();
+                chains.pop_back();
+                const Chain& c = m_chains[k];
+                const size_t width = resultOf(k).size();
+                for (const Vec* const opp : {&c.x, &c.y}) {
+                    const size_t j = sumOf(*opp);
+                    if (j < n && isSum(k) && opp->size() >= width) {
+                        ++wholeUses[j];
+                        if (!live[j]) { live[j] = 1; chains.push_back(j); }
+                    } else {
+                        for (const int l : *opp) vars.push_back(resolve(l) >> 1);
+                    }
+                }
+                vars.push_back(resolve(c.cyinit) >> 1);
+                continue;
+            }
+            const int v = vars.back();
+            vars.pop_back();
+            if (!v || seen[v]) continue;
+            seen[v] = 1;
+            const auto it = chainOfBit.find(v);
+            if (it != chainOfBit.end()) {
+                otherUse[it->second] = 1;
+                if (!live[it->second]) { live[it->second] = 1; chains.push_back(it->second); }
+                continue;
+            }
+            if (isPlaceholder(v)) continue;
+            vars.push_back(resolve(m_fan[v].first) >> 1);
+            vars.push_back(resolve(m_fan[v].second) >> 1);
+        }
+        const auto inner = [&](size_t j) { return live[j] && !otherUse[j] && wholeUses[j] == 1; };
+        std::unordered_map<int, int> memo;
+        std::vector<char> removed(n, 0);
+        int trees = 0;
+        for (size_t k = 0; k < n; ++k) {
+            if (!live[k] || !isSum(k) || inner(k)) continue;
+            const Vec r = resultOf(k);
+            const size_t width = r.size();
+            // The terms of the tree under k, each cut to width bits
+            std::vector<Vec> terms;
+            std::vector<size_t> todo{k};
+            size_t nodes = 0;
+            while (!todo.empty()) {
+                const Chain& c = m_chains[todo.back()];
+                todo.pop_back();
+                ++nodes;
+                for (const Vec* const opp : {&c.x, &c.y}) {
+                    // inner(j): this is j's one use, a whole operand at least
+                    // as wide as c's result, so j's sum mod 2^width is its terms'
+                    const size_t j = sumOf(*opp);
+                    if (j < n && inner(j)) {
+                        todo.push_back(j);
+                    } else {
+                        terms.push_back(resize(*opp, static_cast<int>(width), false));
+                    }
+                }
+                terms.push_back(resize(Vec{c.cyinit}, static_cast<int>(width), false));
+            }
+            if (nodes < 2) continue;
+            // Rebuild: the two narrowest terms first (width: up to the top
+            // bit that is not constant 0); a sum of widths a and b needs
+            // max(a, b) + 1 bits, or width when that is wider
+            using Term = std::pair<size_t, Vec>;
+            const auto wider = [](const Term& a, const Term& b) { return a.first > b.first; };
+            std::vector<Term> heap;
+            for (Vec& t : terms) {
+                size_t w = t.size();
+                while (w && constOf(t[w - 1], memo) == 0) --w;
+                if (!w) continue;
+                t.resize(w);
+                heap.emplace_back(w, std::move(t));
+                std::push_heap(heap.begin(), heap.end(), wider);
+            }
+            while (heap.size() > 1) {
+                std::pop_heap(heap.begin(), heap.end(), wider);
+                Term a = std::move(heap.back());
+                heap.pop_back();
+                std::pop_heap(heap.begin(), heap.end(), wider);
+                Term b = std::move(heap.back());
+                heap.pop_back();
+                const size_t w = std::min(width, std::max(a.first, b.first) + 1);
+                heap.emplace_back(w, add(resize(a.second, static_cast<int>(w), false), resize(b.second, static_cast<int>(w), false)));
+                std::push_heap(heap.begin(), heap.end(), wider);
+            }
+            const Vec sum = resize(heap.empty() ? Vec{} : heap.front().second, static_cast<int>(width), false);
+            for (size_t i = 0; i < width; ++i) {
+                const int v = r[i] >> 1;  // pinnedVar(): an unaliased placeholder
+                m_pinned.erase(v);
+                m_alias[v] = sum[i] ^ (r[i] & 1);
+            }
+            todo.push_back(k);
+            while (!todo.empty()) {
+                const size_t j = todo.back();
+                todo.pop_back();
+                removed[j] = 1;
+                for (const Vec* const opp : {&m_chains[j].x, &m_chains[j].y}) {
+                    const size_t i = sumOf(*opp);
+                    if (i < n && inner(i)) todo.push_back(i);
+                }
+            }
+            ++trees;
+        }
+        std::vector<Chain> kept;
+        for (size_t j = 0; j < m_chains.size(); ++j) {
+            if (j >= n || !removed[j]) kept.push_back(std::move(m_chains[j]));
+        }
+        m_chains = std::move(kept);
+        m_chainHash.clear();
+        return trees;
     }
     static bool allConst(const Vec& v) {
         for (const int l : v) if ((l >> 1) != 0) return false;
@@ -715,6 +880,11 @@ public:
         e.run(m_top, m_d);
         const int deadDsps = m_aig.pruneDsps();
         const int idleChains = m_aig.bypassIdleChains();
+        if (!v3Global.opt.mapOnlyKeepSumChains()) {
+            const int trees = m_aig.balanceSums(designReads());
+            if (trees && v3Global.opt.structOnlyReport())
+                std::cerr << "%Info: map-sums: " << trees << " sums of chained adds rebuilt as balanced trees\n";
+        }
         if ((deadDsps || idleChains) && v3Global.opt.structOnlyReport())
             std::cerr << "%Info: map-prune: " << deadDsps
                       << " DSP48E1 partial products with a constant-0 operand removed, " << idleChains
@@ -949,6 +1119,21 @@ private:
         return absorbed;
     }
 
+    // Every literal the design reads apart from the hard cells' own inputs: the
+    // top outputs, the register inputs and the kept cells' input pins (as buildPOs)
+    Vec designReads() const {
+        Vec r;
+        for (const auto& kv : m_d.outputs) r.insert(r.end(), kv.second.begin(), kv.second.end());
+        for (const Design::Reg& g : m_d.regs) {
+            r.insert(r.end(), g.d.begin(), g.d.end());
+            r.push_back(g.en);
+            r.push_back(g.rst);
+        }
+        for (const Design::Cell& c : m_d.cells2) {
+            for (const auto& pin : c.ins) r.insert(r.end(), pin.second.begin(), pin.second.end());
+        }
+        return r;
+    }
     void buildPOs() {
         for (const auto& kv : m_d.outputs) {
             m_topOutPo.push_back(m_po.size());

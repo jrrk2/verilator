@@ -1660,6 +1660,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-bram-cascade", OnOff, &m_mapOnlyBramCascade);
     DECL_OPTION("-map-only-no-iobuf", OnOff, &m_mapOnlyNoIobuf);
     DECL_OPTION("-map-only-keep-equivalent-registers", OnOff, &m_mapOnlyKeepEquivRegs);
+    DECL_OPTION("-map-only-keep-sum-chains", OnOff, &m_mapOnlyKeepSumChains);
     DECL_OPTION("-map-only-whole-program", OnOff, &m_mapOnlyWholeProgram);
     DECL_OPTION("-map-only-partition-min", Set, &m_mapOnlyPartitionMin);
     DECL_OPTION("-struct-only-blackbox", CbVal, [this](const char* valp) {
