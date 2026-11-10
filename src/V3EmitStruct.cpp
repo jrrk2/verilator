@@ -5602,6 +5602,11 @@ private:
         };
         prune(m_decls);
         prune(m_wires);
+        // A cached operator whose cell was just removed would hand a later genUnary/genBinary/genMux
+        // (shareOperators runs between dce passes) a wire nothing drives or declares
+        for (auto it = m_opCache.begin(); it != m_opCache.end();) {
+            it = used.count(it->second.text) ? std::next(it) : m_opCache.erase(it);
+        }
     }
 
     //==================================================================
