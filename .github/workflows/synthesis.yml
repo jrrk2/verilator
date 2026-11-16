@@ -1,0 +1,82 @@
+---
+# DESCRIPTION: Github actions config for the synthesis branch
+# SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+#
+# Builds the branch with its linked libabc on a GitHub-hosted runner and
+# runs the structural / mapped netlist regression tests (the test_regress
+# tests that use --struct-only-output or --map-only-output).  The upstream
+# Regression workflow needs far more than a hosted runner; this one is the
+# quick check that a push to the synthesis branch still builds and maps.
+
+name: Synthesis
+
+on:
+  push:
+    branches:
+      - synthesis
+  pull_request:
+    branches:
+      - synthesis
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synthesis-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout abc
+        run: git submodule update --init --depth 1 third_party/abc
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            autoconf bison flex libfl-dev help2man ccache python3 python3-distro
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-synthesis-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-synthesis-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          export PATH="/usr/lib/ccache:$PATH"
+          autoconf
+          ./configure
+          make -j"$(nproc)"
+          ccache -s
+
+      - name: Structural and mapped netlist tests
+        run: |
+          cd test_regress
+          tests=$(grep -l -e '--struct-only-output' -e '--map-only-output' t/*.py)
+          echo "$tests"
+          python3 driver.py --vlt -j 0 $tests
+
+      - name: Upload test outputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test_regress-obj_vlt
+          path: |
+            test_regress/obj_vlt/**/*.log
+            test_regress/obj_vlt/**/*.v
+            test_regress/obj_vlt/**/*.json
+          if-no-files-found: ignore
