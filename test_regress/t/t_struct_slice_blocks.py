@@ -18,6 +18,4 @@ test.compile(verilator_flags2=['--struct-only-output', netlist],
              make_top_shell=False,
              make_main=False)
 
-
-
 test.passes()

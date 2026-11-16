@@ -21,8 +21,8 @@
 
 #include "V3EmitBir.h"
 
-#include "V3Global.h"
 #include "V3EmitStruct.h"
+#include "V3Global.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -67,8 +67,10 @@ std::string sanitizeName(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     for (const char c : s) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$') out += c;
-        else out += '_';
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$')
+            out += c;
+        else
+            out += '_';
     }
     if (out.empty()) out = "_";
     return out;
@@ -93,13 +95,16 @@ std::string jbin(const char* op, const std::string& l, const std::string& r, int
            + ",\"w\":" + std::to_string(w) + ",\"signed\":" + (sg ? "true" : "false") + "}";
 }
 std::string jun(const char* op, const std::string& x, int w, bool sg) {
-    return std::string("{\"e\":\"un\",\"op\":\"") + op + "\",\"x\":" + x + ",\"w\":"
-           + std::to_string(w) + ",\"signed\":" + (sg ? "true" : "false") + "}";
+    return std::string("{\"e\":\"un\",\"op\":\"") + op + "\",\"x\":" + x
+           + ",\"w\":" + std::to_string(w) + ",\"signed\":" + (sg ? "true" : "false") + "}";
 }
 std::string jslice(const std::string& x, int msb, int lsb) {
-    return "{\"e\":\"slice\",\"x\":" + x + ",\"msb\":" + std::to_string(msb) + ",\"lsb\":" + std::to_string(lsb) + "}";
+    return "{\"e\":\"slice\",\"x\":" + x + ",\"msb\":" + std::to_string(msb)
+           + ",\"lsb\":" + std::to_string(lsb) + "}";
 }
-std::string jcat(const std::vector<std::string>& xs) { return "{\"e\":\"cat\",\"xs\":" + joinList(xs) + "}"; }
+std::string jcat(const std::vector<std::string>& xs) {
+    return "{\"e\":\"cat\",\"xs\":" + joinList(xs) + "}";
+}
 std::string jrep(int n, const std::string& x) {
     return "{\"e\":\"rep\",\"n\":" + std::to_string(n) + ",\"x\":" + x + "}";
 }
@@ -109,7 +114,9 @@ std::string jassign(const std::string& lhs, const std::string& rhs) {
 std::string jcallStmt(const std::string& f, const std::vector<std::string>& args) {
     return "{\"s\":\"call\",\"f\":" + jstr(f) + ",\"args\":" + joinList(args) + "}";
 }
-std::string jblock(const std::vector<std::string>& body) { return "{\"s\":\"block\",\"body\":" + joinList(body) + "}"; }
+std::string jblock(const std::vector<std::string>& body) {
+    return "{\"s\":\"block\",\"body\":" + joinList(body) + "}";
+}
 std::string jcomb(const std::string& name, const std::vector<std::string>& body) {
     return "{\"kind\":\"comb\",\"name\":" + jstr(name) + ",\"body\":" + joinList(body) + "}";
 }
@@ -144,7 +151,8 @@ public:
         // Pass 1: names for every declared var / cell (generate-scope prefixed)
         for (const Item& it : m_items) {
             if (AstVar* const vp = VN_CAST(it.nodep, Var)) nameVar(vp, it.prefix);
-            if (AstCell* const cp = VN_CAST(it.nodep, Cell)) m_cellName[cp] = sanitizeName(it.prefix + cp->prettyName());
+            if (AstCell* const cp = VN_CAST(it.nodep, Cell))
+                m_cellName[cp] = sanitizeName(it.prefix + cp->prettyName());
         }
         // Signals: module-level vars, then procedural-scope locals (Internal)
         for (const Item& it : m_items) {
@@ -175,9 +183,10 @@ public:
             }
         }
         for (const std::string& f : m_pkgFuncs) m_funcs.push_back(f);
-        return "{\"name\":" + jstr(sanitizeName(m_modp->prettyName())) + ",\"signals\":" + joinList(m_signals)
-               + ",\"processes\":" + joinList(m_processes) + ",\"instances\":" + joinList(m_instances)
-               + ",\"funcs\":" + joinList(m_funcs) + "}";
+        return "{\"name\":" + jstr(sanitizeName(m_modp->prettyName()))
+               + ",\"signals\":" + joinList(m_signals) + ",\"processes\":" + joinList(m_processes)
+               + ",\"instances\":" + joinList(m_instances) + ",\"funcs\":" + joinList(m_funcs)
+               + "}";
     }
 
     // Functions defined in a package (visible to every module via import)
@@ -192,7 +201,8 @@ public:
 
 private:
     void warn(const AstNode* nodep, const std::string& msg) {
-        UINFO(3, "bir: " << msg << " (" << nodep->prettyTypeName() << " at " << nodep->fileline()->ascii() << ")");
+        UINFO(3, "bir: " << msg << " (" << nodep->prettyTypeName() << " at "
+                         << nodep->fileline()->ascii() << ")");
         if (v3Global.opt.structOnlyReport()) {
             std::cerr << "%Warning-BIR: " << nodep->fileline()->ascii() << ": " << msg << " ("
                       << nodep->prettyTypeName() << ")\n";
@@ -247,13 +257,17 @@ private:
         const AstNodeDType* const ep = unpackedOf(vp->dtypep(), depth);
         const char* dir = "internal";
         if (!procedural) {
-            if (vp->direction() == VDirection::INPUT) dir = "input";
-            else if (vp->direction() == VDirection::OUTPUT) dir = "output";
-            else if (vp->direction() == VDirection::INOUT) dir = "inout";
+            if (vp->direction() == VDirection::INPUT)
+                dir = "input";
+            else if (vp->direction() == VDirection::OUTPUT)
+                dir = "output";
+            else if (vp->direction() == VDirection::INOUT)
+                dir = "inout";
         }
-        m_signals.push_back("{\"name\":" + jstr(name) + ",\"width\":" + std::to_string(ep->width() > 0 ? ep->width() : 1)
-                            + ",\"signed\":" + (ep->isSigned() ? "true" : "false") + ",\"dir\":\"" + dir
-                            + "\",\"depth\":" + std::to_string(depth) + "}");
+        m_signals.push_back("{\"name\":" + jstr(name)
+                            + ",\"width\":" + std::to_string(ep->width() > 0 ? ep->width() : 1)
+                            + ",\"signed\":" + (ep->isSigned() ? "true" : "false") + ",\"dir\":\""
+                            + dir + "\",\"depth\":" + std::to_string(depth) + "}");
     }
     void declNested(AstNode* nodep) {
         for (; nodep; nodep = nodep->nextp()) {
@@ -266,7 +280,8 @@ private:
                 declNested(ip->thensp());
                 declNested(ip->elsesp());
             } else if (AstCase* const cp = VN_CAST(nodep, Case)) {
-                for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem)) declNested(ip->stmtsp());
+                for (AstCaseItem* ip = cp->itemsp(); ip; ip = VN_AS(ip->nextp(), CaseItem))
+                    declNested(ip->stmtsp());
             } else if (AstLoop* const lp = VN_CAST(nodep, Loop)) {
                 declNested(lp->stmtsp());
                 declNested(lp->contsp());
@@ -306,20 +321,25 @@ private:
         const int w = nodep->width() > 0 ? nodep->width() : 1;
         const bool sg = nodep->isSigned();
         if (AstVarRef* const vp = VN_CAST(nodep, VarRef)) return jvar(varName(vp->varp()));
-        if (AstConst* const cp = VN_CAST(nodep, Const)) return jconst(constValue(cp->num()), cp->num().width());
+        if (AstConst* const cp = VN_CAST(nodep, Const))
+            return jconst(constValue(cp->num()), cp->num().width());
         if (AstEnumItemRef* const ep = VN_CAST(nodep, EnumItemRef)) {
             if (ep->itemp()) {
-                if (AstConst* const cp = VN_CAST(ep->itemp()->valuep(), Const)) return jconst(constValue(cp->num()), w);
+                if (AstConst* const cp = VN_CAST(ep->itemp()->valuep(), Const))
+                    return jconst(constValue(cp->num()), w);
             }
             return jconstU(0, w);
         }
         if (AstCond* const cp = VN_CAST(nodep, Cond)) {
-            return "{\"e\":\"cond\",\"c\":" + expr(cp->condp()) + ",\"t\":" + expr(cp->thenp()) + ",\"f\":" + expr(cp->elsep()) + "}";
+            return "{\"e\":\"cond\",\"c\":" + expr(cp->condp()) + ",\"t\":" + expr(cp->thenp())
+                   + ",\"f\":" + expr(cp->elsep()) + "}";
         }
         if (AstSel* const sp = VN_CAST(nodep, Sel)) {
             const int ww = sp->widthConst();
             int64_t lsb;
-            if (constInt(sp->lsbp(), lsb)) return jslice(expr(sp->fromp()), static_cast<int>(lsb) + ww - 1, static_cast<int>(lsb));
+            if (constInt(sp->lsbp(), lsb))
+                return jslice(expr(sp->fromp()), static_cast<int>(lsb) + ww - 1,
+                              static_cast<int>(lsb));
             // dynamic part-select: (vec >> lsb) & mask
             const std::string shifted = jbin(">>", expr(sp->fromp()), expr(sp->lsbp()), ww, false);
             const std::string mask = ww >= 64 ? jconst("0x" + std::string((ww + 3) / 4, 'f'), ww)
@@ -327,7 +347,8 @@ private:
             return jbin("&", shifted, mask, ww, false);
         }
         if (AstArraySel* const ap = VN_CAST(nodep, ArraySel)) {
-            return "{\"e\":\"sel\",\"a\":" + expr(ap->fromp()) + ",\"i\":" + expr(ap->bitp()) + "}";
+            return "{\"e\":\"sel\",\"a\":" + expr(ap->fromp()) + ",\"i\":" + expr(ap->bitp())
+                   + "}";
         }
         if (AstConcat* const cp = VN_CAST(nodep, Concat)) {
             std::vector<AstNodeExpr*> parts;
@@ -343,12 +364,15 @@ private:
         }
         if (AstNodeFTaskRef* const fp = VN_CAST(nodep, NodeFTaskRef)) {
             std::vector<std::string> args;
-            for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg)) args.push_back(expr(ap->exprp()));
-            return "{\"e\":\"call\",\"f\":" + jstr(sanitizeName(fp->prettyName())) + ",\"args\":" + joinList(args) + "}";
+            for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg))
+                args.push_back(expr(ap->exprp()));
+            return "{\"e\":\"call\",\"f\":" + jstr(sanitizeName(fp->prettyName()))
+                   + ",\"args\":" + joinList(args) + "}";
         }
         if (AstNodeBiop* const bp = VN_CAST(nodep, NodeBiop)) return biop(bp, w, sg);
         if (AstNodeUniop* const up = VN_CAST(nodep, NodeUniop)) return uniop(up, w, sg);
-        if (AstCastSize* const cp = VN_CAST(nodep, CastSize)) return resize(cp->lhsp(), w, cp->lhsp()->isSigned());
+        if (AstCastSize* const cp = VN_CAST(nodep, CastSize))
+            return resize(cp->lhsp(), w, cp->lhsp()->isSigned());
         if (VN_IS(nodep, CReset)) return jconstU(0, w);
         if (AstExprStmt* const ep = VN_CAST(nodep, ExprStmt)) return expr(ep->resultp());
         warn(nodep, "unsupported expression replaced by 0");
@@ -377,31 +401,51 @@ private:
     }
     std::string biop(AstNodeBiop* bp, int w, bool sg) {
         const char* op = nullptr;
-        if (VN_IS(bp, Add)) op = "+";
-        else if (VN_IS(bp, Sub)) op = "-";
-        else if (VN_IS(bp, Mul) || VN_IS(bp, MulS)) op = "*";
-        else if (VN_IS(bp, Div) || VN_IS(bp, DivS)) op = "/";
-        else if (VN_IS(bp, ModDiv) || VN_IS(bp, ModDivS)) op = "%";
-        else if (VN_IS(bp, And)) op = "&";
-        else if (VN_IS(bp, Or)) op = "|";
-        else if (VN_IS(bp, Xor)) op = "^";
-        else if (VN_IS(bp, ShiftL)) op = "<<";
-        else if (VN_IS(bp, ShiftR)) op = ">>";
-        else if (VN_IS(bp, ShiftRS)) op = ">>>";
-        else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild)) op = "==";
-        else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild)) op = "!=";
-        else if (VN_IS(bp, Lt) || VN_IS(bp, LtS)) op = "<";
-        else if (VN_IS(bp, Lte) || VN_IS(bp, LteS)) op = "<=";
-        else if (VN_IS(bp, Gt) || VN_IS(bp, GtS)) op = ">";
-        else if (VN_IS(bp, Gte) || VN_IS(bp, GteS)) op = ">=";
-        else if (VN_IS(bp, LogAnd)) return jbin("&", truth(bp->lhsp()), truth(bp->rhsp()), 1, false);
-        else if (VN_IS(bp, LogOr)) return jbin("|", truth(bp->lhsp()), truth(bp->rhsp()), 1, false);
+        if (VN_IS(bp, Add))
+            op = "+";
+        else if (VN_IS(bp, Sub))
+            op = "-";
+        else if (VN_IS(bp, Mul) || VN_IS(bp, MulS))
+            op = "*";
+        else if (VN_IS(bp, Div) || VN_IS(bp, DivS))
+            op = "/";
+        else if (VN_IS(bp, ModDiv) || VN_IS(bp, ModDivS))
+            op = "%";
+        else if (VN_IS(bp, And))
+            op = "&";
+        else if (VN_IS(bp, Or))
+            op = "|";
+        else if (VN_IS(bp, Xor))
+            op = "^";
+        else if (VN_IS(bp, ShiftL))
+            op = "<<";
+        else if (VN_IS(bp, ShiftR))
+            op = ">>";
+        else if (VN_IS(bp, ShiftRS))
+            op = ">>>";
+        else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild))
+            op = "==";
+        else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild))
+            op = "!=";
+        else if (VN_IS(bp, Lt) || VN_IS(bp, LtS))
+            op = "<";
+        else if (VN_IS(bp, Lte) || VN_IS(bp, LteS))
+            op = "<=";
+        else if (VN_IS(bp, Gt) || VN_IS(bp, GtS))
+            op = ">";
+        else if (VN_IS(bp, Gte) || VN_IS(bp, GteS))
+            op = ">=";
+        else if (VN_IS(bp, LogAnd))
+            return jbin("&", truth(bp->lhsp()), truth(bp->rhsp()), 1, false);
+        else if (VN_IS(bp, LogOr))
+            return jbin("|", truth(bp->lhsp()), truth(bp->rhsp()), 1, false);
         if (!op) {
             warn(bp, "unsupported binary operator replaced by 0");
             return jconstU(0, w);
         }
-        const bool signedOp = VN_IS(bp, MulS) || VN_IS(bp, DivS) || VN_IS(bp, ModDivS) || VN_IS(bp, ShiftRS)
-                              || VN_IS(bp, LtS) || VN_IS(bp, LteS) || VN_IS(bp, GtS) || VN_IS(bp, GteS);
+        const bool signedOp = VN_IS(bp, MulS) || VN_IS(bp, DivS) || VN_IS(bp, ModDivS)
+                              || VN_IS(bp, ShiftRS) || VN_IS(bp, LtS) || VN_IS(bp, LteS)
+                              || VN_IS(bp, GtS) || VN_IS(bp, GteS);
         return jbin(op, expr(bp->lhsp()), expr(bp->rhsp()), w, sg || signedOp);
     }
     std::string uniop(AstNodeUniop* up, int w, bool sg) {
@@ -410,10 +454,13 @@ private:
         if (VN_IS(up, RedAnd)) return jun("&", expr(up->lhsp()), 1, false);
         if (VN_IS(up, RedOr)) return jun("|", expr(up->lhsp()), 1, false);
         if (VN_IS(up, RedXor)) return jun("^", expr(up->lhsp()), 1, false);
-        if (VN_IS(up, LogNot)) return jbin("==", expr(up->lhsp()), jconstU(0, up->lhsp()->width() > 0 ? up->lhsp()->width() : 1), 1, false);
+        if (VN_IS(up, LogNot))
+            return jbin("==", expr(up->lhsp()),
+                        jconstU(0, up->lhsp()->width() > 0 ? up->lhsp()->width() : 1), 1, false);
         if (VN_IS(up, Extend)) return resize(up->lhsp(), w, false);
         if (VN_IS(up, ExtendS)) return resize(up->lhsp(), w, true);
-        if (VN_IS(up, Signed) || VN_IS(up, Unsigned) || VN_IS(up, CastWrap)) return expr(up->lhsp());
+        if (VN_IS(up, Signed) || VN_IS(up, Unsigned) || VN_IS(up, CastWrap))
+            return expr(up->lhsp());
         warn(up, "unsupported unary operator replaced by its operand");
         return expr(up->lhsp());
     }
@@ -432,7 +479,8 @@ private:
         const AstVar* basep = nullptr;
         if (AstArraySel* const ap = VN_CAST(lhsp, ArraySel)) {
             if (baseVar(ap->fromp(), basep)) {
-                return jcallStmt("@mem_write", {jvar(varName(basep)), expr(ap->bitp()), expr(rhsp)});
+                return jcallStmt("@mem_write",
+                                 {jvar(varName(basep)), expr(ap->bitp()), expr(rhsp)});
             }
             warn(lhsp, "array write with unsupported base dropped");
             return jblock({});
@@ -445,14 +493,19 @@ private:
                     warn(lhsp, "slice write into array element with unsupported base dropped");
                     return jblock({});
                 }
-                const std::string u32field = jconstU((w >= 64) ? ~0ULL : ((uint64_t{1} << w) - 1), 32);
+                const std::string u32field
+                    = jconstU((w >= 64) ? ~0ULL : ((uint64_t{1} << w) - 1), 32);
                 const std::string lsb = sp->lsbp() ? expr(sp->lsbp()) : jconstU(0, 32);
                 const std::string idx = expr(ap->bitp());
-                const std::string elem = "{\"e\":\"sel\",\"a\":" + jvar(varName(basep)) + ",\"i\":" + idx + "}";
+                const std::string elem
+                    = "{\"e\":\"sel\",\"a\":" + jvar(varName(basep)) + ",\"i\":" + idx + "}";
                 const std::string smask = jbin("<<", u32field, lsb, 32, false);
-                const std::string cleared = jbin("-", elem, jbin("&", elem, smask, 32, false), 32, false);
-                const std::string ins = jbin("<<", jbin("&", expr(rhsp), u32field, 32, false), lsb, 32, false);
-                return jcallStmt("@mem_write", {jvar(varName(basep)), idx, jbin("|", cleared, ins, 32, false)});
+                const std::string cleared
+                    = jbin("-", elem, jbin("&", elem, smask, 32, false), 32, false);
+                const std::string ins
+                    = jbin("<<", jbin("&", expr(rhsp), u32field, 32, false), lsb, 32, false);
+                return jcallStmt("@mem_write",
+                                 {jvar(varName(basep)), idx, jbin("|", cleared, ins, 32, false)});
             }
             if (!baseVar(sp->fromp(), basep)) {
                 warn(lhsp, "part-select write with unsupported base dropped");
@@ -460,9 +513,11 @@ private:
             }
             int64_t lsb;
             if (constInt(sp->lsbp(), lsb)) {
-                return jcallStmt("@slice_write", {jvar(varName(basep)), jconstU(lsb + w - 1, 32), jconstU(lsb, 32), expr(rhsp)});
+                return jcallStmt("@slice_write", {jvar(varName(basep)), jconstU(lsb + w - 1, 32),
+                                                  jconstU(lsb, 32), expr(rhsp)});
             }
-            return jcallStmt("@part_sel_write_up", {jvar(varName(basep)), expr(sp->lsbp()), jconstU(w, 32), expr(rhsp)});
+            return jcallStmt("@part_sel_write_up",
+                             {jvar(varName(basep)), expr(sp->lsbp()), jconstU(w, 32), expr(rhsp)});
         }
         if (AstConcat* const cp = VN_CAST(lhsp, Concat)) {
             // {a, b} = rhs -> slices of rhs
@@ -473,7 +528,8 @@ private:
             int lsb = 0;
             for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
                 const int pw = (*it)->width() > 0 ? (*it)->width() : 1;
-                // the rhs slice is an expression; assign() needs a node, so build the slice textually
+                // the rhs slice is an expression; assign() needs a node, so build the slice
+                // textually
                 const AstVar* pb = nullptr;
                 if (VN_IS(*it, VarRef) && baseVar(*it, pb)) {
                     body.push_back(jassign(varName(pb), jslice(r, lsb + pw - 1, lsb)));
@@ -481,7 +537,10 @@ private:
                     AstSel* const psp = VN_CAST(*it, Sel);
                     int64_t plsb;
                     if (psp && constInt(psp->lsbp(), plsb)) {
-                        body.push_back(jcallStmt("@slice_write", {jvar(varName(pb)), jconstU(plsb + psp->widthConst() - 1, 32), jconstU(plsb, 32), jslice(r, lsb + pw - 1, lsb)}));
+                        body.push_back(jcallStmt(
+                            "@slice_write",
+                            {jvar(varName(pb)), jconstU(plsb + psp->widthConst() - 1, 32),
+                             jconstU(plsb, 32), jslice(r, lsb + pw - 1, lsb)}));
                     } else {
                         warn(*it, "concat assignment part dropped");
                     }
@@ -504,7 +563,8 @@ private:
             if (AstAssign* const ap = VN_CAST(nodep, Assign)) {
                 AstLoop* const lp = VN_CAST(nodep->nextp(), Loop);
                 const AstVar* iv = nullptr;
-                if (lp && VN_IS(ap->lhsp(), VarRef) && baseVar(ap->lhsp(), iv) && VN_IS(lp->stmtsp(), LoopTest)) {
+                if (lp && VN_IS(ap->lhsp(), VarRef) && baseVar(ap->lhsp(), iv)
+                    && VN_IS(lp->stmtsp(), LoopTest)) {
                     // the update is the last statement of the body (or contsp)
                     AstNode* lastp = lp->contsp();
                     if (!lastp) {
@@ -520,9 +580,11 @@ private:
                             const std::string s = stmt(sp);
                             if (!s.empty()) body.push_back(s);
                         }
-                        out.push_back("{\"s\":\"for\",\"init\":" + jassign(varName(iv), expr(ap->rhsp())) + ",\"c\":"
-                                      + expr(VN_AS(lp->stmtsp(), LoopTest)->condp()) + ",\"upd\":"
-                                      + jassign(varName(uv), expr(up->rhsp())) + ",\"body\":" + joinList(body) + "}");
+                        out.push_back("{\"s\":\"for\",\"init\":"
+                                      + jassign(varName(iv), expr(ap->rhsp()))
+                                      + ",\"c\":" + expr(VN_AS(lp->stmtsp(), LoopTest)->condp())
+                                      + ",\"upd\":" + jassign(varName(uv), expr(up->rhsp()))
+                                      + ",\"body\":" + joinList(body) + "}");
                         nodep = nodep->nextp();
                         continue;
                     }
@@ -540,7 +602,9 @@ private:
             return assign(ap->lhsp(), ap->rhsp());
         }
         if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
-            return "{\"s\":\"if\",\"c\":" + expr(ip->condp()) + ",\"t\":" + joinList(stmts(ip->thensp())) + ",\"e\":" + joinList(stmts(ip->elsesp())) + "}";
+            return "{\"s\":\"if\",\"c\":" + expr(ip->condp())
+                   + ",\"t\":" + joinList(stmts(ip->thensp()))
+                   + ",\"e\":" + joinList(stmts(ip->elsesp())) + "}";
         }
         if (AstCase* const cp = VN_CAST(nodep, Case)) {
             std::vector<std::string> cases;
@@ -552,16 +616,19 @@ private:
                     continue;
                 }
                 // one arm per label (the OCaml side took the first label only)
-                for (AstNodeExpr* condp = ip->condsp(); condp; condp = VN_AS(condp->nextp(), NodeExpr)) {
+                for (AstNodeExpr* condp = ip->condsp(); condp;
+                     condp = VN_AS(condp->nextp(), NodeExpr)) {
                     cases.push_back("[" + expr(condp) + "," + body + "]");
                 }
             }
-            return "{\"s\":\"case\",\"sel\":" + expr(cp->exprp()) + ",\"cases\":" + joinList(cases) + ",\"default\":" + dflt + "}";
+            return "{\"s\":\"case\",\"sel\":" + expr(cp->exprp()) + ",\"cases\":" + joinList(cases)
+                   + ",\"default\":" + dflt + "}";
         }
         if (AstBegin* const bp = VN_CAST(nodep, Begin)) return jblock(stmts(bp->stmtsp()));
         if (AstJumpBlock* const jp = VN_CAST(nodep, JumpBlock)) return jblock(stmts(jp->stmtsp()));
         if (AstLoop* const lp = VN_CAST(nodep, Loop)) {
-            // while (test) { body; conts }   (For' in the OCaml reader: BWhile with the increments appended)
+            // while (test) { body; conts }   (For' in the OCaml reader: BWhile with the increments
+            // appended)
             AstLoopTest* const tp = VN_CAST(lp->stmtsp(), LoopTest);
             std::vector<std::string> body;
             for (AstNode* sp = lp->stmtsp(); sp; sp = sp->nextp()) {
@@ -570,22 +637,27 @@ private:
                 if (!s.empty()) body.push_back(s);
             }
             for (const std::string& s : stmts(lp->contsp())) body.push_back(s);
-            return "{\"s\":\"while\",\"c\":" + (tp ? expr(tp->condp()) : jconstU(1, 1)) + ",\"body\":" + joinList(body) + "}";
+            return "{\"s\":\"while\",\"c\":" + (tp ? expr(tp->condp()) : jconstU(1, 1))
+                   + ",\"body\":" + joinList(body) + "}";
         }
         if (AstStmtExpr* const sp = VN_CAST(nodep, StmtExpr)) {
             if (AstNodeFTaskRef* const fp = VN_CAST(sp->exprp(), NodeFTaskRef)) {
                 std::vector<std::string> args;
-                for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg)) args.push_back(expr(ap->exprp()));
+                for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg))
+                    args.push_back(expr(ap->exprp()));
                 return jcallStmt(sanitizeName(fp->prettyName()), args);
             }
             return "";
         }
-        if (AstInitialAutomaticStmt* const iap = VN_CAST(nodep, InitialAutomaticStmt)) return jblock(stmts(iap->stmtsp()));
-        if (AstInitialStaticStmt* const isp = VN_CAST(nodep, InitialStaticStmt)) return jblock(stmts(isp->stmtsp()));
-        if (VN_IS(nodep, Var) || VN_IS(nodep, Comment) || VN_IS(nodep, JumpGo) || VN_IS(nodep, CReset)
-            || VN_IS(nodep, Display) || VN_IS(nodep, Stop) || VN_IS(nodep, Finish) || VN_IS(nodep, StmtPragma)
-            || VN_IS(nodep, NodeCoverOrAssert) || VN_IS(nodep, Delay) || VN_IS(nodep, SFormat)
-            || VN_IS(nodep, FClose) || VN_IS(nodep, FFlush) || VN_IS(nodep, TimeFormat) || VN_IS(nodep, PrintTimeScale)
+        if (AstInitialAutomaticStmt* const iap = VN_CAST(nodep, InitialAutomaticStmt))
+            return jblock(stmts(iap->stmtsp()));
+        if (AstInitialStaticStmt* const isp = VN_CAST(nodep, InitialStaticStmt))
+            return jblock(stmts(isp->stmtsp()));
+        if (VN_IS(nodep, Var) || VN_IS(nodep, Comment) || VN_IS(nodep, JumpGo)
+            || VN_IS(nodep, CReset) || VN_IS(nodep, Display) || VN_IS(nodep, Stop)
+            || VN_IS(nodep, Finish) || VN_IS(nodep, StmtPragma) || VN_IS(nodep, NodeCoverOrAssert)
+            || VN_IS(nodep, Delay) || VN_IS(nodep, SFormat) || VN_IS(nodep, FClose)
+            || VN_IS(nodep, FFlush) || VN_IS(nodep, TimeFormat) || VN_IS(nodep, PrintTimeScale)
             || VN_IS(nodep, NodeReadWriteMem))
             return "";
         warn(nodep, "unsupported statement dropped");
@@ -595,7 +667,9 @@ private:
     // Is this statement pure elaboration-time computation? (is_elab_stmt)
     bool isElab(AstNode* nodep) {
         for (; nodep; nodep = nodep->nextp()) {
-            if (VN_IS(nodep, Assign) || VN_IS(nodep, AssignDly) || VN_IS(nodep, AssignW) || VN_IS(nodep, Var)) continue;
+            if (VN_IS(nodep, Assign) || VN_IS(nodep, AssignDly) || VN_IS(nodep, AssignW)
+                || VN_IS(nodep, Var))
+                continue;
             if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 if (!isElab(bp->stmtsp())) return false;
                 continue;
@@ -633,7 +707,8 @@ private:
         // evaluate a single statement (ignore its siblings)
         if (VN_IS(nodep, Assign) || VN_IS(nodep, AssignDly) || VN_IS(nodep, Var)) return true;
         if (AstBegin* const bp = VN_CAST(nodep, Begin)) return isElab(bp->stmtsp());
-        if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) return isElab(ip->thensp()) && isElab(ip->elsesp());
+        if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf))
+            return isElab(ip->thensp()) && isElab(ip->elsesp());
         if (AstJumpBlock* const jp = VN_CAST(nodep, JumpBlock)) return isElab(jp->stmtsp());
         if (VN_IS(nodep, Loop)) {
             AstLoop* const lp = VN_AS(nodep, Loop);
@@ -658,7 +733,8 @@ private:
         bool pos = true;
         if (AstSenTree* const stp = ap->sentreep()) {
             for (AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
-                if (ip->edgeType() == VEdgeType::ET_POSEDGE || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
+                if (ip->edgeType() == VEdgeType::ET_POSEDGE
+                    || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
                     if (const AstVarRef* const vp = VN_CAST(ip->sensp(), VarRef)) {
                         if (!clockp) {
                             clockp = vp->varp();
@@ -670,8 +746,10 @@ private:
         }
         const std::vector<std::string> body = stmts(ap->stmtsp());
         if (clockp) {
-            m_processes.push_back("{\"kind\":\"seq\",\"name\":\"always_ff\",\"clock\":" + jstr(varName(clockp)) + ",\"edge\":\""
-                                  + (pos ? "pos" : "neg") + "\",\"reset\":null,\"reset_async\":false,\"body\":" + joinList(body) + "}");
+            m_processes.push_back(
+                "{\"kind\":\"seq\",\"name\":\"always_ff\",\"clock\":" + jstr(varName(clockp))
+                + ",\"edge\":\"" + (pos ? "pos" : "neg")
+                + "\",\"reset\":null,\"reset_async\":false,\"body\":" + joinList(body) + "}");
         } else {
             m_processes.push_back(jcomb("always_comb", body));
         }
@@ -701,12 +779,14 @@ private:
         if (ap && !ap->nextp()) {
             const AstVar* basep = nullptr;
             if (baseVar(ap->lhsp(), basep)) {
-                m_processes.push_back(jcomb("assign_" + varName(basep), {assign(ap->lhsp(), ap->rhsp())}));
+                m_processes.push_back(
+                    jcomb("assign_" + varName(basep), {assign(ap->lhsp(), ap->rhsp())}));
                 return;
             }
         }
         if (ip->stmtsp() && isElab(ip->stmtsp())) {
-            m_processes.push_back(jcomb("__initial__" + std::to_string(++m_initialSeq), stmts(ip->stmtsp())));
+            m_processes.push_back(
+                jcomb("__initial__" + std::to_string(++m_initialSeq), stmts(ip->stmtsp())));
         }
     }
     static bool readHexWords(const std::string& path, std::vector<std::string>& words) {
@@ -732,7 +812,8 @@ private:
                     continue;
                 }
                 std::string h;
-                for (const char c : tok) if (c != '_') h += static_cast<char>(std::tolower(c));
+                for (const char c : tok)
+                    if (c != '_') h += static_cast<char>(std::tolower(c));
                 if (words.size() <= addr) words.resize(addr + 1, "0");
                 words[addr++] = "0x" + h;
             }
@@ -747,15 +828,18 @@ private:
         if (f.size() >= 2 && f.front() == '"' && f.back() == '"') f = f.substr(1, f.size() - 2);
         std::vector<std::string> words;
         if (!readHexWords(f, words) || words.empty()) {
-            warn(rp, "$readmemh image " + f + " not found (set MEM_INIT_DIR); memory left uninitialised");
+            warn(rp, "$readmemh image " + f
+                         + " not found (set MEM_INIT_DIR); memory left uninitialised");
             return;
         }
         int depth = 1;
         const AstNodeDType* const ep = unpackedOf(mp->varp()->dtypep(), depth);
         const int dw = ep->width() > 0 ? ep->width() : 1;
         std::vector<std::string> parts;
-        for (auto it = words.rbegin(); it != words.rend(); ++it) parts.push_back(jconst(*it, dw));  // highest address first
-        m_processes.push_back(jcomb("mem_init_" + varName(mp->varp()), {jassign(varName(mp->varp()), jcat(parts))}));
+        for (auto it = words.rbegin(); it != words.rend(); ++it)
+            parts.push_back(jconst(*it, dw));  // highest address first
+        m_processes.push_back(
+            jcomb("mem_init_" + varName(mp->varp()), {jassign(varName(mp->varp()), jcat(parts))}));
     }
 
     // ---- cells (cell_to_bprocess / cell_to_binstance) ----
@@ -774,12 +858,14 @@ private:
         return nullptr;
     }
     void lowerCell(AstCell* cp) {
-        const std::string modName = cp->modp() ? V3EmitStruct::cellTypeName(cp->modp()) : sanitizeName(cp->modName());
+        const std::string modName
+            = cp->modp() ? V3EmitStruct::cellTypeName(cp->modp()) : sanitizeName(cp->modName());
         if (modName.rfind("RTL_", 0) == 0 && rtlCell(cp, modName)) return;
         std::vector<std::string> ports;
         for (AstPin* pp = cp->pinsp(); pp; pp = VN_AS(pp->nextp(), Pin)) {
             if (!pp->exprp()) continue;
-            ports.push_back("[" + jstr(pp->name()) + "," + expr(VN_AS(pp->exprp(), NodeExpr)) + "]");
+            ports.push_back("[" + jstr(pp->name()) + "," + expr(VN_AS(pp->exprp(), NodeExpr))
+                            + "]");
         }
         std::vector<std::string> pvals, pstrs;
         if (cp->modp()) {
@@ -787,22 +873,29 @@ private:
                 AstVar* const vp = VN_CAST(sp, Var);
                 if (!vp || !vp->isParam()) continue;
                 const std::string n = vp->prettyName();
-                auto ends = [&](const char* suf) { return n.size() >= std::strlen(suf) && n.compare(n.size() - std::strlen(suf), std::string::npos, suf) == 0; };
-                if (ends("_FREQ_MAX") || ends("_FREQ_MIN")) continue;  // simulation-only guard rails
+                auto ends = [&](const char* suf) {
+                    return n.size() >= std::strlen(suf)
+                           && n.compare(n.size() - std::strlen(suf), std::string::npos, suf) == 0;
+                };
+                if (ends("_FREQ_MAX") || ends("_FREQ_MIN"))
+                    continue;  // simulation-only guard rails
                 AstConst* const kp = VN_CAST(vp->valuep(), Const);
                 if (!kp) continue;
                 const V3Number& num = kp->num();
                 if (num.isString() || num.isDouble() || num.isFourState() || num.width() > 62) {
                     std::string lit = num.ascii(true, true);
-                    if (num.isString() && lit.size() >= 2 && lit.front() == '"') lit = lit.substr(1, lit.size() - 2);
+                    if (num.isString() && lit.size() >= 2 && lit.front() == '"')
+                        lit = lit.substr(1, lit.size() - 2);
                     pstrs.push_back("[" + jstr(n) + "," + jstr(lit) + "]");
                 } else {
-                    pvals.push_back("[" + jstr(n) + "," + std::to_string(static_cast<int64_t>(num.toUQuad())) + "]");
+                    pvals.push_back("[" + jstr(n) + ","
+                                    + std::to_string(static_cast<int64_t>(num.toUQuad())) + "]");
                 }
             }
         }
-        m_instances.push_back("{\"inst\":" + jstr(m_cellName[cp]) + ",\"module\":" + jstr(modName) + ",\"params\":" + joinList(pvals)
-                              + ",\"param_strs\":" + joinList(pstrs) + ",\"ports\":" + joinList(ports) + "}");
+        m_instances.push_back("{\"inst\":" + jstr(m_cellName[cp]) + ",\"module\":" + jstr(modName)
+                              + ",\"params\":" + joinList(pvals) + ",\"param_strs\":"
+                              + joinList(pstrs) + ",\"ports\":" + joinList(ports) + "}");
     }
     // Vivado RTL_* primitive instances become processes (cell_to_bprocess)
     bool rtlCell(AstCell* cp, const std::string& mn) {
@@ -812,13 +905,15 @@ private:
             if (!o) return false;
             const std::string a = pinExpr(cp, "I0"), b = pinExpr(cp, "I1");
             if (a.empty() || b.empty()) return false;
-            m_processes.push_back(jcomb(mn + "_inst", {jassign(varName(o), jbin(op, a, b, boolr ? 1 : w, false))}));
+            m_processes.push_back(
+                jcomb(mn + "_inst", {jassign(varName(o), jbin(op, a, b, boolr ? 1 : w, false))}));
             return true;
         };
         if (mn == "RTL_INV") {
             const std::string a = pinExpr(cp, "I0");
             if (!o || a.empty()) return false;
-            m_processes.push_back(jcomb(mn + "_inst", {jassign(varName(o), jun("~", a, 64, false))}));
+            m_processes.push_back(
+                jcomb(mn + "_inst", {jassign(varName(o), jun("~", a, 64, false))}));
             return true;
         }
         if (mn == "RTL_AND") return comb2("&", 64, false);
@@ -838,7 +933,9 @@ private:
         if (mn == "RTL_MUX") {
             const std::string s = pinExpr(cp, "S"), a = pinExpr(cp, "I0"), b = pinExpr(cp, "I1");
             if (!o || s.empty() || a.empty() || b.empty()) return false;
-            m_processes.push_back(jcomb(mn + "_inst", {jassign(varName(o), "{\"e\":\"cond\",\"c\":" + s + ",\"t\":" + a + ",\"f\":" + b + "}")}));
+            m_processes.push_back(
+                jcomb(mn + "_inst", {jassign(varName(o), "{\"e\":\"cond\",\"c\":" + s + ",\"t\":"
+                                                             + a + ",\"f\":" + b + "}")}));
             return true;
         }
         if (mn.rfind("RTL_REG", 0) == 0) {
@@ -852,15 +949,19 @@ private:
             const std::string qn = varName(q);
             std::string data = jassign(qn, d);
             if (!ce.empty()) {
-                data = "{\"s\":\"if\",\"c\":" + ce + ",\"t\":[" + data + "],\"e\":[" + jassign(qn, jvar(qn)) + "]}";
+                data = "{\"s\":\"if\",\"c\":" + ce + ",\"t\":[" + data + "],\"e\":["
+                       + jassign(qn, jvar(qn)) + "]}";
             }
             std::string body = data;
             if (!rst.empty()) {
-                body = "{\"s\":\"if\",\"c\":" + rst + ",\"t\":[" + jassign(qn, jconstU(0, 64)) + "],\"e\":[" + data + "]}";
+                body = "{\"s\":\"if\",\"c\":" + rst + ",\"t\":[" + jassign(qn, jconstU(0, 64))
+                       + "],\"e\":[" + data + "]}";
             }
-            m_processes.push_back("{\"kind\":\"seq\",\"name\":" + jstr(mn + "_inst") + ",\"clock\":" + jstr(varName(c))
-                                  + ",\"edge\":\"pos\",\"reset\":" + (rstv ? jstr(varName(rstv)) : std::string("null"))
-                                  + ",\"reset_async\":" + (async ? "true" : "false") + ",\"body\":[" + body + "]}");
+            m_processes.push_back(
+                "{\"kind\":\"seq\",\"name\":" + jstr(mn + "_inst")
+                + ",\"clock\":" + jstr(varName(c)) + ",\"edge\":\"pos\",\"reset\":"
+                + (rstv ? jstr(varName(rstv)) : std::string("null"))
+                + ",\"reset_async\":" + (async ? "true" : "false") + ",\"body\":[" + body + "]}");
             return true;
         }
         return false;
@@ -874,8 +975,12 @@ private:
             if (AstVar* const vp = VN_CAST(sp, Var)) {
                 nameVar(vp, "");
                 if (vp->isIO()) {
-                    const char* dir = vp->direction() == VDirection::OUTPUT ? "output" : vp->direction() == VDirection::INOUT ? "inout" : "input";
-                    params.push_back("[" + jstr(varName(vp)) + "," + std::to_string(vp->width() > 0 ? vp->width() : 1) + ",\"" + dir + "\"]");
+                    const char* dir = vp->direction() == VDirection::OUTPUT  ? "output"
+                                      : vp->direction() == VDirection::INOUT ? "inout"
+                                                                             : "input";
+                    params.push_back("[" + jstr(varName(vp)) + ","
+                                     + std::to_string(vp->width() > 0 ? vp->width() : 1) + ",\""
+                                     + dir + "\"]");
                 }
             }
         }
@@ -885,7 +990,8 @@ private:
             const std::string s = stmt(sp);
             if (!s.empty()) body.push_back(s);
         }
-        return "{\"name\":" + jstr(sanitizeName(fp->prettyName())) + ",\"task\":" + (fp->isFunction() ? "false" : "true")
+        return "{\"name\":" + jstr(sanitizeName(fp->prettyName()))
+               + ",\"task\":" + (fp->isFunction() ? "false" : "true")
                + ",\"params\":" + joinList(params) + ",\"body\":" + joinList(body) + "}";
     }
 };
@@ -902,14 +1008,16 @@ void V3EmitBir::emit(const std::string& filename) {
         return;
     }
     std::vector<std::string> pkgFuncs;
-    for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp; modp = VN_AS(modp->nextp(), NodeModule)) {
+    for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
+         modp = VN_AS(modp->nextp(), NodeModule)) {
         if (VN_IS(modp, Package)) {
             for (const std::string& f : BirModule::packageFuncs(modp)) pkgFuncs.push_back(f);
         }
     }
     os << "{\"modules\":[";
     bool first = true;
-    for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp; modp = VN_AS(modp->nextp(), NodeModule)) {
+    for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
+         modp = VN_AS(modp->nextp(), NodeModule)) {
         if (!VN_IS(modp, Module) || modp->dead()) continue;
         if (V3EmitStruct::isBlackbox(modp)) continue;
         if (!first) os << ",\n";

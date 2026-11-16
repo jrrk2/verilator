@@ -18,7 +18,6 @@ test.compile(verilator_flags2=['--struct-only-output', netlist],
              make_top_shell=False,
              make_main=False)
 
-
 test.file_grep(netlist, r'\.d\(pinarr_')
 test.file_grep(netlist, r'\.q\(pinarr_')
 

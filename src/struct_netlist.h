@@ -31,8 +31,8 @@
 #include <unordered_set>
 #include <vector>
 
-// windef.h (through verilatedos.h on Windows) defines CONST as const and IN, OUT, OPTIONAL as nothing,
-// which Expr::CONST and the IN pin names here would expand
+// windef.h (through verilatedos.h on Windows) defines CONST as const and IN, OUT, OPTIONAL as
+// nothing, which Expr::CONST and the IN pin names here would expand
 #ifdef _WIN32
 #undef CONST
 #undef IN
@@ -48,7 +48,9 @@ inline bool g_verbose = false;
     std::cerr << "struct_netlist: error: " << msg << "\n";
     std::exit(2);
 }
-inline void warn(const std::string& msg) { std::cerr << "struct_netlist: warning: " << msg << "\n"; }
+inline void warn(const std::string& msg) {
+    std::cerr << "struct_netlist: warning: " << msg << "\n";
+}
 //######################################################################
 // Lexer
 
@@ -103,7 +105,8 @@ public:
                        && (std::isalnum(static_cast<unsigned char>(m_s[j])) || m_s[j] == '_'
                            || m_s[j] == '\'' || m_s[j] == '?'
                            || (m_s[j] == '.' && j + 1 < m_s.size()
-                               && std::isdigit(static_cast<unsigned char>(m_s[j + 1])))))  // real: 20.0
+                               && std::isdigit(
+                                   static_cast<unsigned char>(m_s[j + 1])))))  // real: 20.0
                     ++j;
                 t.kind = Tok::Number;
                 t.text = m_s.substr(m_i, j - m_i);
@@ -115,9 +118,9 @@ public:
                 t.text = m_s.substr(m_i, j + 1 - m_i);
                 m_i = j + 1;
             } else {
-                static const char* const multi[]
-                    = {"+:", "-:", "<<<", ">>>", "<<", ">>", "<=", ">=", "==", "!=", "&&",
-                       "||", "===", "!==", "**", nullptr};
+                static const char* const multi[] = {"+:",  "-:",  "<<<", ">>>",  "<<", ">>",
+                                                    "<=",  ">=",  "==",  "!=",   "&&", "||",
+                                                    "===", "!==", "**",  nullptr};
                 t.kind = Tok::Punct;
                 t.text = std::string(1, c);
                 for (int k = 0; multi[k]; ++k) {
@@ -163,7 +166,8 @@ private:
                 const size_t b = m_i + 2;
                 m_i += 2;
                 while (m_i + 1 < m_s.size() && !(m_s[m_i] == '*' && m_s[m_i + 1] == ')')) ++m_i;
-                if (m_s.substr(b, m_i - b).find("blackbox") != std::string::npos) m_pendingBlackbox = true;
+                if (m_s.substr(b, m_i - b).find("blackbox") != std::string::npos)
+                    m_pendingBlackbox = true;
                 m_i += 2;
             } else if (c == '`') {
                 // compiler directive: skip the line
@@ -246,8 +250,10 @@ public:
                 Module m = parseModule();
                 m.blackbox = bb;
                 bb = false;
-                if (mods.count(m.name)) warn("module " + m.name + " redefined; keeping the first");
-                else mods[m.name] = std::move(m);
+                if (mods.count(m.name))
+                    warn("module " + m.name + " redefined; keeping the first");
+                else
+                    mods[m.name] = std::move(m);
             } else {
                 // skip anything else (packages, timescale remnants, ...) up to next module
                 next();
@@ -266,7 +272,9 @@ private:
         if (m_p < m_t.size() - 1) ++m_p;
         return t;
     }
-    bool is(const char* s, int k = 0) const { return peek(k).text == s && peek(k).kind != Tok::Number; }
+    bool is(const char* s, int k = 0) const {
+        return peek(k).text == s && peek(k).kind != Tok::Number;
+    }
     bool accept(const char* s) {
         if (is(s)) {
             next();
@@ -316,7 +324,8 @@ private:
         }
         case Expr::IDENT: {
             const auto it = m_curParams.find(e->name);
-            if (it == m_curParams.end()) err("non-constant identifier '" + e->name + "' in constant expression");
+            if (it == m_curParams.end())
+                err("non-constant identifier '" + e->name + "' in constant expression");
             return constEval(it->second);
         }
         case Expr::UNARY: {
@@ -354,7 +363,8 @@ private:
             }
             break;
         }
-        case Expr::COND: return constEval(e->args[0]) ? constEval(e->args[1]) : constEval(e->args[2]);
+        case Expr::COND:
+            return constEval(e->args[0]) ? constEval(e->args[1]) : constEval(e->args[2]);
         default: break;
         }
         err("unsupported constant expression");
@@ -389,9 +399,12 @@ private:
         if (accept("(")) {
             int dir = 0;
             while (!is(")")) {
-                if (accept("input")) dir = 1;
-                else if (accept("output")) dir = 2;
-                else if (accept("inout")) dir = 3;
+                if (accept("input"))
+                    dir = 1;
+                else if (accept("output"))
+                    dir = 2;
+                else if (accept("inout"))
+                    dir = 3;
                 NetDecl d;
                 while (peek().kind == Tok::Ident && isTypeKw(peek().text)) next();
                 if (accept("signed")) d.isSigned = true;
@@ -577,7 +590,8 @@ private:
     }
     ExprP parseBinary(int minPrec) {
         ExprP lhs = parseUnary();
-        while (peek().kind == Tok::Punct && prec(peek().text) >= minPrec && prec(peek().text) > 0) {
+        while (peek().kind == Tok::Punct && prec(peek().text) >= minPrec
+               && prec(peek().text) > 0) {
             const std::string op = next().text;
             ExprP rhs = parseBinary(prec(op) + 1);
             auto r = std::make_shared<Expr>();
@@ -691,7 +705,8 @@ private:
             return r;
         }
         std::string s;
-        for (const char c : txt) if (c != '_') s += c;
+        for (const char c : txt)
+            if (c != '_') s += c;
         const size_t q = s.find('\'');
         if (q == std::string::npos) {  // plain decimal, 32-bit unsized signed
             unsigned long long v = std::strtoull(s.c_str(), nullptr, 10);
@@ -707,16 +722,20 @@ private:
             ++i;
         }
         char base = 'd';
-        if (i < s.size() && std::isalpha(static_cast<unsigned char>(s[i]))) base = static_cast<char>(std::tolower(s[i++]));
-        else if (width == -1) base = 'b';  // '0 / '1 / 'x
+        if (i < s.size() && std::isalpha(static_cast<unsigned char>(s[i])))
+            base = static_cast<char>(std::tolower(s[i++]));
+        else if (width == -1)
+            base = 'b';  // '0 / '1 / 'x
         const std::string digits = s.substr(i);
         std::vector<char> bits;  // LSB first
         if (base == 'd') {
             unsigned long long v = 0;
             bool xz = false;
             for (const char c : digits) {
-                if (c == 'x' || c == 'X' || c == 'z' || c == 'Z' || c == '?') xz = true;
-                else v = v * 10 + (c - '0');
+                if (c == 'x' || c == 'X' || c == 'z' || c == 'Z' || c == '?')
+                    xz = true;
+                else
+                    v = v * 10 + (c - '0');
             }
             for (int b = 0; b < 64; ++b) bits.push_back(xz ? 'x' : (((v >> b) & 1) ? '1' : '0'));
         } else {
@@ -726,7 +745,8 @@ private:
                 if (c == 'x' || c == 'z' || c == '?') {
                     for (int b = 0; b < bpd; ++b) bits.push_back(c == 'x' ? 'x' : 'z');
                 } else {
-                    const int v = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : c - 'a' + 10;
+                    const int v
+                        = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : c - 'a' + 10;
                     for (int b = 0; b < bpd; ++b) bits.push_back(((v >> b) & 1) ? '1' : '0');
                 }
             }
@@ -744,13 +764,13 @@ private:
             }
         }
         // resize to width (zero / x / z extend from the top digit)
-        const char ext = (!bits.empty() && (bits.back() == 'x' || bits.back() == 'z')) ? bits.back() : '0';
+        const char ext
+            = (!bits.empty() && (bits.back() == 'x' || bits.back() == 'z')) ? bits.back() : '0';
         bits.resize(width, ext);
         r->bits = bits;
         return r;
     }
 };
-
 
 using Vec = std::vector<int>;  // literals, LSB first (backend-specific encoding)
 //######################################################################
@@ -832,17 +852,21 @@ public:
             const NetBits* nb = findNet(p);
             if (!nb) continue;
             const NetDecl* decl = nullptr;
-            for (const NetDecl& nd : it->second.nets) if (nd.name == p) decl = &nd;
+            for (const NetDecl& nd : it->second.nets)
+                if (nd.name == p) decl = &nd;
             if (!decl) continue;
-            if (decl->dir == 1) d.inputs[p] = nb->bits;
-            else d.outputs[p] = nb->bits;
+            if (decl->dir == 1)
+                d.inputs[p] = nb->bits;
+            else
+                d.outputs[p] = nb->bits;
             if (decl->dir == 3) d.inouts.insert(p);
         }
         // undriven internal nets stay free: report them
         for (const auto& kv : d.nets) {
             if (kv.second.depth != 1) continue;
             int undriven = 0;
-            for (const int c : kv.second.drivers) if (c == 0) ++undriven;
+            for (const int c : kv.second.drivers)
+                if (c == 0) ++undriven;
             if (undriven == kv.second.width && !d.inputs.count(kv.first) && !d.regQ.count(kv.first)
                 && !m_bbOutNets.count(kv.first)) {
                 if (g_verbose) warn(d.label + ": net " + kv.first + " is undriven (free)");
@@ -874,17 +898,58 @@ private:
                || n.rfind("RTL_REG", 0) == 0;
     }
     static bool isKnownPrim(const std::string& n) {
-        static const std::set<std::string> k = {
-            "adder", "adder_carry", "subtractor", "multiplier", "multiplier_signed", "divider",
-            "divider_signed", "modulo", "modulo_signed", "negator", "incrementer", "decrementer",
-            "bitwise_and", "bitwise_or", "bitwise_xor", "bitwise_not", "reduction_and",
-            "reduction_or", "reduction_xor", "logical_not", "comparator_eq", "comparator_neq",
-            "comparator_lt", "comparator_lte", "comparator_gt", "comparator_gte",
-            "comparator_lt_signed", "comparator_lte_signed", "comparator_gt_signed",
-            "comparator_gte_signed", "shifter_left", "shifter_right", "shifter_right_arith",
-            "mux2", "mux4", "sign_extender", "RTL_INV", "RTL_AND", "RTL_OR", "RTL_XOR",
-            "RTL_MUX", "RTL_ADD", "RTL_SUB", "RTL_MUL", "RTL_LSHIFT", "RTL_RSHIFT", "RTL_EQ",
-            "RTL_NEQ", "RTL_LT", "RTL_LEQ", "RTL_GT", "RTL_GEQ"};
+        static const std::set<std::string> k = {"adder",
+                                                "adder_carry",
+                                                "subtractor",
+                                                "multiplier",
+                                                "multiplier_signed",
+                                                "divider",
+                                                "divider_signed",
+                                                "modulo",
+                                                "modulo_signed",
+                                                "negator",
+                                                "incrementer",
+                                                "decrementer",
+                                                "bitwise_and",
+                                                "bitwise_or",
+                                                "bitwise_xor",
+                                                "bitwise_not",
+                                                "reduction_and",
+                                                "reduction_or",
+                                                "reduction_xor",
+                                                "logical_not",
+                                                "comparator_eq",
+                                                "comparator_neq",
+                                                "comparator_lt",
+                                                "comparator_lte",
+                                                "comparator_gt",
+                                                "comparator_gte",
+                                                "comparator_lt_signed",
+                                                "comparator_lte_signed",
+                                                "comparator_gt_signed",
+                                                "comparator_gte_signed",
+                                                "shifter_left",
+                                                "shifter_right",
+                                                "shifter_right_arith",
+                                                "mux2",
+                                                "mux4",
+                                                "sign_extender",
+                                                "RTL_INV",
+                                                "RTL_AND",
+                                                "RTL_OR",
+                                                "RTL_XOR",
+                                                "RTL_MUX",
+                                                "RTL_ADD",
+                                                "RTL_SUB",
+                                                "RTL_MUL",
+                                                "RTL_LSHIFT",
+                                                "RTL_RSHIFT",
+                                                "RTL_EQ",
+                                                "RTL_NEQ",
+                                                "RTL_LT",
+                                                "RTL_LEQ",
+                                                "RTL_GT",
+                                                "RTL_GEQ"};
         return k.count(n) > 0 || isRegPrim(n);
     }
 
@@ -916,10 +981,11 @@ private:
             return exprWidth(e->args[0], sc);
         case Expr::BINARY: {
             const std::string& o = e->name;
-            if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" || o == "&&"
-                || o == "||" || o == "===" || o == "!==")
+            if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">="
+                || o == "&&" || o == "||" || o == "===" || o == "!==")
                 return 1;
-            if (o == "<<" || o == ">>" || o == "<<<" || o == ">>>" || o == "**") return exprWidth(e->args[0], sc);
+            if (o == "<<" || o == ">>" || o == "<<<" || o == ">>>" || o == "**")
+                return exprWidth(e->args[0], sc);
             return std::max(exprWidth(e->args[0], sc), exprWidth(e->args[1], sc));
         }
         case Expr::COND: return std::max(exprWidth(e->args[1], sc), exprWidth(e->args[2], sc));
@@ -933,12 +999,16 @@ private:
             return nb ? nb->isSigned : false;
         }
         case Expr::CONST: return e->isSigned;
-        case Expr::UNARY: return (e->name == "-" || e->name == "~" || e->name == "+") && exprSigned(e->args[0], sc);
+        case Expr::UNARY:
+            return (e->name == "-" || e->name == "~" || e->name == "+")
+                   && exprSigned(e->args[0], sc);
         case Expr::BINARY: {
             const std::string& o = e->name;
-            if (o == "+" || o == "-" || o == "*" || o == "/" || o == "%" || o == "&" || o == "|" || o == "^")
+            if (o == "+" || o == "-" || o == "*" || o == "/" || o == "%" || o == "&" || o == "|"
+                || o == "^")
                 return exprSigned(e->args[0], sc) && exprSigned(e->args[1], sc);
-            if (o == "<<" || o == ">>" || o == "<<<" || o == ">>>") return exprSigned(e->args[0], sc);
+            if (o == "<<" || o == ">>" || o == "<<<" || o == ">>>")
+                return exprSigned(e->args[0], sc);
             return false;
         }
         case Expr::COND: return exprSigned(e->args[1], sc) && exprSigned(e->args[2], sc);
@@ -957,10 +1027,12 @@ private:
         }
         case Expr::CONST: {
             Vec r(e->bits.size());
-            for (size_t i = 0; i < e->bits.size(); ++i) r[i] = e->bits[i] == '1' ? m_bl.T() : m_bl.F();
+            for (size_t i = 0; i < e->bits.size(); ++i)
+                r[i] = e->bits[i] == '1' ? m_bl.T() : m_bl.F();
             if (!e->sized && ctxWidth > 0 && static_cast<int>(r.size()) < ctxWidth) {
                 // '0 / '1 fill; unsized decimal sign-extends if signed
-                const bool fill = e->bits.size() == 1 ? e->bits[0] == '1' : (e->isSigned && e->bits.back() == '1');
+                const bool fill = e->bits.size() == 1 ? e->bits[0] == '1'
+                                                      : (e->isSigned && e->bits.back() == '1');
                 r.resize(ctxWidth, fill ? m_bl.T() : m_bl.F());
             }
             return r;
@@ -972,7 +1044,8 @@ private:
                 const int n = static_cast<int>(base.size()) / ew;
                 auto elem = [&](long long k) {
                     Vec r(ew, m_bl.F());
-                    if (k >= 0 && k < n) for (int b = 0; b < ew; ++b) r[b] = base[k * ew + b];
+                    if (k >= 0 && k < n)
+                        for (int b = 0; b < ew; ++b) r[b] = base[k * ew + b];
                     return r;
                 };
                 const ExprP& ie = e->args[1];
@@ -1003,7 +1076,8 @@ private:
             const int hi = std::max(e->ival, e->ival2) - lsb;
             const int lo = std::min(e->ival, e->ival2) - lsb;
             Vec r;
-            for (int i = lo; i <= hi; ++i) r.push_back((i >= 0 && i < static_cast<int>(base.size())) ? base[i] : m_bl.F());
+            for (int i = lo; i <= hi; ++i)
+                r.push_back((i >= 0 && i < static_cast<int>(base.size())) ? base[i] : m_bl.F());
             return r;
         }
         case Expr::PARTSEL_UP: {
@@ -1017,7 +1091,8 @@ private:
                 Vec r;
                 for (int i = 0; i < w; ++i) {
                     const long long k = lo + i;
-                    r.push_back((k >= 0 && k < static_cast<long long>(base.size())) ? base[k] : m_bl.F());
+                    r.push_back((k >= 0 && k < static_cast<long long>(base.size())) ? base[k]
+                                                                                    : m_bl.F());
                 }
                 return r;
             }
@@ -1079,7 +1154,8 @@ private:
             if (o == "<<" || o == "<<<") return m_bl.shl(a, b);
             return m_bl.shr(a, b, o == ">>>" && exprSigned(e->args[0], sc));
         }
-        const bool cmp = o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" || o == "===" || o == "!==";
+        const bool cmp = o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">="
+                         || o == "===" || o == "!==";
         const int ow = std::max(exprWidth(e->args[0], sc), exprWidth(e->args[1], sc));
         const int w = cmp ? ow : (ctxWidth > 0 ? std::max(ctxWidth, ow) : ow);
         const Vec a = m_bl.resize(eval(e->args[0], sc, w), w, sg);
@@ -1121,15 +1197,19 @@ private:
         case Expr::IDENT: return sc.mod->params.count(e->name) > 0;
         case Expr::UNARY: return isConstExpr(e->args[0], sc);
         case Expr::BINARY: return isConstExpr(e->args[0], sc) && isConstExpr(e->args[1], sc);
-        case Expr::COND: return isConstExpr(e->args[0], sc) && isConstExpr(e->args[1], sc) && isConstExpr(e->args[2], sc);
+        case Expr::COND:
+            return isConstExpr(e->args[0], sc) && isConstExpr(e->args[1], sc)
+                   && isConstExpr(e->args[2], sc);
         default: return false;
         }
     }
     long long constOf(const ExprP& e, const Scope& sc) {
         const Vec v = eval(e, sc);
         long long r = 0;
-        for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i) r = (r << 1) | (m_bl.isTrue(v[i]) ? 1 : 0);
-        if (exprSigned(e, sc) && !v.empty() && m_bl.isTrue(v.back()) && v.size() < 64) r -= (1LL << v.size());
+        for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i)
+            r = (r << 1) | (m_bl.isTrue(v[i]) ? 1 : 0);
+        if (exprSigned(e, sc) && !v.empty() && m_bl.isTrue(v.back()) && v.size() < 64)
+            r -= (1LL << v.size());
         return r;
     }
 
@@ -1139,7 +1219,9 @@ private:
         switch (lhs->kind) {
         case Expr::IDENT: {
             NetBits* nb = findNet(sc.prefix + lhs->name);
-            if (!nb) die(m_d->label + ": assignment to undeclared '" + lhs->name + "' in " + sc.mod->name);
+            if (!nb)
+                die(m_d->label + ": assignment to undeclared '" + lhs->name + "' in "
+                    + sc.mod->name);
             driveBits(*nb, 0, val, sc.prefix + lhs->name, what, true);
             return;
         }
@@ -1150,7 +1232,8 @@ private:
             if (NetBits* const ap = lhs->kind == Expr::BITSEL ? arrayNetOf(lhs, sc) : nullptr) {
                 // x[k] = v on an unpacked array: the element's bits
                 if (!isConstExpr(lhs->args[1], sc))
-                    die(m_d->label + ": dynamic index on assignment target '" + base->name + "' unsupported");
+                    die(m_d->label + ": dynamic index on assignment target '" + base->name
+                        + "' unsupported");
                 const long long k = constOf(lhs->args[1], sc) - ap->elemLo;
                 driveBits(*ap, static_cast<int>(k * ap->elemW), m_bl.resize(val, ap->elemW, false),
                           sc.prefix + base->name, what);
@@ -1160,22 +1243,25 @@ private:
             NetBits* nb = findNet(sc.prefix + base->name);
             if (!nb) die(m_d->label + ": assignment to undeclared '" + base->name + "'");
             long long lo;
-            if (lhs->kind == Expr::PARTSEL) lo = std::min(lhs->ival, lhs->ival2) - nb->lsb;
+            if (lhs->kind == Expr::PARTSEL)
+                lo = std::min(lhs->ival, lhs->ival2) - nb->lsb;
             else {
                 if (!isConstExpr(lhs->args[1], sc)) {
                     // dynamic part-select write: every candidate slot gets a mux
                     // (idx==k ? val : old).  Rare; treat as unsupported for now.
-                    die(m_d->label + ": dynamic index on assignment target '" + base->name + "' unsupported");
+                    die(m_d->label + ": dynamic index on assignment target '" + base->name
+                        + "' unsupported");
                 }
                 lo = constOf(lhs->args[1], sc) - nb->lsb;
                 if (lhs->kind == Expr::PARTSEL_UP && lhs->ival2) lo = lo - lhs->ival + 1;
             }
             // only the selected bits are driven: a wider driver (a 32-bit
             // DOADO into qa[i]) is truncated, a narrower one zero-extended
-            const int selW = lhs->kind == Expr::BITSEL ? 1
+            const int selW = lhs->kind == Expr::BITSEL    ? 1
                              : lhs->kind == Expr::PARTSEL ? std::abs(lhs->ival - lhs->ival2) + 1
                                                           : lhs->ival;
-            driveBits(*nb, static_cast<int>(lo), m_bl.resize(val, selW, false), sc.prefix + base->name, what);
+            driveBits(*nb, static_cast<int>(lo), m_bl.resize(val, selW, false),
+                      sc.prefix + base->name, what);
             return;
         }
         case Expr::CONCAT: {
@@ -1183,7 +1269,9 @@ private:
             for (int i = static_cast<int>(lhs->args.size()) - 1; i >= 0; --i) {
                 const int w = exprWidth(lhs->args[i], sc);
                 Vec part;
-                for (int k = 0; k < w; ++k) part.push_back(lsb + k < static_cast<int>(val.size()) ? val[lsb + k] : m_bl.F());
+                for (int k = 0; k < w; ++k)
+                    part.push_back(lsb + k < static_cast<int>(val.size()) ? val[lsb + k]
+                                                                          : m_bl.F());
                 driveLValue(lhs->args[i], part, sc, what);
                 lsb += w;
             }
@@ -1194,13 +1282,14 @@ private:
     }
     // A net bit with two drivers would put two contradictory definitions
     // into the solver (and make any miter vacuously UNSAT), so it is an error.
-    void driveBits(NetBits& nb, int lo, const Vec& val, const std::string& hname, const std::string& what,
-                   bool whole = false) {
+    void driveBits(NetBits& nb, int lo, const Vec& val, const std::string& hname,
+                   const std::string& what, bool whole = false) {
         for (size_t i = 0; i < val.size(); ++i) {
             const long long k = lo + static_cast<long long>(i);
             if (k < 0 || k >= nb.width) continue;  // width mismatch: truncate
             if (nb.drivers[k]++ > 0) {
-                die(m_d->label + ": multiple drivers on " + hname + "[" + std::to_string(k) + "] (" + what + ")");
+                die(m_d->label + ": multiple drivers on " + hname + "[" + std::to_string(k) + "] ("
+                    + what + ")");
             }
             m_bl.equate(nb.bits[k], val[i]);
         }
@@ -1208,13 +1297,16 @@ private:
         // (Verilog assign semantics); a part-select drives only its bits
         if (!whole || val.empty()) return;
         for (long long k = static_cast<long long>(val.size()); k < nb.width; ++k) {
-            if (nb.drivers[k]++ > 0) die(m_d->label + ": multiple drivers on " + hname + "[" + std::to_string(k) + "] (" + what + ")");
+            if (nb.drivers[k]++ > 0)
+                die(m_d->label + ": multiple drivers on " + hname + "[" + std::to_string(k) + "] ("
+                    + what + ")");
             m_bl.equate(nb.bits[k], m_bl.F());
         }
     }
 
     // ---- elaboration ----
-    void elaborate(const Module& m, const std::string& prefix, const Item* instItem, const Scope* parent) {
+    void elaborate(const Module& m, const std::string& prefix, const Item* instItem,
+                   const Scope* parent) {
         Scope sc{prefix, &m};
         if (onScope) onScope(prefix, m.name);
         // Allocate nets
@@ -1234,7 +1326,8 @@ private:
                 nb.elemW = d.width;
                 nb.elemLo = d.elemLo;
             } else if (d.depth != 1) {
-                warn(m_d->label + ": unpacked array net " + prefix + d.name + " kept as a flat " + std::to_string(total) + "-bit vector");
+                warn(m_d->label + ": unpacked array net " + prefix + d.name + " kept as a flat "
+                     + std::to_string(total) + "-bit vector");
             }
             nb.width = total;
             m_d->nets[prefix + d.name] = nb;
@@ -1260,7 +1353,8 @@ private:
                 NetBits* child = findNet(prefix + pname);
                 if (dit->second->dir == 1) {
                     const Vec v = eval(p.expr, *parent, child->width);
-                    driveBits(*child, 0, m_bl.resize(v, child->width, false), prefix + pname, "port input");
+                    driveBits(*child, 0, m_bl.resize(v, child->width, false), prefix + pname,
+                              "port input");
                 } else {
                     // output / inout: child net drives the parent lvalue
                     driveLValue(p.expr, child->bits, *parent, "port output of " + prefix);
@@ -1272,7 +1366,8 @@ private:
             if (it.kind == Item::ASSIGN) {
                 const int w = exprWidth(it.lhs, sc);
                 const Vec v = eval(it.rhs, sc, w);
-                driveLValue(it.lhs, m_bl.resize(v, w, exprSigned(it.rhs, sc)), sc, "assign at line " + std::to_string(it.line));
+                driveLValue(it.lhs, m_bl.resize(v, w, exprSigned(it.rhs, sc)), sc,
+                            "assign at line " + std::to_string(it.line));
             } else {
                 elaborateCell(it, sc);
             }
@@ -1287,7 +1382,8 @@ private:
         return dflt;
     }
     const ExprP pinExpr(const Item& it, const char* name) {
-        for (const Pin& p : it.pins) if (p.name == name) return p.expr;
+        for (const Pin& p : it.pins)
+            if (p.name == name) return p.expr;
         return nullptr;
     }
     Vec pinIn(const Item& it, const char* name, const Scope& sc, int width) {
@@ -1321,7 +1417,8 @@ private:
         const Vec sh = m_bl.shr(base, amt, false);
         const int keep = m_bl.NOT(over);
         Vec r(w, m_bl.F());
-        for (int i = 0; i < w && i < static_cast<int>(sh.size()); ++i) r[i] = m_bl.AND(sh[i], keep);
+        for (int i = 0; i < w && i < static_cast<int>(sh.size()); ++i)
+            r[i] = m_bl.AND(sh[i], keep);
         return r;
     }
 
@@ -1343,7 +1440,9 @@ private:
                 elaborate(mit->second, inst + ".", &it, &sc);
                 return;
             }
-            if (mn.rfind("memory_", 0) != 0) warn(m_d->label + ": module '" + mn + "' (instance " + inst + ") has no definition; treated as a black box");
+            if (mn.rfind("memory_", 0) != 0)
+                warn(m_d->label + ": module '" + mn + "' (instance " + inst
+                     + ") has no definition; treated as a black box");
             blackBox(it, sc, inst);
             return;
         }
@@ -1368,63 +1467,120 @@ private:
         if (W < 0) {
             // RTL_* cells carry no parameters: take the width from the pins
             W = std::max({pinWidth(it, A, sc), pinWidth(it, B, sc), pinWidth(it, IN, sc)});
-            if (mn == "RTL_MUX" || mn == "RTL_ADD" || mn == "RTL_SUB" || mn == "RTL_MUL" || mn == "RTL_LSHIFT"
-                || mn == "RTL_RSHIFT" || mn == "RTL_INV" || mn == "RTL_AND" || mn == "RTL_OR" || mn == "RTL_XOR")
+            if (mn == "RTL_MUX" || mn == "RTL_ADD" || mn == "RTL_SUB" || mn == "RTL_MUL"
+                || mn == "RTL_LSHIFT" || mn == "RTL_RSHIFT" || mn == "RTL_INV" || mn == "RTL_AND"
+                || mn == "RTL_OR" || mn == "RTL_XOR")
                 W = std::max(W, pinWidth(it, O, sc));
         }
-        if (mn == "adder" || mn == "RTL_ADD") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.add(p.first, p.second), sc); }
-        else if (mn == "adder_carry") {
+        if (mn == "adder" || mn == "RTL_ADD") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.add(p.first, p.second), sc);
+        } else if (mn == "adder_carry") {
             auto p = two("a", "b", "out", W + 1);
             Vec s = m_bl.add(p.first, p.second, m_bl.redOr(pinIn(it, "cin", sc, 1)));
             pinOut(it, "out", Vec(s.begin(), s.begin() + W), sc);
             pinOut(it, "cout", {s[W]}, sc);
-        }
-        else if (mn == "subtractor" || mn == "RTL_SUB") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.sub(p.first, p.second), sc); }
-        else if (mn == "multiplier" || mn == "multiplier_signed" || mn == "RTL_MUL") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.mul(p.first, p.second), sc); }
-        else if (mn == "divider") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.divmodU(p.first, p.second).first, sc); }
-        else if (mn == "divider_signed") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.divmodS(p.first, p.second).first, sc); }
-        else if (mn == "modulo") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.divmodU(p.first, p.second).second, sc); }
-        else if (mn == "modulo_signed") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.divmodS(p.first, p.second).second, sc); }
-        else if (mn == "negator") pinOut(it, "out", m_bl.neg(pinIn(it, "in", sc, W)), sc);
-        else if (mn == "incrementer") pinOut(it, "out", m_bl.add(pinIn(it, "in", sc, W), m_bl.constVec(1, W)), sc);
-        else if (mn == "decrementer") pinOut(it, "out", m_bl.sub(pinIn(it, "in", sc, W), m_bl.constVec(1, W)), sc);
-        else if (mn == "bitwise_and" || mn == "RTL_AND") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.ANDv(p.first, p.second), sc); }
-        else if (mn == "bitwise_or" || mn == "RTL_OR") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.ORv(p.first, p.second), sc); }
-        else if (mn == "bitwise_xor" || mn == "RTL_XOR") { auto p = two(A, B, O, W); pinOut(it, O, m_bl.XORv(p.first, p.second), sc); }
-        else if (mn == "bitwise_not" || mn == "RTL_INV") pinOut(it, O, m_bl.NOTv(pinIn(it, IN, sc, W)), sc);
-        else if (mn == "reduction_and") pinOut(it, "out", {m_bl.redAnd(pinIn(it, "in", sc, W))}, sc);
-        else if (mn == "reduction_or") pinOut(it, "out", {m_bl.redOr(pinIn(it, "in", sc, W))}, sc);
-        else if (mn == "reduction_xor") pinOut(it, "out", {m_bl.redXor(pinIn(it, "in", sc, W))}, sc);
-        else if (mn == "logical_not") pinOut(it, "out", {m_bl.NOT(m_bl.redOr(pinIn(it, "in", sc, pinWidth(it, "in", sc))))}, sc);
-        else if (mn == "comparator_eq" || mn == "RTL_EQ") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.eq(p.first, p.second)}, sc); }
-        else if (mn == "comparator_neq" || mn == "RTL_NEQ") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.NOT(m_bl.eq(p.first, p.second))}, sc); }
-        else if (mn == "comparator_lt" || mn == "RTL_LT") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.ltU(p.first, p.second)}, sc); }
-        else if (mn == "comparator_lte" || mn == "RTL_LEQ") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.NOT(m_bl.ltU(p.second, p.first))}, sc); }
-        else if (mn == "comparator_gt" || mn == "RTL_GT") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.ltU(p.second, p.first)}, sc); }
-        else if (mn == "comparator_gte" || mn == "RTL_GEQ") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.NOT(m_bl.ltU(p.first, p.second))}, sc); }
-        else if (mn == "comparator_lt_signed") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.ltS(p.first, p.second)}, sc); }
-        else if (mn == "comparator_lte_signed") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.NOT(m_bl.ltS(p.second, p.first))}, sc); }
-        else if (mn == "comparator_gt_signed") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.ltS(p.second, p.first)}, sc); }
-        else if (mn == "comparator_gte_signed") { auto p = two(A, B, O, W); pinOut(it, O, {m_bl.NOT(m_bl.ltS(p.first, p.second))}, sc); }
-        else if (mn == "shifter_left" || mn == "RTL_LSHIFT") pinOut(it, O, m_bl.shl(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc))), sc);
-        else if (mn == "shifter_right" || mn == "RTL_RSHIFT") pinOut(it, O, m_bl.shr(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc)), false), sc);
-        else if (mn == "shifter_right_arith") pinOut(it, O, m_bl.shr(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc)), true), sc);
+        } else if (mn == "subtractor" || mn == "RTL_SUB") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.sub(p.first, p.second), sc);
+        } else if (mn == "multiplier" || mn == "multiplier_signed" || mn == "RTL_MUL") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.mul(p.first, p.second), sc);
+        } else if (mn == "divider") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.divmodU(p.first, p.second).first, sc);
+        } else if (mn == "divider_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.divmodS(p.first, p.second).first, sc);
+        } else if (mn == "modulo") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.divmodU(p.first, p.second).second, sc);
+        } else if (mn == "modulo_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.divmodS(p.first, p.second).second, sc);
+        } else if (mn == "negator")
+            pinOut(it, "out", m_bl.neg(pinIn(it, "in", sc, W)), sc);
+        else if (mn == "incrementer")
+            pinOut(it, "out", m_bl.add(pinIn(it, "in", sc, W), m_bl.constVec(1, W)), sc);
+        else if (mn == "decrementer")
+            pinOut(it, "out", m_bl.sub(pinIn(it, "in", sc, W), m_bl.constVec(1, W)), sc);
+        else if (mn == "bitwise_and" || mn == "RTL_AND") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.ANDv(p.first, p.second), sc);
+        } else if (mn == "bitwise_or" || mn == "RTL_OR") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.ORv(p.first, p.second), sc);
+        } else if (mn == "bitwise_xor" || mn == "RTL_XOR") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, m_bl.XORv(p.first, p.second), sc);
+        } else if (mn == "bitwise_not" || mn == "RTL_INV")
+            pinOut(it, O, m_bl.NOTv(pinIn(it, IN, sc, W)), sc);
+        else if (mn == "reduction_and")
+            pinOut(it, "out", {m_bl.redAnd(pinIn(it, "in", sc, W))}, sc);
+        else if (mn == "reduction_or")
+            pinOut(it, "out", {m_bl.redOr(pinIn(it, "in", sc, W))}, sc);
+        else if (mn == "reduction_xor")
+            pinOut(it, "out", {m_bl.redXor(pinIn(it, "in", sc, W))}, sc);
+        else if (mn == "logical_not")
+            pinOut(it, "out", {m_bl.NOT(m_bl.redOr(pinIn(it, "in", sc, pinWidth(it, "in", sc))))},
+                   sc);
+        else if (mn == "comparator_eq" || mn == "RTL_EQ") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.eq(p.first, p.second)}, sc);
+        } else if (mn == "comparator_neq" || mn == "RTL_NEQ") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.NOT(m_bl.eq(p.first, p.second))}, sc);
+        } else if (mn == "comparator_lt" || mn == "RTL_LT") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.ltU(p.first, p.second)}, sc);
+        } else if (mn == "comparator_lte" || mn == "RTL_LEQ") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.NOT(m_bl.ltU(p.second, p.first))}, sc);
+        } else if (mn == "comparator_gt" || mn == "RTL_GT") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.ltU(p.second, p.first)}, sc);
+        } else if (mn == "comparator_gte" || mn == "RTL_GEQ") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.NOT(m_bl.ltU(p.first, p.second))}, sc);
+        } else if (mn == "comparator_lt_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.ltS(p.first, p.second)}, sc);
+        } else if (mn == "comparator_lte_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.NOT(m_bl.ltS(p.second, p.first))}, sc);
+        } else if (mn == "comparator_gt_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.ltS(p.second, p.first)}, sc);
+        } else if (mn == "comparator_gte_signed") {
+            auto p = two(A, B, O, W);
+            pinOut(it, O, {m_bl.NOT(m_bl.ltS(p.first, p.second))}, sc);
+        } else if (mn == "shifter_left" || mn == "RTL_LSHIFT")
+            pinOut(it, O, m_bl.shl(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc))),
+                   sc);
+        else if (mn == "shifter_right" || mn == "RTL_RSHIFT")
+            pinOut(it, O,
+                   m_bl.shr(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc)), false),
+                   sc);
+        else if (mn == "shifter_right_arith")
+            pinOut(it, O,
+                   m_bl.shr(pinIn(it, A, sc, W), pinIn(it, B, sc, pinWidth(it, B, sc)), true), sc);
         else if (mn == "mux2" || mn == "RTL_MUX") {
             const int s = m_bl.redOr(pinIn(it, rtl ? "S" : "sel", sc, 1));
-            pinOut(it, O, m_bl.MUXv(s, pinIn(it, rtl ? "I0" : "in0", sc, W), pinIn(it, rtl ? "I1" : "in1", sc, W)), sc);
-        }
-        else if (mn == "mux4") {
+            pinOut(it, O,
+                   m_bl.MUXv(s, pinIn(it, rtl ? "I0" : "in0", sc, W),
+                             pinIn(it, rtl ? "I1" : "in1", sc, W)),
+                   sc);
+        } else if (mn == "mux4") {
             const Vec s = pinIn(it, "sel", sc, 2);
             const Vec a = m_bl.MUXv(s[0], pinIn(it, "in0", sc, W), pinIn(it, "in1", sc, W));
             const Vec b = m_bl.MUXv(s[0], pinIn(it, "in2", sc, W), pinIn(it, "in3", sc, W));
             pinOut(it, "out", m_bl.MUXv(s[1], a, b), sc);
-        }
-        else if (mn == "sign_extender") {
+        } else if (mn == "sign_extender") {
             const int wi = static_cast<int>(paramInt(it, "WIDTH_IN", 8, sc));
             const int wo = static_cast<int>(paramInt(it, "WIDTH_OUT", 16, sc));
             pinOut(it, "out", m_bl.resize(pinIn(it, "in", sc, wi), wo, true), sc);
-        }
-        else die("internal: primitive " + mn + " listed but not modelled");
+        } else
+            die("internal: primitive " + mn + " listed but not modelled");
     }
 
     void registerCell(const Item& it, const Scope& sc, const std::string& inst) {
@@ -1456,7 +1612,8 @@ private:
             r.rst = re0 ? m_bl.redOr(eval(re0, sc)) : m_bl.F();
             const ExprP ce0 = pinExpr(it, rtl ? "C" : "clk");
             r.clk = ce0 ? m_bl.redOr(eval(ce0, sc)) : m_bl.F();
-            if (ce0 && ce0->kind == Expr::IDENT) m_d->clocks.emplace_back(sc.prefix + ce0->name, r.clk);
+            if (ce0 && ce0->kind == Expr::IDENT)
+                m_d->clocks.emplace_back(sc.prefix + ce0->name, r.clk);
             m_d->regs.push_back(r);
         }
         Vec next = m_bl.MUXv(en, q, d);
@@ -1466,7 +1623,8 @@ private:
             const ExprP re = pinExpr(it, rtl ? "RST" : "rst");
             if (re) {
                 const int rst = m_bl.redOr(eval(re, sc));
-                const Vec rv = m_bl.constVec(static_cast<unsigned long long>(paramInt(it, "RESET_VAL", 0, sc)), W);
+                const Vec rv = m_bl.constVec(
+                    static_cast<unsigned long long>(paramInt(it, "RESET_VAL", 0, sc)), W);
                 next = m_bl.MUXv(rst, next, rv);
             }
         }
@@ -1488,8 +1646,12 @@ private:
         switch (e->kind) {
         case Expr::IDENT: return e->name;
         case Expr::BITSEL: return lvalText(e->args[0]) + "[" + exprText(e->args[1]) + "]";
-        case Expr::PARTSEL: return lvalText(e->args[0]) + "[" + std::to_string(e->ival) + ":" + std::to_string(e->ival2) + "]";
-        case Expr::PARTSEL_UP: return lvalText(e->args[0]) + "[" + exprText(e->args[1]) + "+:" + std::to_string(e->ival) + "]";
+        case Expr::PARTSEL:
+            return lvalText(e->args[0]) + "[" + std::to_string(e->ival) + ":"
+                   + std::to_string(e->ival2) + "]";
+        case Expr::PARTSEL_UP:
+            return lvalText(e->args[0]) + "[" + exprText(e->args[1])
+                   + "+:" + std::to_string(e->ival) + "]";
         case Expr::CONCAT: {
             std::string s = "{";
             for (size_t i = 0; i < e->args.size(); ++i) s += (i ? "," : "") + lvalText(e->args[i]);
@@ -1516,7 +1678,8 @@ private:
     // side matches a memory_*_sync on the other).  memory_sp's single `addr`
     // is exposed as both waddr and raddr1.
     void recordCell(const Item& it, const Scope& sc, const std::string& inst,
-                    const std::function<bool(const std::string&)>& isOut, const Module* defp = nullptr) {
+                    const std::function<bool(const std::string&)>& isOut,
+                    const Module* defp = nullptr) {
         typename Design::Cell c;
         c.type = it.modName;
         c.name = inst;
@@ -1525,7 +1688,8 @@ private:
         // what it drives (`.DOBDO(qb[i])`) gets free bits for the rest
         auto portWidth = [defp](const std::string& n) -> int {
             if (!defp) return -1;
-            for (const NetDecl& d : defp->nets) if (d.name == n) return d.width;
+            for (const NetDecl& d : defp->nets)
+                if (d.name == n) return d.width;
             return -1;
         };
         // Parameter values for the emitter, typed by their spelling:
@@ -1543,7 +1707,8 @@ private:
                 c.params.emplace_back(kv.first, "\"" + v->text + "\"");
             } else if (v->kind == Expr::CONST && v->sized) {
                 std::string s = "bits:";
-                for (int i = static_cast<int>(v->bits.size()) - 1; i >= 0; --i) s += v->bits[i] == '1' ? '1' : '0';
+                for (int i = static_cast<int>(v->bits.size()) - 1; i >= 0; --i)
+                    s += v->bits[i] == '1' ? '1' : '0';
                 c.params.emplace_back(kv.first, s);
             } else {
                 c.params.emplace_back(kv.first, std::to_string(constOf(v, sc)));
@@ -1574,7 +1739,9 @@ private:
         };
         const bool tdp = mn == "memory_tdp_sync";
         if (tdp) {
-            for (const char* p : {"clk1", "clk2", "en1", "en2", "we1", "we2", "addr1", "addr2", "wdata1", "wdata2"}) in(p, p);
+            for (const char* p : {"clk1", "clk2", "en1", "en2", "we1", "we2", "addr1", "addr2",
+                                  "wdata1", "wdata2"})
+                in(p, p);
         } else {
             in("clk", "clk");
         }
@@ -1585,17 +1752,27 @@ private:
             in("addr", "raddr1");
             in("wdata", "wdata");
         } else if (mn == "memory_2w2r" || mn == "memory_2w2r_rf") {
-            for (const char* p : {"we1", "we2", "addr1", "addr2", "waddr1", "waddr2", "wdata1", "wdata2", "raddr1", "raddr2", "re1", "re2"}) in(p, p);
+            for (const char* p : {"we1", "we2", "addr1", "addr2", "waddr1", "waddr2", "wdata1",
+                                  "wdata2", "raddr1", "raddr2", "re1", "re2"})
+                in(p, p);
         } else {
             in("we", "we");
             in("waddr", "waddr");
             in("wdata", "wdata");
-            if (pinExpr(it, "raddr")) in("raddr", "raddr1"); else in("raddr1", "raddr1");
+            if (pinExpr(it, "raddr"))
+                in("raddr", "raddr1");
+            else
+                in("raddr1", "raddr1");
             in("raddr2", "raddr2");
         }
         // read ports
-        struct RP { const char* data; const char* re; const char* name; };
-        const RP ports[] = {{"rdata", "re", "rdata1"}, {"rdata1", "re1", "rdata1"}, {"rdata2", "re2", "rdata2"}};
+        struct RP {
+            const char* data;
+            const char* re;
+            const char* name;
+        };
+        const RP ports[] = {
+            {"rdata", "re", "rdata1"}, {"rdata1", "re1", "rdata1"}, {"rdata2", "re2", "rdata2"}};
         for (const RP& rp : ports) {
             const ExprP de = pinExpr(it, rp.data);
             if (!de) continue;
@@ -1616,8 +1793,10 @@ private:
             if (tdp) {
                 const char* enp = rp.name[5] == '1' ? "en1" : "en2";
                 const char* wep = rp.name[5] == '1' ? "we1" : "we2";
-                const int en = pinExpr(it, enp) ? m_bl.redOr(eval(pinExpr(it, enp), sc)) : m_bl.T();
-                const int we = pinExpr(it, wep) ? m_bl.redOr(eval(pinExpr(it, wep), sc)) : m_bl.F();
+                const int en
+                    = pinExpr(it, enp) ? m_bl.redOr(eval(pinExpr(it, enp), sc)) : m_bl.T();
+                const int we
+                    = pinExpr(it, wep) ? m_bl.redOr(eval(pinExpr(it, wep), sc)) : m_bl.F();
                 re = m_bl.AND(en, m_bl.NOT(we));
             } else if (pinExpr(it, rp.re)) {
                 re = m_bl.redOr(eval(pinExpr(it, rp.re), sc));
@@ -1645,20 +1824,31 @@ private:
                 if (nb->drivers[k] == 0) nb->drivers[k] = 1;
         };
         switch (e->kind) {
-        case Expr::IDENT: { NetBits* nb = base(e); if (nb) mark(nb, 0, nb->width); return; }
-        case Expr::CONCAT: for (const ExprP& a : e->args) markDriven(a, sc); return;
+        case Expr::IDENT: {
+            NetBits* nb = base(e);
+            if (nb) mark(nb, 0, nb->width);
+            return;
+        }
+        case Expr::CONCAT:
+            for (const ExprP& a : e->args) markDriven(a, sc);
+            return;
         case Expr::BITSEL:
             if (const NetBits* const ap = arrayNetOf(e, sc)) {
                 if (isConstExpr(e->args[1], sc)) {
-                    mark(base(e->args[0]), (constOf(e->args[1], sc) - ap->elemLo) * ap->elemW, ap->elemW);
+                    mark(base(e->args[0]), (constOf(e->args[1], sc) - ap->elemLo) * ap->elemW,
+                         ap->elemW);
                     return;
                 }
                 break;
             }
-            if (isConstExpr(e->args[1], sc)) { mark(base(e->args[0]), constOf(e->args[1], sc) - baseLsb(e->args[0], sc), 1); return; }
+            if (isConstExpr(e->args[1], sc)) {
+                mark(base(e->args[0]), constOf(e->args[1], sc) - baseLsb(e->args[0], sc), 1);
+                return;
+            }
             break;
         case Expr::PARTSEL:
-            mark(base(e->args[0]), std::min(e->ival, e->ival2) - baseLsb(e->args[0], sc), std::abs(e->ival - e->ival2) + 1);
+            mark(base(e->args[0]), std::min(e->ival, e->ival2) - baseLsb(e->args[0], sc),
+                 std::abs(e->ival - e->ival2) + 1);
             return;
         case Expr::PARTSEL_UP:
             if (isConstExpr(e->args[1], sc)) {
@@ -1670,21 +1860,26 @@ private:
             break;
         default: break;
         }
-        if (!e->args.empty()) { NetBits* nb = base(e->args[0]); if (nb) mark(nb, 0, nb->width); }
+        if (!e->args.empty()) {
+            NetBits* nb = base(e->args[0]);
+            if (nb) mark(nb, 0, nb->width);
+        }
     }
     static bool bbOutPin(const std::string& n) {
         return n.rfind("rdata", 0) == 0 || n == "q" || n == "Q" || n.rfind("out", 0) == 0
-               || n == "O" || n.rfind("dout", 0) == 0 || n == "cout" || n == "valid"
-               || n == "full" || n == "empty" || n == "count" || n == "tc" || n == "pulse"
-               || n == "LOCKED" || n.rfind("CLKOUT", 0) == 0 || n == "CLKFBOUT" || n == "ODIV2";
+               || n == "O" || n.rfind("dout", 0) == 0 || n == "cout" || n == "valid" || n == "full"
+               || n == "empty" || n == "count" || n == "tc" || n == "pulse" || n == "LOCKED"
+               || n.rfind("CLKOUT", 0) == 0 || n == "CLKFBOUT" || n == "ODIV2";
     }
-    void blackBox(const Item& it, const Scope& sc, const std::string& inst, const Module* defp = nullptr) {
+    void blackBox(const Item& it, const Scope& sc, const std::string& inst,
+                  const Module* defp = nullptr) {
         // Directions: from a (* blackbox *) declaration when there is one, else
         // the convention of the primitive libraries (pins named rdata*/q*/out*/O/Q
         // are outputs, everything else is input).
         auto isOutPin = [defp](const std::string& n) -> bool {
             if (defp) {
-                for (const NetDecl& d : defp->nets) if (d.name == n) return d.dir >= 2;
+                for (const NetDecl& d : defp->nets)
+                    if (d.name == n) return d.dir >= 2;
                 return false;
             }
             return bbOutPin(n);
@@ -1705,7 +1900,6 @@ private:
         }
     }
 };
-
 
 }  // namespace svs_netlist
 #endif

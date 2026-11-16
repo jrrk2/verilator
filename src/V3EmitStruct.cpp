@@ -53,22 +53,23 @@
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
-#include "V3EmitStruct.h"
 #include "verilated_config.h"  // VERILATOR_VERSION_INTEGER
-#include "V3Os.h"
+
+#include "V3EmitStruct.h"
 
 #include "V3Global.h"
+#include "V3Os.h"
 
 #include <algorithm>
+#include <deque>
 #include <fstream>
-#include <unistd.h>
+#include <functional>
 #include <iomanip>
 #include <map>
-#include <deque>
-#include <functional>
 #include <memory>
 #include <set>
 #include <sstream>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -220,13 +221,17 @@ struct Env final {
     void eraseNextSlices(const std::string& base) {
         const std::string pfx = base + "[";
         bool any = false;
-        for (auto it = next.lower_bound(pfx); it != next.end() && it->first.compare(0, pfx.size(), pfx) == 0;) {
+        for (auto it = next.lower_bound(pfx);
+             it != next.end() && it->first.compare(0, pfx.size(), pfx) == 0;) {
             it = next.erase(it);
             any = true;
         }
-        if (any) order.erase(std::remove_if(order.begin(), order.end(),
-                                            [&](const std::string& k) { return k.compare(0, pfx.size(), pfx) == 0; }),
-                             order.end());
+        if (any)
+            order.erase(std::remove_if(order.begin(), order.end(),
+                                       [&](const std::string& k) {
+                                           return k.compare(0, pfx.size(), pfx) == 0;
+                                       }),
+                        order.end());
     }
 };
 
@@ -302,7 +307,8 @@ class StructModule final {
     // Operator cells already built, by primitive, width and operand text:
     // nets are single-assignment, so the same key is the same value
     std::unordered_map<std::string, SExpr> m_opCache;
-    std::unordered_map<std::string, std::pair<const AstVar*, size_t>> m_readPorts;  // rdata ident -> (mem, port)
+    std::unordered_map<std::string, std::pair<const AstVar*, size_t>>
+        m_readPorts;  // rdata ident -> (mem, port)
     std::vector<SDeferredDff> m_deferred;
     // Procedural context
     bool m_seq = false;
@@ -362,7 +368,8 @@ class StructModule final {
     // block, is a bus of wires or registers whatever its size.
     bool arrayCannotBeRam(const AstVar* varp) const {
         const auto inInitial = [](const AstNode* np) {
-            for (const AstNode* up = parentOf(np); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+            for (const AstNode* up = parentOf(np); up && !VN_IS(up, NodeModule);
+                 up = parentOf(up)) {
                 if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic))
                     return true;
             }
@@ -383,16 +390,19 @@ class StructModule final {
             if (found) return;
             const AstNode* lhs = ap->lhsp();
             while (VN_IS(lhs, ArraySel) || VN_IS(lhs, Sel)) {
-                lhs = VN_IS(lhs, ArraySel) ? VN_AS(lhs, ArraySel)->fromp() : VN_AS(lhs, Sel)->fromp();
+                lhs = VN_IS(lhs, ArraySel) ? VN_AS(lhs, ArraySel)->fromp()
+                                           : VN_AS(lhs, Sel)->fromp();
             }
             const AstNodeVarRef* const rp = VN_CAST(lhs, NodeVarRef);
             if (!rp || rp->varp() != varp || inInitial(ap)) return;
-            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule);
+                 up = parentOf(up)) {
                 const AstAlways* const alwaysp = VN_CAST(up, Always);
                 if (!alwaysp) continue;
                 const AstSenTree* const stp = alwaysp->sentreep();
                 if (stp) {
-                    for (const AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
+                    for (const AstSenItem* ip = stp->sensesp(); ip;
+                         ip = VN_AS(ip->nextp(), SenItem)) {
                         if (ip->edgeType() == VEdgeType::ET_POSEDGE
                             || ip->edgeType() == VEdgeType::ET_NEGEDGE) {
                             return;
@@ -424,11 +434,13 @@ class StructModule final {
             if (!rp || rp->varp() != varp) return;
             bool inLoop = false, initial = false;
             const AstNode* procp = nullptr;
-            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule); up = parentOf(up)) {
+            for (const AstNode* up = parentOf(ap); up && !VN_IS(up, NodeModule);
+                 up = parentOf(up)) {
                 if (VN_IS(up, Loop) || VN_IS(up, Repeat)) inLoop = true;
                 if (!procp && VN_IS(up, NodeProcedure)) procp = up;
                 // an initial block sets the contents, it is not a write port (a ROM's table)
-                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic)) initial = true;
+                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic))
+                    initial = true;
             }
             if (initial) return;
             if (inLoop) {
@@ -445,7 +457,10 @@ class StructModule final {
                 bool exclusive = false;
                 for (; split < std::min(o.size(), w.size()); ++split) {
                     if (o[split].first != w[split].first) break;
-                    if (o[split].second != w[split].second) { exclusive = true; break; }
+                    if (o[split].second != w[split].second) {
+                        exclusive = true;
+                        break;
+                    }
                 }
                 if (exclusive) {
                     o.resize(split);
@@ -473,12 +488,15 @@ class StructModule final {
             const AstNode* const upp = headp->backp();
             if (!upp || VN_IS(upp, NodeModule)) break;
             if (const AstNodeIf* const ifp = VN_CAST(upp, NodeIf)) {
-                if (headp == ifp->thensp()) path.emplace_back(ifp, false);
-                else if (headp == ifp->elsesp()) path.emplace_back(ifp, true);
+                if (headp == ifp->thensp())
+                    path.emplace_back(ifp, false);
+                else if (headp == ifp->elsesp())
+                    path.emplace_back(ifp, true);
             } else if (const AstCaseItem* const itemp = VN_CAST(upp, CaseItem)) {
                 if (headp == itemp->stmtsp()) {
                     const AstNode* listp = itemp;
-                    while (listp->backp() && listp->backp()->nextp() == listp) listp = listp->backp();
+                    while (listp->backp() && listp->backp()->nextp() == listp)
+                        listp = listp->backp();
                     if (const AstCase* const cp = VN_CAST(listp->backp(), Case)) {
                         BranchPath arms;  // outermost first
                         for (const AstCaseItem* ip = cp->itemsp(); ip && ip != itemp;
@@ -504,8 +522,10 @@ class StructModule final {
     }
     static constexpr int MAX_UNROLL = 1024;  // sv_transform.max_unroll_iterations
     static constexpr int MAX_INLINE_DEPTH = 16;
-    static constexpr int MAX_ELEMENT_MUX = 256;  // arr[i] on a packed array: mux chain up to this many elements
-    static constexpr int MAX_SLICE_SLOTS = 1024;  // dynamic slice writes expanded to per-slot enables up to this
+    static constexpr int MAX_ELEMENT_MUX
+        = 256;  // arr[i] on a packed array: mux chain up to this many elements
+    static constexpr int MAX_SLICE_SLOTS
+        = 1024;  // dynamic slice writes expanded to per-slot enables up to this
 
 public:
     StructModule(AstNodeModule* modp, bool xilinx, bool wideMem, bool report)
@@ -662,8 +682,8 @@ private:
         return out;
     }
     SExpr genUnary(const std::string& prim, const SExpr& a, int opWidth, int outWidth) {
-        const std::string key = prim + "|" + std::to_string(opWidth) + "|"
-                                + std::to_string(outWidth) + "|" + a.text;
+        const std::string key
+            = prim + "|" + std::to_string(opWidth) + "|" + std::to_string(outWidth) + "|" + a.text;
         const auto cit = m_opCache.find(key);
         if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(outWidth);
@@ -677,8 +697,8 @@ private:
     SExpr genMux(const SExpr& sel, const SExpr& in0, const SExpr& in1, int width) {
         if (in0.text == in1.text) return in0;
         if (sel.hasVal) return sel.val ? in1 : in0;
-        const std::string key = "mux2|" + std::to_string(width) + "|" + sel.text + "|"
-                                + in0.text + "|" + in1.text;
+        const std::string key
+            = "mux2|" + std::to_string(width) + "|" + sel.text + "|" + in0.text + "|" + in1.text;
         const auto cit = m_opCache.find(key);
         if (cit != m_opCache.end()) return cit->second;
         const SExpr out = newWire(width);
@@ -725,7 +745,8 @@ private:
     static bool writeImpliesRead(const std::vector<std::pair<std::string, bool>>& rd,
                                  const std::vector<std::pair<std::string, bool>>& wr) {
         if (rd.size() > wr.size()) return false;
-        for (size_t i = 0; i < rd.size(); ++i) if (rd[i] != wr[i]) return false;
+        for (size_t i = 0; i < rd.size(); ++i)
+            if (rd[i] != wr[i]) return false;
         return true;
     }
     void genLatch(const std::string& q, const std::vector<std::string>& qRefs, const SExpr& en,
@@ -799,7 +820,8 @@ private:
     static bool isUnpacked(const AstNodeExpr* ep) {
         return ep->dtypep() && VN_IS(ep->dtypep()->skipRefp(), UnpackArrayDType);
     }
-    // x[i][j]: the variable and its indexes, outermost first (nullptr unless the base is a variable)
+    // x[i][j]: the variable and its indexes, outermost first (nullptr unless the base is a
+    // variable)
     static const AstVarRef* arrayChain(AstNodeExpr* ep, std::vector<AstNodeExpr*>& idx) {
         while (AstArraySel* const ap = VN_CAST(ep, ArraySel)) {
             idx.insert(idx.begin(), ap->bitp());
@@ -822,7 +844,8 @@ private:
         if (varp->varType() == VVarType::GENVAR) return;
         std::string name = sanitizeName(m_genPrefix + varp->prettyName());
         if (varp->isParam()) {
-            if (m_declNames.count(name)) return;  // same localparam in several scopes: folded anyway
+            if (m_declNames.count(name))
+                return;  // same localparam in several scopes: folded anyway
         } else {
             // a procedural local shadowing a module-level name gets a scope suffix
             int n = 0;
@@ -863,7 +886,8 @@ private:
             // or loaded at constant addresses as well as written by the core)
             // is registers, as a small array is, unless it is too big for that
             bool twoBlocks = false;
-            const int ports = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
+            const int ports
+                = bits > MEMORY_THRESHOLD_BITS ? arrayWriteSites(varp, depth, &twoBlocks) : 0;
             const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
             if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS && !drivenByInstance(varp)
                 && !arrayCannotBeRam(varp) && (dims.size() < 2 || arrayAddressable(dims))
@@ -915,7 +939,8 @@ private:
             int dw = 0;
             for (AstNode* sp = m_modp->stmtsp(); sp; sp = sp->nextp()) {
                 if (const AstVar* const pv = VN_CAST(sp, Var)) {
-                    if (pv->isParam() && (pv->name() == "DATA_WIDTH" || pv->name() == "DATAWIDTH")) {
+                    if (pv->isParam()
+                        && (pv->name() == "DATA_WIDTH" || pv->name() == "DATAWIDTH")) {
                         if (const AstConst* const cp = VN_CAST(pv->valuep(), Const)) {
                             dw = cp->toSInt();
                         }
@@ -932,8 +957,9 @@ private:
                 }
             }
             if (dw > 0) {
-                warn("wide packed array " + name + " inferred as memory " + std::to_string(elemWidth / dw)
-                     + "x" + std::to_string(dw) + " (--struct-only-wide-packed-mem)");
+                warn("wide packed array " + name + " inferred as memory "
+                     + std::to_string(elemWidth / dw) + "x" + std::to_string(dw)
+                     + " (--struct-only-wide-packed-mem)");
                 SMem m;
                 m.name = name;
                 m.depth = elemWidth / dw;
@@ -1027,8 +1053,7 @@ private:
             } else if (VN_IS(nodep, Final)) {
                 warnNode(nodep, "final block dropped (not synthesisable)");
             } else if (VN_IS(nodep, Var) || VN_IS(nodep, NodeFTask) || VN_IS(nodep, Typedef)
-                       || VN_IS(nodep, Comment) || VN_IS(nodep, Pragma)
-                       || VN_IS(nodep, Port)) {
+                       || VN_IS(nodep, Comment) || VN_IS(nodep, Pragma) || VN_IS(nodep, Port)) {
                 // declarations handled in pass 1; functions inlined at use
             } else if (VN_IS(nodep, NodeCoverOrAssert) || VN_IS(nodep, AlwaysObserved)
                        || VN_IS(nodep, AlwaysReactive)) {
@@ -1052,7 +1077,8 @@ private:
                 if (mp && fp && fp->num().isString() && m_mems.count(mp->varp())
                     && VN_IS(rp, ReadMem)) {
                     std::string f = fp->num().ascii(false, false);
-                    if (f.size() >= 2 && f.front() == '"' && f.back() == '"') f = f.substr(1, f.size() - 2);
+                    if (f.size() >= 2 && f.front() == '"' && f.back() == '"')
+                        f = f.substr(1, f.size() - 2);
                     m_mems[mp->varp()].initFile = f;
                     continue;
                 }
@@ -1118,9 +1144,15 @@ private:
         int depth = 0;
         bool failed = false;
         const AstNode* lastp = nullptr;  // the node being interpreted (for the give-up report)
-        uint64_t fail() { failed = true; return 0; }
-        explicit InitEval(StructModule& s) : sm{s} {}
-        static uint64_t mask(uint64_t v, int w) { return w >= 64 ? v : (v & ((uint64_t{1} << w) - 1)); }
+        uint64_t fail() {
+            failed = true;
+            return 0;
+        }
+        explicit InitEval(StructModule& s)
+            : sm{s} {}
+        static uint64_t mask(uint64_t v, int w) {
+            return w >= 64 ? v : (v & ((uint64_t{1} << w) - 1));
+        }
         static int64_t sext(uint64_t v, int w) {
             if (w >= 64 || w <= 0) return static_cast<int64_t>(v);
             const uint64_t m = uint64_t{1} << (w - 1);
@@ -1156,7 +1188,8 @@ private:
                 if (it == scalars.end()) {
                     // never written here: its declaration value, else 0
                     if (const AstConst* const ip = VN_CAST(vp->varp()->valuep(), Const)) {
-                        if (!ip->num().isFourState() && ip->num().width() <= 64) return mask(ip->num().toUQuad(), w);
+                        if (!ip->num().isFourState() && ip->num().width() <= 64)
+                            return mask(ip->num().toUQuad(), w);
                     }
                     return 0;
                 }
@@ -1176,14 +1209,16 @@ private:
                 if (lsb >= 64) return 0;
                 return mask(from >> lsb, sp->widthConst());
             }
-            if (AstCond* const cp = VN_CAST(ep, Cond)) return mask(eval(cp->condp()) ? eval(cp->thenp()) : eval(cp->elsep()), w);
+            if (AstCond* const cp = VN_CAST(ep, Cond))
+                return mask(eval(cp->condp()) ? eval(cp->thenp()) : eval(cp->elsep()), w);
             if (VN_IS(ep, CReset)) return 0;
             if (AstFuncRef* const fp = VN_CAST(ep, FuncRef)) {
                 // a function call: bind the arguments to the formals, run the
                 // body, read the return variable; the callee's variables are
                 // saved and restored so recursion and nesting work
                 AstNodeFTask* const taskp = fp->taskp();
-                if (!taskp || taskp->dpiImport() || taskp->prototype() || ++depth > 64) return fail();
+                if (!taskp || taskp->dpiImport() || taskp->prototype() || ++depth > 64)
+                    return fail();
                 std::vector<AstVar*> formals, locals;
                 sm.collectFtaskVars(taskp->stmtsp(), formals, locals);
                 AstVar* const retp = VN_CAST(taskp->fvarp(), Var);
@@ -1191,25 +1226,31 @@ private:
                 size_t pos = 0;
                 for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg)) {
                     size_t idx = pos++;
-                    if (!ap->name().empty()) for (size_t i = 0; i < formals.size(); ++i) if (formals[i]->name() == ap->name()) idx = i;
+                    if (!ap->name().empty())
+                        for (size_t i = 0; i < formals.size(); ++i)
+                            if (formals[i]->name() == ap->name()) idx = i;
                     if (idx < argv.size() && ap->exprp()) argv[idx] = eval(ap->exprp());
                 }
                 std::vector<std::pair<const AstVar*, std::pair<bool, uint64_t>>> saved;
                 auto save = [&](const AstVar* v) {
                     const auto it = scalars.find(v);
-                    saved.push_back({v, {it != scalars.end(), it != scalars.end() ? it->second : 0}});
+                    saved.push_back(
+                        {v, {it != scalars.end(), it != scalars.end() ? it->second : 0}});
                 };
                 for (AstVar* v : formals) save(v);
                 for (AstVar* v : locals) save(v);
                 if (retp) save(retp);
-                for (size_t i = 0; i < formals.size(); ++i) scalars[formals[i]] = mask(argv[i], formals[i]->width());
+                for (size_t i = 0; i < formals.size(); ++i)
+                    scalars[formals[i]] = mask(argv[i], formals[i]->width());
                 for (AstVar* v : locals) scalars[v] = 0;
                 if (retp) scalars[retp] = 0;
                 run(taskp->stmtsp());
                 const uint64_t r = retp ? scalars[retp] : 0;
                 for (const auto& sv : saved) {
-                    if (sv.second.first) scalars[sv.first] = sv.second.second;
-                    else scalars.erase(sv.first);
+                    if (sv.second.first)
+                        scalars[sv.first] = sv.second.second;
+                    else
+                        scalars.erase(sv.first);
                 }
                 --depth;
                 return failed ? 0 : mask(r, w);
@@ -1253,7 +1294,9 @@ private:
                 if (VN_IS(bp, Mul) || VN_IS(bp, MulS)) return mask(a * b, w);
                 if (VN_IS(bp, ShiftL)) return b >= 64 ? 0 : mask(a << b, w);
                 if (VN_IS(bp, ShiftR)) return b >= 64 ? 0 : mask(a >> b, w);
-                if (VN_IS(bp, ShiftRS)) return b >= 64 ? mask(static_cast<uint64_t>(sext(a, aw) < 0 ? -1 : 0), w) : mask(static_cast<uint64_t>(sext(a, aw) >> b), w);
+                if (VN_IS(bp, ShiftRS))
+                    return b >= 64 ? mask(static_cast<uint64_t>(sext(a, aw) < 0 ? -1 : 0), w)
+                                   : mask(static_cast<uint64_t>(sext(a, aw) >> b), w);
                 if (VN_IS(bp, Eq) || VN_IS(bp, EqCase)) return a == b;
                 if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase)) return a != b;
                 if (VN_IS(bp, Lt)) return a < b;
@@ -1280,10 +1323,14 @@ private:
             }
             if (AstArraySel* const ap = VN_CAST(lhsp, ArraySel)) {
                 AstVarRef* const vp = VN_CAST(ap->fromp(), VarRef);
-                if (!vp) { failed = true; return; }
+                if (!vp) {
+                    failed = true;
+                    return;
+                }
                 std::vector<uint64_t>& arr = arrayOf(vp->varp());
                 const long long i = static_cast<long long>(eval(ap->bitp())) - arrayLo(vp->varp());
-                if (i >= 0 && i < static_cast<long long>(arr.size())) arr[i] = mask(val, lhsp->width());
+                if (i >= 0 && i < static_cast<long long>(arr.size()))
+                    arr[i] = mask(val, lhsp->width());
                 written.insert(vp->varp());
                 return;
             }
@@ -1296,12 +1343,18 @@ private:
                 assign(sp->fromp(), (old & ~m) | ((val << lsb) & m));
                 return;
             }
-            { failed = true; return; }
+            {
+                failed = true;
+                return;
+            }
         }
         void run(AstNode* nodep) {
             for (; nodep; nodep = nodep->nextp()) {
                 if (!failed) lastp = nodep;
-                if (failed || ++steps > 20000000) { failed = true; return; }
+                if (failed || ++steps > 20000000) {
+                    failed = true;
+                    return;
+                }
                 if (VN_IS(nodep, Comment)) continue;
                 if (AstNodeAssign* const ap = VN_CAST(nodep, NodeAssign)) {
                     assign(ap->lhsp(), eval(ap->rhsp()));
@@ -1309,17 +1362,24 @@ private:
                     run(bp->stmtsp());
                 } else if (AstInitialStaticStmt* const sp = VN_CAST(nodep, InitialStaticStmt)) {
                     run(sp->stmtsp());  // a local's declaration-time value
-                } else if (AstInitialAutomaticStmt* const sp = VN_CAST(nodep, InitialAutomaticStmt)) {
+                } else if (AstInitialAutomaticStmt* const sp
+                           = VN_CAST(nodep, InitialAutomaticStmt)) {
                     run(sp->stmtsp());
                 } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
                     run(eval(ip->condp()) ? ip->thensp() : ip->elsesp());  // whole branch list
                 } else if (AstLoop* const lp = VN_CAST(nodep, Loop)) {
                     for (long long iter = 0;; ++iter) {
-                        if (failed || iter > 1000000) { failed = true; return; }
+                        if (failed || iter > 1000000) {
+                            failed = true;
+                            return;
+                        }
                         bool stop = false;
                         for (AstNode* sp = lp->stmtsp(); sp; sp = sp->nextp()) {
                             if (AstLoopTest* const tp = VN_CAST(sp, LoopTest)) {
-                                if (!eval(tp->condp())) { stop = true; break; }
+                                if (!eval(tp->condp())) {
+                                    stop = true;
+                                    break;
+                                }
                             } else {
                                 runOne(sp);
                             }
@@ -1328,7 +1388,10 @@ private:
                     }
                 } else if (VN_IS(nodep, Var)) {
                 } else {
-                    { failed = true; return; }
+                    {
+                        failed = true;
+                        return;
+                    }
                 }
             }
         }
@@ -1346,17 +1409,29 @@ private:
                 run(eval(ip->condp()) ? ip->thensp() : ip->elsesp());
             } else if (VN_IS(nodep, Loop)) {
                 AstNode* const nextp = nodep->nextp();
-                if (!nextp) { run(nodep); return; }
+                if (!nextp) {
+                    run(nodep);
+                    return;
+                }
                 // run the loop alone: temporarily its own list
-                struct Detach { AstNode* n; AstNode* next; };
+                struct Detach {
+                    AstNode* n;
+                    AstNode* next;
+                };
                 // simplest: interpret the loop node directly
                 AstLoop* const lp = VN_AS(nodep, Loop);
                 for (long long iter = 0;; ++iter) {
-                    if (iter > 1000000) { failed = true; return; }
+                    if (iter > 1000000) {
+                        failed = true;
+                        return;
+                    }
                     bool stop = false;
                     for (AstNode* sp = lp->stmtsp(); sp; sp = sp->nextp()) {
                         if (AstLoopTest* const tp = VN_CAST(sp, LoopTest)) {
-                            if (!eval(tp->condp())) { stop = true; break; }
+                            if (!eval(tp->condp())) {
+                                stop = true;
+                                break;
+                            }
                         } else {
                             runOne(sp);
                         }
@@ -1364,7 +1439,10 @@ private:
                     if (stop) break;
                 }
             } else {
-                { failed = true; return; }
+                {
+                    failed = true;
+                    return;
+                }
             }
         }
     };
@@ -1374,8 +1452,8 @@ private:
         ev.run(stmtsp);
         if (ev.failed) {
             if (std::getenv("STRUCT_DEBUG_INIT") && ev.lastp)
-                std::cerr << "struct: initial-block interpreter gave up at " << ev.lastp->typeName()
-                          << " " << ev.lastp->fileline()->ascii() << "\n";
+                std::cerr << "struct: initial-block interpreter gave up at "
+                          << ev.lastp->typeName() << " " << ev.lastp->fileline()->ascii() << "\n";
             return false;
         }
         bool any = false;
@@ -1385,7 +1463,8 @@ private:
             SMem& m = mit->second;
             const std::vector<uint64_t>& arr = ev.arrayOf(varp);
             m.initWords.assign(m.depth, 0);
-            for (int i = 0; i < m.depth && i < static_cast<int>(arr.size()); ++i) m.initWords[i] = arr[i];
+            for (int i = 0; i < m.depth && i < static_cast<int>(arr.size()); ++i)
+                m.initWords[i] = arr[i];
             m.hasInitWords = true;
             any = true;
         }
@@ -1416,11 +1495,14 @@ private:
         // up there on an FPGA: the value goes onto its register cells as
         // INIT_VAL (the slice a cell holds, when the register was split)
         for (const auto& kv : m_staticInits) {
-            if (!written.count(kv.first) || kv.second->num().width() > 64 || kv.second->num().isFourState()) continue;
+            if (!written.count(kv.first) || kv.second->num().width() > 64
+                || kv.second->num().isFourState())
+                continue;
             const uint64_t v = kv.second->num().toUQuad();
             if (!v) continue;
             for (SItem& it : m_items) {
-                if (it.kind != SItem::CELL || (it.prim != "dff_en" && it.prim != "dffn_en")) continue;
+                if (it.kind != SItem::CELL || (it.prim != "dff_en" && it.prim != "dffn_en"))
+                    continue;
                 for (const SPin& pin : it.pins) {
                     if (pin.name != "q") continue;
                     const std::string& e = pin.expr;
@@ -1431,9 +1513,16 @@ private:
                     } else if (e.compare(0, kv.first.size() + 1, kv.first + "[") == 0) {
                         int a = 0, b = 0;
                         const char* rest = e.c_str() + kv.first.size() + 1;
-                        if (std::sscanf(rest, "%d +: %d]", &a, &b) == 2) { lo = a; w = b; }
-                        else if (std::sscanf(rest, "%d:%d]", &a, &b) == 2) { lo = std::min(a, b); w = std::abs(a - b) + 1; }
-                        else if (std::sscanf(rest, "%d]", &a) == 1) { lo = a; w = 1; }
+                        if (std::sscanf(rest, "%d +: %d]", &a, &b) == 2) {
+                            lo = a;
+                            w = b;
+                        } else if (std::sscanf(rest, "%d:%d]", &a, &b) == 2) {
+                            lo = std::min(a, b);
+                            w = std::abs(a - b) + 1;
+                        } else if (std::sscanf(rest, "%d]", &a) == 1) {
+                            lo = a;
+                            w = 1;
+                        }
                     }
                     if (lo < 0) continue;
                     uint64_t part = lo >= 64 ? 0 : (v >> lo);
@@ -1445,7 +1534,8 @@ private:
         for (const auto& kv : m_staticInits) {
             if (written.count(kv.first)) continue;
             Env env;
-            warn("variable " + kv.first + " is only assigned by its declaration; treated as the constant "
+            warn("variable " + kv.first
+                 + " is only assigned by its declaration; treated as the constant "
                  + kv.second->num().ascii(true, true));
             addAssign(kv.first, lowerExpr(kv.second, env));
             written.insert(kv.first);
@@ -1514,7 +1604,8 @@ private:
             std::string str;
             for (int b = num.width() - 8; b >= 0; b -= 8) {
                 int ch = 0;
-                for (int k = 0; k < 8; ++k) if (num.bitIs1(b + k)) ch |= 1 << k;
+                for (int k = 0; k < 8; ++k)
+                    if (num.bitIs1(b + k)) ch |= 1 << k;
                 if (ch) str += static_cast<char>(ch);
             }
             return "\"" + str + "\"";
@@ -1529,7 +1620,8 @@ private:
         SItem it;
         it.kind = SItem::USERCELL;
         it.keep = true;
-        it.prim = cp->modp() ? V3EmitStruct::cellTypeName(cp->modp()) : sanitizeName(cp->modName());
+        it.prim
+            = cp->modp() ? V3EmitStruct::cellTypeName(cp->modp()) : sanitizeName(cp->modName());
         it.inst = sanitizeName(m_genPrefix + cp->prettyName());
         // A black box keeps its parameters (RAMB INIT_*, MMCM settings): after
         // V3Param they live on the specialised module as parameter vars
@@ -1554,7 +1646,8 @@ private:
             AstNodeExpr* const ep = VN_CAST(pinp->exprp(), NodeExpr);
             if (!ep) continue;
             const bool isOut = pinp->modVarp() && pinp->modVarp()->direction().isWritable();
-            if (isUnpacked(ep) && pinp->modVarp() && !arraysAlign(ep->dtypep(), pinp->modVarp()->dtypep())) {
+            if (isUnpacked(ep) && pinp->modVarp()
+                && !arraysAlign(ep->dtypep(), pinp->modVarp()->dtypep())) {
                 errNode(pinp, "array on pin " + pinName + " has another shape or direction");
                 continue;
             }
@@ -1571,7 +1664,8 @@ private:
                 }
             }
             if (isUnpacked(ep)) {
-                // .PIN(x) or .PIN(x[i]) with an array: an array of wires for the pin, joined to its elements
+                // .PIN(x) or .PIN(x[i]) with an array: an array of wires for the pin, joined to
+                // its elements
                 std::vector<ArrayDim> dims = arrayDims(ep->dtypep());
                 int n = 1;
                 for (const ArrayDim& d : dims) n *= d.size;
@@ -1807,7 +1901,8 @@ private:
         // posedge v[k] (var null, the select in exprs): a bit of a vector or
         // array can clock a register but is never matched as a reset.
         std::vector<std::pair<const AstVar*, bool>> edges;  // (var, negedge)
-        std::vector<AstNodeExpr*> edgeExprs;  // parallel to edges: the item when not a plain signal
+        std::vector<AstNodeExpr*>
+            edgeExprs;  // parallel to edges: the item when not a plain signal
         size_t constEdges = 0;
         int levels = 0;
         if (AstSenTree* const stp = ap->sentreep()) {
@@ -1888,7 +1983,8 @@ private:
         std::vector<AstNodeExpr*> clockExprs;
         for (size_t i = 0; i < edges.size(); ++i) {
             bool isRst = false;
-            for (const ResetLink& r : asyncResets) isRst |= edges[i].first && r.varp == edges[i].first;
+            for (const ResetLink& r : asyncResets)
+                isRst |= edges[i].first && r.varp == edges[i].first;
             if (!isRst) {
                 clocks.push_back(edges[i]);
                 clockExprs.push_back(edgeExprs[i]);
@@ -1905,8 +2001,7 @@ private:
             c.rstCondp = asyncResets[0].condp;
             c.rstNegated = asyncResets[0].negated;
             for (size_t i = 1; i < asyncResets.size(); ++i) {
-                warn("set/reset FF: secondary async control '"
-                     + varName(asyncResets[i].varp)
+                warn("set/reset FF: secondary async control '" + varName(asyncResets[i].varp)
                      + "' recognised but not wired into the register cell");
             }
             return c;
@@ -2026,7 +2121,8 @@ private:
             if (key.find('[') != std::string::npos || !env.next.count(key)) continue;
             const std::string pfx = key + "[";
             bool any = false;
-            for (auto it = env.next.lower_bound(pfx); it != env.next.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
+            for (auto it = env.next.lower_bound(pfx);
+                 it != env.next.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
                 absorbedSlices.insert(it->first);
                 any = true;
             }
@@ -2089,13 +2185,15 @@ private:
                         // reset branch holds: no reset on this register
                         d = rit->second.in0;
                     } else if (rit != m_muxes.end() && m_rstNegated
-                               && rit->second.sel.text == m_rstRaw.text && rit->second.in0.hasVal) {
+                               && rit->second.sel.text == m_rstRaw.text
+                               && rit->second.in0.hasVal) {
                         // `q <= rst_n ? x : C`: the reset is the mux's other arm
                         resetVal = rit->second.in0.val;
                         d = rit->second.in1;
                         useRst = true;
                     } else if (rit != m_muxes.end() && m_rstNegated
-                               && rit->second.sel.text == m_rstRaw.text && rit->second.in0.text == key) {
+                               && rit->second.sel.text == m_rstRaw.text
+                               && rit->second.in0.text == key) {
                         d = rit->second.in1;
                     }
                 }
@@ -2128,8 +2226,10 @@ private:
                 if (!useRst) {
                     const auto mit = m_muxes.find(d.text);
                     const bool isMux = mit != m_muxes.end();
-                    const bool rd0 = isMux && mit->second.in0.isIdent && m_readPorts.count(mit->second.in0.text);
-                    const bool rd1 = isMux && mit->second.in1.isIdent && m_readPorts.count(mit->second.in1.text);
+                    const bool rd0 = isMux && mit->second.in0.isIdent
+                                     && m_readPorts.count(mit->second.in0.text);
+                    const bool rd1 = isMux && mit->second.in1.isIdent
+                                     && m_readPorts.count(mit->second.in1.text);
                     if (rd0 != rd1) {
                         const SExpr sel = mit->second.sel;
                         const SExpr rd = rd0 ? mit->second.in0 : mit->second.in1;
@@ -2155,7 +2255,9 @@ private:
                             genDff(otherQ.text, {otherQ.text}, other, en, width, 0, false);
                             SExpr rawE = identExpr(raw, width);
                             rawE.refs = {raw};
-                            addAssign(key, genMux(selQ, rd0 ? rawE : otherQ, rd0 ? otherQ : rawE, width), qRefs);
+                            addAssign(
+                                key, genMux(selQ, rd0 ? rawE : otherQ, rd0 ? otherQ : rawE, width),
+                                qRefs);
                             continue;
                         }
                     }
@@ -2262,7 +2364,9 @@ private:
         m_wires.push_back(d);
         m_widths[name] = width;
     }
-    static std::string memRdName(const std::string& mem, size_t i) { return mem + "_rdata" + std::to_string(i + 1); }
+    static std::string memRdName(const std::string& mem, size_t i) {
+        return mem + "_rdata" + std::to_string(i + 1);
+    }
     // A memory written in parts (byte lanes) becomes one memory per lane:
     // the boundaries of every write, each lane with its slice of each write
     // that covers it and of the initial image, and the read ports put back
@@ -2288,9 +2392,12 @@ private:
             img = true;
         } else if (!m.initFile.empty()) {
             img = readHexWords(m.initFile, words);
-            if (!img) v3error("memory " << m.name << ": cannot read " << m.initFile << " to split it into lanes");
+            if (!img)
+                v3error("memory " << m.name << ": cannot read " << m.initFile
+                                  << " to split it into lanes");
         }
-        if (img && m.dataWidth > 64) v3error("memory " << m.name << ": lanes of an initialised memory wider than 64 bits");
+        if (img && m.dataWidth > 64)
+            v3error("memory " << m.name << ": lanes of an initialised memory wider than 64 bits");
         const size_t nr = m.readIdx.size();
         // registered-output reads carry over to the lanes only if every lane can keep
         // them; a registered-address read does not stand in the way, as each lane
@@ -2329,7 +2436,8 @@ private:
                 L.hasInitWords = true;
                 for (const uint64_t v : words) L.initWords.push_back(maskTo(v >> lo, w));
             }
-            for (size_t i = 0; i < nr; ++i) rdUses[memRdName(L.name, i)] = rdUses[memRdName(m.name, i)];
+            for (size_t i = 0; i < nr; ++i)
+                rdUses[memRdName(L.name, i)] = rdUses[memRdName(m.name, i)];
             lanes.push_back(&L);
         }
         for (SMem* const lp : lanes) {
@@ -2360,17 +2468,21 @@ private:
         };
         for (size_t i = 0; i < nr; ++i) {
             if (absorb && i < m.sync.size() && m.sync[i].used) {
-                addAssign(m.sync[i].q, concat([&](const SMem& L) { return L.sync[i].q; }), m.sync[i].qRefs);
+                addAssign(m.sync[i].q, concat([&](const SMem& L) { return L.sync[i].q; }),
+                          m.sync[i].qRefs);
                 continue;
             }
             declWire(memRdName(m.name, i), m.dataWidth);
-            addAssign(memRdName(m.name, i), concat([&](const SMem& L) { return memRdName(L.name, i); }));
+            addAssign(memRdName(m.name, i),
+                      concat([&](const SMem& L) { return memRdName(L.name, i); }));
             // the output registers held back for absorption go back in
             if (i < m.sync.size() && m.sync[i].used) {
                 for (const SDeferredDff& dd : m_deferred) {
                     if (dd.q != m.sync[i].q) continue;
                     SItem& it = addCell(dd.negedge ? "dffn_en" : "dff_en", newName("dff"));
-                    it.params = {{"WIDTH", std::to_string(dd.width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+                    it.params = {{"WIDTH", std::to_string(dd.width)},
+                                 {"RESET_VAL", "0"},
+                                 {"IS_ASYNC", "0"}};
                     pinIn(it, "clk", dd.clk);
                     it.pins.push_back({"rst", "1'b0"});
                     pinIn(it, "en", dd.en);
@@ -2420,7 +2532,8 @@ private:
             // address while `rdata` is also driven from the bypass below
             bool othersSync = true;
             for (size_t j = 0; j < m.readIdx.size(); ++j) {
-                if (j != i && !(j < m.sync.size() && m.sync[j].used) && !registeredAddress(m, j)) othersSync = false;
+                if (j != i && !(j < m.sync.size() && m.sync[j].used) && !registeredAddress(m, j))
+                    othersSync = false;
             }
             if (!othersSync) continue;
             std::string clkText, dText;
@@ -2448,7 +2561,8 @@ private:
             auto reg = [&](const SExpr& in, int width) {
                 const SExpr o = newWire(width);
                 SItem& it = addCell("dff_en", newName("dff"));
-                it.params = {{"WIDTH", std::to_string(width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+                it.params
+                    = {{"WIDTH", std::to_string(width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
                 pinIn(it, "clk", clk);
                 it.pins.push_back({"rst", "1'b0"});
                 pinIn(it, "en", constExpr(1, 1));
@@ -2459,9 +2573,9 @@ private:
             SExpr out = identExpr(q, m.dataWidth);
             out.refs = {q};
             for (const SMem::Write& w : m.writes) {
-                const SExpr hit = materialize(andBits(
-                    w.en, genBinary("comparator_eq", resize(w.idx, m.addrWidth, false),
-                                    resize(d, m.addrWidth, false), m.addrWidth, 1)));
+                const SExpr hit = materialize(
+                    andBits(w.en, genBinary("comparator_eq", resize(w.idx, m.addrWidth, false),
+                                            resize(d, m.addrWidth, false), m.addrWidth, 1)));
                 out = genMux(reg(hit, 1), out, reg(w.data, m.dataWidth), m.dataWidth);
             }
             declWire(memRdName(m.name, i), m.dataWidth);
@@ -2487,24 +2601,28 @@ private:
         if (v.hasVal) return constExpr(maskTo(v.val >> lo, w), w);
         const SExpr m = materialize(v);
         SExpr e;
-        e.text = w == 1 ? m.text + "[" + std::to_string(lo) + "]"
-                        : m.text + "[" + std::to_string(lo + w - 1) + ":" + std::to_string(lo) + "]";
+        e.text = w == 1
+                     ? m.text + "[" + std::to_string(lo) + "]"
+                     : m.text + "[" + std::to_string(lo + w - 1) + ":" + std::to_string(lo) + "]";
         e.width = w;
         e.refs = m.refs;
         return e;
     }
     // Apply the slice entries of `map` for `name` on top of `whole`
-    SExpr assembleFromMap(const std::string& name, const SExpr& whole, const std::map<std::string, SExpr>& map) {
+    SExpr assembleFromMap(const std::string& name, const SExpr& whole,
+                          const std::map<std::string, SExpr>& map) {
         const std::string pfx = name + "[";
         std::vector<std::pair<int, std::pair<int, SExpr>>> slices;  // (lo, (w, value))
-        for (auto it = map.lower_bound(pfx); it != map.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
+        for (auto it = map.lower_bound(pfx);
+             it != map.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
             std::string base;
             int lo, w;
             if (!splitSliceKey(it->first, base, lo, w)) continue;
             slices.emplace_back(lo, std::make_pair(w, it->second));
         }
         if (slices.empty()) return whole;
-        std::sort(slices.begin(), slices.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::sort(slices.begin(), slices.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
         const SExpr base = materialize(whole);
         std::string text = "{";
         std::vector<std::string> refs;
@@ -2545,9 +2663,7 @@ private:
     int widthOfKey(const std::string& key) const {
         // "x[lsb+:w]" -> w ; "x" -> width of x
         const size_t p = key.find("+:");
-        if (p != std::string::npos) {
-            return std::atoi(key.c_str() + p + 2);
-        }
+        if (p != std::string::npos) { return std::atoi(key.c_str() + p + 2); }
         return widthOf(rootIdent(key));
     }
     static std::vector<std::string> keyRefs(const std::string& key) {
@@ -2576,12 +2692,14 @@ private:
         std::sort(regs.begin(), regs.end());
         int total = 0;
         for (const auto& r : regs) total += r.second;
-        std::cerr << "\nInferred memory devices in process\n"
-                  << "    in routine always_seq_" << m_alwaysSeq << " in module '"
-                  << m_modp->prettyName() << "'.\n"
-                  << "===============================================================================\n"
-                  << "| Register Name                | Type  | Width | Bus | MB | AR | AS | SR | SS | ST |\n"
-                  << "===============================================================================\n";
+        std::cerr
+            << "\nInferred memory devices in process\n"
+            << "    in routine always_seq_" << m_alwaysSeq << " in module '"
+            << m_modp->prettyName() << "'.\n"
+            << "===============================================================================\n"
+            << "| Register Name                | Type  | Width | Bus | MB | AR | AS | SR | SS | "
+               "ST |\n"
+            << "===============================================================================\n";
         for (const auto& r : regs) {
             std::cerr << "| " << std::left << std::setw(28) << r.first << " | Flop  | "
                       << std::right << std::setw(5) << r.second << " | " << std::setw(3)
@@ -2589,10 +2707,12 @@ private:
                       << (cls.hasRst && cls.rstAsync ? "Y" : "N") << "  | N  | "
                       << (cls.hasRst && !cls.rstAsync ? "Y" : "N") << "  | N  | N  |\n";
         }
-        std::cerr << "===============================================================================\n"
-                  << "| Total inferred registers: " << std::setw(3) << regs.size()
-                  << "                                 Bits: " << std::setw(6) << total << " |\n"
-                  << "===============================================================================\n\n";
+        std::cerr
+            << "===============================================================================\n"
+            << "| Total inferred registers: " << std::setw(3) << regs.size()
+            << "                                 Bits: " << std::setw(6) << total << " |\n"
+            << "==============================================================================="
+               "\n\n";
     }
 
     //------------------------------------------------------------------
@@ -2651,11 +2771,10 @@ private:
         } else if (AstInitialStaticStmt* const isp = VN_CAST(nodep, InitialStaticStmt)) {
             lowerStmts(isp->stmtsp(), env);
         } else if (VN_IS(nodep, Display) || VN_IS(nodep, Stop) || VN_IS(nodep, Finish)
-                   || VN_IS(nodep, Delay)
-                   || VN_IS(nodep, NodeCoverOrAssert) || VN_IS(nodep, PrintTimeScale)
-                   || VN_IS(nodep, TimeFormat) || VN_IS(nodep, NodeReadWriteMem)
-                   || VN_IS(nodep, SFormat) || VN_IS(nodep, FClose)
-                   || VN_IS(nodep, FFlush)) {
+                   || VN_IS(nodep, Delay) || VN_IS(nodep, NodeCoverOrAssert)
+                   || VN_IS(nodep, PrintTimeScale) || VN_IS(nodep, TimeFormat)
+                   || VN_IS(nodep, NodeReadWriteMem) || VN_IS(nodep, SFormat)
+                   || VN_IS(nodep, FClose) || VN_IS(nodep, FFlush)) {
             warnNode(nodep, "non-synthesisable statement dropped");
         } else if (AstEventControl* const ep = VN_CAST(nodep, EventControl)) {
             warnNode(nodep, "event control dropped; body kept");
@@ -2691,14 +2810,13 @@ private:
             for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
                 const int w = (*it)->width();
                 SExpr slice = rhs;
-                slice.text = rhs.text + "[" + std::to_string(lsb) + " +: " + std::to_string(w) + "]";
+                slice.text
+                    = rhs.text + "[" + std::to_string(lsb) + " +: " + std::to_string(w) + "]";
                 slice.width = w;
                 slice.isIdent = false;
                 slice.isConst = false;
                 slice.hasVal = false;
-                if (rhs.hasVal) {
-                    slice = constExpr(maskTo(rhs.val >> lsb, w), w);
-                }
+                if (rhs.hasVal) { slice = constExpr(maskTo(rhs.val >> lsb, w), w); }
                 const SLVal lv = lowerLValue(*it, env);
                 if (lv.ok) assignTo(lv, materialize(slice), blocking, env);
                 lsb += w;
@@ -2726,7 +2844,8 @@ private:
     // The element at these indexes, then `tail` further on when they stop short of the last
     // dimension: only the elements an index can reach are read, muxed by the index
     SExpr arrayPick(const AstNode* nodep, const AstVar* varp, const std::vector<ArrayDim>& dims,
-                    const std::vector<SExpr>& idx, size_t pos, int flat, int tail, int width, Env& env) {
+                    const std::vector<SExpr>& idx, size_t pos, int flat, int tail, int width,
+                    Env& env) {
         if (pos >= idx.size()) return arrayLeaf(varp, flat + tail, env);
         int stride = 1;
         for (size_t d = pos + 1; d < dims.size(); ++d) stride *= dims[d].size;
@@ -2737,12 +2856,14 @@ private:
                 warnNode(nodep, "constant index out of range for " + varName(varp));
                 return constExpr(0, width);
             }
-            return arrayPick(nodep, varp, dims, idx, pos + 1, flat + static_cast<int>(k) * stride, tail, width, env);
+            return arrayPick(nodep, varp, dims, idx, pos + 1, flat + static_cast<int>(k) * stride,
+                             tail, width, env);
         }
         SExpr acc = arrayPick(nodep, varp, dims, idx, pos + 1, flat, tail, width, env);
         for (int k = 1; k < dim.size; ++k) {
             const SExpr hit = eqConst(idx[pos], static_cast<uint64_t>(k));
-            const SExpr v = arrayPick(nodep, varp, dims, idx, pos + 1, flat + k * stride, tail, width, env);
+            const SExpr v
+                = arrayPick(nodep, varp, dims, idx, pos + 1, flat + k * stride, tail, width, env);
             acc = genMux(hit, materialize(acc), materialize(v), width);
         }
         return acc;
@@ -2782,9 +2903,12 @@ private:
         }
         if (AstCond* const cp = VN_CAST(ep, Cond)) {
             std::vector<SExpr> t, f;
-            if (!arrayElems(cp->thenp(), env, t) || !arrayElems(cp->elsep(), env, f) || t.size() != f.size()) return false;
+            if (!arrayElems(cp->thenp(), env, t) || !arrayElems(cp->elsep(), env, f)
+                || t.size() != f.size())
+                return false;
             const SExpr sel = materialize(toBool(lowerExpr(cp->condp(), env)));
-            for (size_t k = 0; k < t.size(); ++k) out.push_back(genMux(sel, materialize(f[k]), materialize(t[k]), width));
+            for (size_t k = 0; k < t.size(); ++k)
+                out.push_back(genMux(sel, materialize(f[k]), materialize(t[k]), width));
             return true;
         }
 #if VERILATOR_VERSION_INTEGER >= 5053000  // AstInitArray became AstConsArray (verilator #8809)
@@ -2818,12 +2942,13 @@ private:
         const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
         std::vector<SExpr> idx;
         for (AstNodeExpr* const ip : chain) idx.push_back(materialize(lowerExpr(ip, env)));
-        for (int j = 0; j < depth; ++j) out.push_back(arrayPick(ep, varp, dims, idx, 0, 0, j, width, env));
+        for (int j = 0; j < depth; ++j)
+            out.push_back(arrayPick(ep, varp, dims, idx, 0, 0, j, width, env));
         return true;
     }
     // One element of an array of several dimensions as an lvalue, given all its indexes
-    SLVal arrayElemLValue(const AstNode* nodep, const AstVar* varp, const std::vector<ArrayDim>& dims,
-                          const std::vector<SExpr>& idx) {
+    SLVal arrayElemLValue(const AstNode* nodep, const AstVar* varp,
+                          const std::vector<ArrayDim>& dims, const std::vector<SExpr>& idx) {
         SLVal lv;
         int flat = 0;
         bool allConst = true;
@@ -2905,7 +3030,8 @@ private:
         }
         return true;
     }
-    bool arrayAssignParts(AstNodeExpr* lhsp, AstNodeExpr* rhsp, Env& env, std::vector<SLVal>& dst, std::vector<SExpr>& src) {
+    bool arrayAssignParts(AstNodeExpr* lhsp, AstNodeExpr* rhsp, Env& env, std::vector<SLVal>& dst,
+                          std::vector<SExpr>& src) {
         std::vector<AstNodeExpr*> chain;
         const AstVarRef* const vp = arrayChain(lhsp, chain);
         const std::string name = vp ? varName(vp->varp()) : std::string{"array"};
@@ -2915,7 +3041,8 @@ private:
         const bool pattern = VN_IS(rhsp, InitArray);
 #endif
         if (!VN_IS(rhsp, CReset) && !pattern && !arraysAlign(lhsp->dtypep(), rhsp->dtypep())) {
-            errNode(rhsp, "whole-array assignment to " + name + " from an array of another shape or direction unsupported");
+            errNode(rhsp, "whole-array assignment to " + name
+                              + " from an array of another shape or direction unsupported");
             return false;
         }
         if (!arrayTargets(lhsp, env, dst)) {
@@ -2923,7 +3050,8 @@ private:
             return false;
         }
         if (!arrayElems(rhsp, env, src) || src.size() != dst.size()) {
-            errNode(rhsp, "whole-array assignment to " + name + " from this expression unsupported");
+            errNode(rhsp,
+                    "whole-array assignment to " + name + " from this expression unsupported");
             return false;
         }
         return true;
@@ -2962,7 +3090,10 @@ private:
                 bool exclusive = false;
                 for (; split < std::min(o.path.size(), w.path.size()); ++split) {
                     if (o.path[split].first != w.path[split].first) break;
-                    if (o.path[split].second != w.path[split].second) { exclusive = true; break; }
+                    if (o.path[split].second != w.path[split].second) {
+                        exclusive = true;
+                        break;
+                    }
                 }
                 if (!exclusive) continue;
                 const int aw = std::max(o.idx.width, w.idx.width);
@@ -3006,7 +3137,8 @@ private:
             const int w = lv.memW ? lv.memW : m.dataWidth;
             for (int k = 0; k < m.depth; ++k) {
                 std::string reg = m.regNames[k];
-                if (lv.memW) reg += "[" + std::to_string(lv.memLo) + "+:" + std::to_string(lv.memW) + "]";
+                if (lv.memW)
+                    reg += "[" + std::to_string(lv.memLo) + "+:" + std::to_string(lv.memW) + "]";
                 SExpr hit;
                 if (lv.dimIdx.empty()) {
                     hit = eqConst(idx, static_cast<uint64_t>(k));
@@ -3016,9 +3148,11 @@ private:
                     for (size_t d = 0; d < dims.size(); ++d) {
                         rest /= dims[d].size;
                         const int at = (k / rest) % dims[d].size;
-                        hit = materialize(andBits(hit, eqConst(lv.dimIdx[d], static_cast<uint64_t>(at))));
+                        hit = materialize(
+                            andBits(hit, eqConst(lv.dimIdx[d], static_cast<uint64_t>(at))));
                     }
-                    if (hit.hasVal && !hit.val) continue;  // a constant index rules this element out
+                    if (hit.hasVal && !hit.val)
+                        continue;  // a constant index rules this element out
                 }
                 SLVal e;
                 e.ok = true;
@@ -3056,7 +3190,8 @@ private:
     static void sliceIntervals(const std::map<std::string, SExpr>& mp, const std::string& base,
                                std::vector<std::pair<int, int>>& iv) {
         const std::string pfx = base + "[";
-        for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
+        for (auto it = mp.lower_bound(pfx);
+             it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
             std::string b;
             int lo, w;
             if (splitSliceKey(it->first, b, lo, w) && b == base) iv.emplace_back(lo, w);
@@ -3064,7 +3199,9 @@ private:
     }
     static void eraseSlices(std::map<std::string, SExpr>& mp, const std::string& base) {
         const std::string pfx = base + "[";
-        for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;) it = mp.erase(it);
+        for (auto it = mp.lower_bound(pfx);
+             it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;)
+            it = mp.erase(it);
     }
     // Replace `base`'s slices in env.next (and env.cur when `cur`) by the whole value they make
     void foldToWhole(Env& env, const std::string& base, bool cur) {
@@ -3080,7 +3217,8 @@ private:
     // Write base[lo +: w] over the slices in mp that it overlaps, however they are cut: one slice
     // covering them all takes their place, with the new bits on top.  The bits of it that no old
     // slice held are all new, so nothing here reads the variable itself.
-    SLVal mergeSliceInto(std::map<std::string, SExpr>& mp, const std::string& base, int lo, int w, const SExpr& rhs) {
+    SLVal mergeSliceInto(std::map<std::string, SExpr>& mp, const std::string& base, int lo, int w,
+                         const SExpr& rhs) {
         struct Piece final {
             int lo;
             int w;
@@ -3106,18 +3244,21 @@ private:
         for (const auto& e : iv) {
             const int eEnd = e.first + e.second;
             if (e.first >= cEnd || eEnd <= cLo) continue;
-            const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+            const std::string k
+                = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
             const SExpr old = materialize(mp.at(k));
             mp.erase(k);
             if (e.first < lo) {
-                pieces.push_back({e.first, std::min(eEnd, lo) - e.first, sliceOf(old, 0, std::min(eEnd, lo) - e.first)});
+                pieces.push_back({e.first, std::min(eEnd, lo) - e.first,
+                                  sliceOf(old, 0, std::min(eEnd, lo) - e.first)});
             }
             if (eEnd > lo + w) {
                 const int from = std::max(e.first, lo + w);
                 pieces.push_back({from, eEnd - from, sliceOf(old, from - e.first, eEnd - from)});
             }
         }
-        std::sort(pieces.begin(), pieces.end(), [](const Piece& a, const Piece& b) { return a.lo < b.lo; });
+        std::sort(pieces.begin(), pieces.end(),
+                  [](const Piece& a, const Piece& b) { return a.lo < b.lo; });
         SLVal out;
         out.ok = true;
         out.key = base + "[" + std::to_string(cLo) + "+:" + std::to_string(cEnd - cLo) + "]";
@@ -3169,7 +3310,9 @@ private:
             m_blockWrites[lv.key].emplace_back(0, lv.width > 0 ? lv.width : widthOfKey(lv.key));
             const std::string pfx = lv.key + "[";
             auto erasePfx = [&](std::map<std::string, SExpr>& mp) {
-                for (auto it = mp.lower_bound(pfx); it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;) it = mp.erase(it);
+                for (auto it = mp.lower_bound(pfx);
+                     it != mp.end() && it->first.compare(0, pfx.size(), pfx) == 0;)
+                    it = mp.erase(it);
             };
             erasePfx(env.next);
             if (blocking || !m_seq) erasePfx(env.cur);
@@ -3187,7 +3330,8 @@ private:
             if (key.find('[') != std::string::npos) return whole;
             const std::string pfx = key + "[";
             const auto sit = mp.lower_bound(pfx);
-            if (sit != mp.end() && sit->first.compare(0, pfx.size(), pfx) == 0) return assembleFromMap(key, whole, mp);
+            if (sit != mp.end() && sit->first.compare(0, pfx.size(), pfx) == 0)
+                return assembleFromMap(key, whole, mp);
             return whole;
         };
         {
@@ -3205,7 +3349,8 @@ private:
                 sliceIntervals(mp, base, iv);
                 for (const auto& e : iv) {
                     if (e.first <= lo && lo + w <= e.first + e.second) {
-                        const std::string k = base + "[" + std::to_string(e.first) + "+:" + std::to_string(e.second) + "]";
+                        const std::string k = base + "[" + std::to_string(e.first)
+                                              + "+:" + std::to_string(e.second) + "]";
                         return sliceOf(mp.at(k), lo - e.first, w);
                     }
                 }
@@ -3327,7 +3472,8 @@ private:
             const bool onSlice = splitSliceKey(base.key, sliceBase, sliceLo, sliceW);
             const auto slots = exprRange(sp->lsbp(), env);
             if ((base.key.find('[') == std::string::npos || onSlice) && base.width > 0 && w > 0
-                && std::min<long long>(slots.second, base.width - w) / w - slots.first / w < MAX_SLICE_SLOTS) {
+                && std::min<long long>(slots.second, base.width - w) / w - slots.first / w
+                       < MAX_SLICE_SLOTS) {
                 // vector[idx +: w] = v  ->  one conditional write per aligned slot
                 // (Verilator emits idx as element*w for packed arrays), and likewise
                 // within a constant slice of a vector (amk[g][idx] = v)
@@ -3350,7 +3496,9 @@ private:
             lv.width = w;
             lv.refs = base.refs;
             addRefs(lv.refs, idx.refs);
-            warnNode(lhsp, "dynamic part-select write; later reads in this block see the register value");
+            warnNode(
+                lhsp,
+                "dynamic part-select write; later reads in this block see the register value");
             return lv;
         }
         if (AstArraySel* const ap = VN_CAST(lhsp, ArraySel)) {
@@ -3367,7 +3515,8 @@ private:
                     return lv;
                 }
                 std::vector<SExpr> indexes;
-                for (AstNodeExpr* const ip : chain) indexes.push_back(materialize(lowerExpr(ip, env)));
+                for (AstNodeExpr* const ip : chain)
+                    indexes.push_back(materialize(lowerExpr(ip, env)));
                 return arrayElemLValue(lhsp, vp->varp(), dims, indexes);
             }
             const auto mit = m_mems.find(vp->varp());
@@ -3600,8 +3749,8 @@ private:
                 const SExpr live = env.next.count(key) ? env.next.at(key) : priorNext(key, env);
                 const SExpr hv = h.next.count(key) ? h.next.at(key) : priorNext(key, env);
                 if (live.text == hv.text) continue;
-                env.setNext(key, genMux(it->cond, materialize(live), materialize(hv),
-                                        widthOfKey(key)));
+                env.setNext(key,
+                            genMux(it->cond, materialize(live), materialize(hv), widthOfKey(key)));
             }
             std::set<std::string> ckeys;
             for (const auto& kv : env.cur) ckeys.insert(kv.first);
@@ -3610,8 +3759,8 @@ private:
                 const SExpr live = readKey(key, env, true);
                 const SExpr hv = readKey(key, h, true);
                 if (live.text == hv.text) continue;
-                env.cur[key] = genMux(it->cond, materialize(live), materialize(hv),
-                                      widthOfKey(key));
+                env.cur[key]
+                    = genMux(it->cond, materialize(live), materialize(hv), widthOfKey(key));
             }
         }
     }
@@ -3886,8 +4035,7 @@ private:
     void lowerCaseBits(CaseArms& ca, const CaseTable& t, const SExpr& sel, size_t lo, size_t hi,
                        Env& env) {
         const int arm = t.arm[lo];
-        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi,
-                        [&](int a) { return a == arm; })) {
+        if (std::all_of(t.arm.begin() + lo, t.arm.begin() + hi, [&](int a) { return a == arm; })) {
             if (arm >= 0) {
                 lowerStmts(ca.arms[arm].second->stmtsp(), env);
             } else if (ca.defaultp) {
@@ -3976,8 +4124,8 @@ private:
                 }
                 const SExpr masked = genBinary("bitwise_and", sel, constExpr(mask, sel.width),
                                                sel.width, sel.width);
-                return genBinary("comparator_eq", masked, constExpr(value, sel.width),
-                                 sel.width, 1);
+                return genBinary("comparator_eq", masked, constExpr(value, sel.width), sel.width,
+                                 1);
             }
         }
         const SExpr c = lowerExpr(condp, env);
@@ -4050,7 +4198,8 @@ private:
         }
         ++m_inlineDepth;
         const int callId = ++m_callSeq;
-        const std::string prefix = "fn" + std::to_string(callId) + "__" + sanitizeName(taskp->prettyName()) + "__";
+        const std::string prefix
+            = "fn" + std::to_string(callId) + "__" + sanitizeName(taskp->prettyName()) + "__";
         // Formals in declaration order
         std::vector<AstVar*> formals;
         std::vector<AstVar*> locals;
@@ -4110,7 +4259,8 @@ private:
                 if (m_arrBind.count(fp)) savedArrBind.emplace_back(fp, m_arrBind[fp]);
                 m_arrBind[fp] = elems;
             } else {
-                SExpr v = args[i] ? materialize(lowerExpr(args[i], env)) : constExpr(0, fp->width());
+                SExpr v
+                    = args[i] ? materialize(lowerExpr(args[i], env)) : constExpr(0, fp->width());
                 if (m_bind.count(fp)) savedBind.emplace_back(fp, m_bind[fp]);
                 m_bind[fp] = v;
             }
@@ -4154,7 +4304,9 @@ private:
                 result = it->second;
             } else {
                 const SExpr r = assembleSlices(retKey, constExpr(0, retp->width()), fenv);
-                if (r.isConst) warnNode(refp, "function " + refp->prettyName() + " never assigns its return value");
+                if (r.isConst)
+                    warnNode(refp,
+                             "function " + refp->prettyName() + " never assigns its return value");
                 result = r;
             }
         }
@@ -4354,9 +4506,8 @@ private:
         }
         if (AstNodeBiop* const bp = VN_CAST(nodep, NodeBiop)) return lowerBiop(bp, env);
         if (VN_IS(nodep, CastSize) || VN_IS(nodep, CastWrap)) {
-            AstNodeExpr* const inner = VN_IS(nodep, CastSize)
-                                           ? VN_AS(nodep, CastSize)->lhsp()
-                                           : VN_AS(nodep, CastWrap)->lhsp();
+            AstNodeExpr* const inner = VN_IS(nodep, CastSize) ? VN_AS(nodep, CastSize)->lhsp()
+                                                              : VN_AS(nodep, CastWrap)->lhsp();
             return resize(lowerExpr(inner, env), width, nodep->isSigned());
         }
         if (VN_IS(nodep, ExprStmt)) {
@@ -4390,7 +4541,8 @@ private:
                 const int n = std::min(sw, src.width - lo);
                 if (!first) text += ", ";
                 first = false;
-                text += src.text + "[" + std::to_string(lo + n - 1) + ":" + std::to_string(lo) + "]";
+                text += src.text + "[" + std::to_string(lo + n - 1) + ":" + std::to_string(lo)
+                        + "]";
             }
             text += "}";
             SExpr e;
@@ -4429,11 +4581,13 @@ private:
             // flow's parse_const_value does
             if (num.width() <= 64) {
                 uint64_t v = 0;
-                for (int b = 0; b < num.width(); ++b) if (num.bitIs1(b)) v |= 1ULL << b;
+                for (int b = 0; b < num.width(); ++b)
+                    if (num.bitIs1(b)) v |= 1ULL << b;
                 return constExpr(v, num.width(), num.isSigned());
             }
             std::string t = num.ascii(true, true);
-            for (char& c : t) if (c == 'x' || c == 'X' || c == 'z' || c == 'Z' || c == '?') c = '0';
+            for (char& c : t)
+                if (c == 'x' || c == 'X' || c == 'z' || c == 'Z' || c == '?') c = '0';
             e.text = t;
             return e;
         }
@@ -4472,7 +4626,8 @@ private:
     SExpr assembleSlicesOld(const std::string& name, const SExpr& whole, const Env& env) {
         const std::string pfx = name + "[";
         std::vector<std::pair<int, std::pair<int, SExpr>>> slices;  // (lo, (w, value))
-        for (auto it = env.cur.lower_bound(pfx); it != env.cur.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
+        for (auto it = env.cur.lower_bound(pfx);
+             it != env.cur.end() && it->first.compare(0, pfx.size(), pfx) == 0; ++it) {
             const std::string rest = it->first.substr(pfx.size());
             const size_t p = rest.find("+:");
             if (p == std::string::npos) continue;
@@ -4483,7 +4638,8 @@ private:
             slices.emplace_back(static_cast<int>(lo), std::make_pair(w, it->second));
         }
         if (slices.empty()) return whole;
-        std::sort(slices.begin(), slices.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::sort(slices.begin(), slices.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
         const SExpr base = materialize(whole);
         std::string text = "{";
         std::vector<std::string> refs;
@@ -4500,7 +4656,9 @@ private:
             const int w = it->second.first;
             if (lo + w > pos) continue;  // overlapping: keep the later-sorted one
             if (lo + w < pos) {
-                piece(base.text + "[" + std::to_string(pos - 1) + ":" + std::to_string(lo + w) + "]", base.refs);
+                piece(base.text + "[" + std::to_string(pos - 1) + ":" + std::to_string(lo + w)
+                          + "]",
+                      base.refs);
             }
             const SExpr v = materialize(it->second.second);
             piece(v.text, v.refs);
@@ -4524,21 +4682,24 @@ private:
         if (lsbE.hasVal) {
             const int lsb = static_cast<int>(lsbE.val);
             if (base.hasVal) return constExpr(maskTo(base.val >> lsb, w), w);
-            if (lsb == 0 && w == base.width) return base;  // whole-width select (e.g. x[0] of a 1-bit x)
+            if (lsb == 0 && w == base.width)
+                return base;  // whole-width select (e.g. x[0] of a 1-bit x)
             if (base.isConst) {
                 const SExpr wb = newWire(base.width);
                 addAssign(wb.text, base);
                 base = wb;
             }
             // Partial key hit: a blocking write to exactly this slice
-            const std::string key = base.text + "[" + std::to_string(lsb) + "+:" + std::to_string(w) + "]";
+            const std::string key
+                = base.text + "[" + std::to_string(lsb) + "+:" + std::to_string(w) + "]";
             const auto it = env.cur.find(key);
             if (it != env.cur.end()) return it->second;
             SExpr e;
             if (w == 1) {
                 e.text = base.text + "[" + std::to_string(lsb) + "]";
             } else {
-                e.text = base.text + "[" + std::to_string(lsb + w - 1) + ":" + std::to_string(lsb) + "]";
+                e.text = base.text + "[" + std::to_string(lsb + w - 1) + ":" + std::to_string(lsb)
+                         + "]";
             }
             e.width = w;
             e.refs = base.refs;
@@ -4750,74 +4911,156 @@ private:
     };
     static bool biopInfo(AstNodeBiop* bp, BiopInfo& info) {
         info = {"", false, false, false, false};
-        if (VN_IS(bp, Add)) info.prim = "adder";
-        else if (VN_IS(bp, Sub)) info.prim = "subtractor";
-        else if (VN_IS(bp, Mul)) info.prim = "multiplier";
-        else if (VN_IS(bp, MulS)) { info.prim = "multiplier_signed"; info.isSigned = true; }
-        else if (VN_IS(bp, Div)) info.prim = "divider";
-        else if (VN_IS(bp, DivS)) { info.prim = "divider_signed"; info.isSigned = true; }
-        else if (VN_IS(bp, ModDiv)) info.prim = "modulo";
-        else if (VN_IS(bp, ModDivS)) { info.prim = "modulo_signed"; info.isSigned = true; }
-        else if (VN_IS(bp, And)) info.prim = "bitwise_and";
-        else if (VN_IS(bp, Or)) info.prim = "bitwise_or";
-        else if (VN_IS(bp, Xor)) info.prim = "bitwise_xor";
-        else if (VN_IS(bp, LogAnd)) { info.prim = "bitwise_and"; info.logical = true; }
-        else if (VN_IS(bp, LogOr)) { info.prim = "bitwise_or"; info.logical = true; }
-        else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild)) { info.prim = "comparator_eq"; info.cmp = true; }
-        else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild)) { info.prim = "comparator_neq"; info.cmp = true; }
-        else if (VN_IS(bp, Lt)) { info.prim = "comparator_lt"; info.cmp = true; }
-        else if (VN_IS(bp, LtS)) { info.prim = "comparator_lt_signed"; info.cmp = true; info.isSigned = true; }
-        else if (VN_IS(bp, Lte)) { info.prim = "comparator_lte"; info.cmp = true; }
-        else if (VN_IS(bp, LteS)) { info.prim = "comparator_lte_signed"; info.cmp = true; info.isSigned = true; }
-        else if (VN_IS(bp, Gt)) { info.prim = "comparator_gt"; info.cmp = true; }
-        else if (VN_IS(bp, GtS)) { info.prim = "comparator_gt_signed"; info.cmp = true; info.isSigned = true; }
-        else if (VN_IS(bp, Gte)) { info.prim = "comparator_gte"; info.cmp = true; }
-        else if (VN_IS(bp, GteS)) { info.prim = "comparator_gte_signed"; info.cmp = true; info.isSigned = true; }
-        else if (VN_IS(bp, ShiftL)) { info.prim = "shifter_left"; info.shift = true; }
-        else if (VN_IS(bp, ShiftR)) { info.prim = "shifter_right"; info.shift = true; }
-        else if (VN_IS(bp, ShiftRS)) { info.prim = "shifter_right_arith"; info.shift = true; info.isSigned = true; }
-        else return false;
+        if (VN_IS(bp, Add))
+            info.prim = "adder";
+        else if (VN_IS(bp, Sub))
+            info.prim = "subtractor";
+        else if (VN_IS(bp, Mul))
+            info.prim = "multiplier";
+        else if (VN_IS(bp, MulS)) {
+            info.prim = "multiplier_signed";
+            info.isSigned = true;
+        } else if (VN_IS(bp, Div))
+            info.prim = "divider";
+        else if (VN_IS(bp, DivS)) {
+            info.prim = "divider_signed";
+            info.isSigned = true;
+        } else if (VN_IS(bp, ModDiv))
+            info.prim = "modulo";
+        else if (VN_IS(bp, ModDivS)) {
+            info.prim = "modulo_signed";
+            info.isSigned = true;
+        } else if (VN_IS(bp, And))
+            info.prim = "bitwise_and";
+        else if (VN_IS(bp, Or))
+            info.prim = "bitwise_or";
+        else if (VN_IS(bp, Xor))
+            info.prim = "bitwise_xor";
+        else if (VN_IS(bp, LogAnd)) {
+            info.prim = "bitwise_and";
+            info.logical = true;
+        } else if (VN_IS(bp, LogOr)) {
+            info.prim = "bitwise_or";
+            info.logical = true;
+        } else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild)) {
+            info.prim = "comparator_eq";
+            info.cmp = true;
+        } else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild)) {
+            info.prim = "comparator_neq";
+            info.cmp = true;
+        } else if (VN_IS(bp, Lt)) {
+            info.prim = "comparator_lt";
+            info.cmp = true;
+        } else if (VN_IS(bp, LtS)) {
+            info.prim = "comparator_lt_signed";
+            info.cmp = true;
+            info.isSigned = true;
+        } else if (VN_IS(bp, Lte)) {
+            info.prim = "comparator_lte";
+            info.cmp = true;
+        } else if (VN_IS(bp, LteS)) {
+            info.prim = "comparator_lte_signed";
+            info.cmp = true;
+            info.isSigned = true;
+        } else if (VN_IS(bp, Gt)) {
+            info.prim = "comparator_gt";
+            info.cmp = true;
+        } else if (VN_IS(bp, GtS)) {
+            info.prim = "comparator_gt_signed";
+            info.cmp = true;
+            info.isSigned = true;
+        } else if (VN_IS(bp, Gte)) {
+            info.prim = "comparator_gte";
+            info.cmp = true;
+        } else if (VN_IS(bp, GteS)) {
+            info.prim = "comparator_gte_signed";
+            info.cmp = true;
+            info.isSigned = true;
+        } else if (VN_IS(bp, ShiftL)) {
+            info.prim = "shifter_left";
+            info.shift = true;
+        } else if (VN_IS(bp, ShiftR)) {
+            info.prim = "shifter_right";
+            info.shift = true;
+        } else if (VN_IS(bp, ShiftRS)) {
+            info.prim = "shifter_right_arith";
+            info.shift = true;
+            info.isSigned = true;
+        } else
+            return false;
         return true;
     }
 
     // Constant folding (sv_transform try_eval_const, extended)
-    static bool foldBiop(AstNodeBiop* bp, const SExpr& a, const SExpr& b, int width, uint64_t& out) {
+    static bool foldBiop(AstNodeBiop* bp, const SExpr& a, const SExpr& b, int width,
+                         uint64_t& out) {
         if (!a.hasVal || !b.hasVal || width > 64) return false;
         const uint64_t x = a.val;
         const uint64_t y = b.val;
         const int64_t sx = signExt(x, a.width);
         const int64_t sy = signExt(y, b.width);
-        if (VN_IS(bp, Add)) out = x + y;
-        else if (VN_IS(bp, Sub)) out = x - y;
-        else if (VN_IS(bp, Mul)) out = x * y;
-        else if (VN_IS(bp, MulS)) out = static_cast<uint64_t>(sx * sy);
-        else if (VN_IS(bp, Div)) { if (!y) return false; out = x / y; }
-        else if (VN_IS(bp, DivS)) { if (!sy) return false; out = static_cast<uint64_t>(sx / sy); }
-        else if (VN_IS(bp, ModDiv)) { if (!y) return false; out = x % y; }
-        else if (VN_IS(bp, ModDivS)) { if (!sy) return false; out = static_cast<uint64_t>(sx % sy); }
-        else if (VN_IS(bp, And)) out = x & y;
-        else if (VN_IS(bp, Or)) out = x | y;
-        else if (VN_IS(bp, Xor)) out = x ^ y;
-        else if (VN_IS(bp, LogAnd)) out = (x != 0) && (y != 0);
-        else if (VN_IS(bp, LogOr)) out = (x != 0) || (y != 0);
-        else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild)) out = x == y;
-        else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild)) out = x != y;
-        else if (VN_IS(bp, Lt)) out = x < y;
-        else if (VN_IS(bp, LtS)) out = sx < sy;
-        else if (VN_IS(bp, Lte)) out = x <= y;
-        else if (VN_IS(bp, LteS)) out = sx <= sy;
-        else if (VN_IS(bp, Gt)) out = x > y;
-        else if (VN_IS(bp, GtS)) out = sx > sy;
-        else if (VN_IS(bp, Gte)) out = x >= y;
-        else if (VN_IS(bp, GteS)) out = sx >= sy;
-        else if (VN_IS(bp, ShiftL)) out = y >= 64 ? 0 : x << y;
-        else if (VN_IS(bp, ShiftR)) out = y >= 64 ? 0 : x >> y;
-        else if (VN_IS(bp, ShiftRS)) out = static_cast<uint64_t>(y >= 64 ? (sx < 0 ? -1 : 0) : sx >> y);
+        if (VN_IS(bp, Add))
+            out = x + y;
+        else if (VN_IS(bp, Sub))
+            out = x - y;
+        else if (VN_IS(bp, Mul))
+            out = x * y;
+        else if (VN_IS(bp, MulS))
+            out = static_cast<uint64_t>(sx * sy);
+        else if (VN_IS(bp, Div)) {
+            if (!y) return false;
+            out = x / y;
+        } else if (VN_IS(bp, DivS)) {
+            if (!sy) return false;
+            out = static_cast<uint64_t>(sx / sy);
+        } else if (VN_IS(bp, ModDiv)) {
+            if (!y) return false;
+            out = x % y;
+        } else if (VN_IS(bp, ModDivS)) {
+            if (!sy) return false;
+            out = static_cast<uint64_t>(sx % sy);
+        } else if (VN_IS(bp, And))
+            out = x & y;
+        else if (VN_IS(bp, Or))
+            out = x | y;
+        else if (VN_IS(bp, Xor))
+            out = x ^ y;
+        else if (VN_IS(bp, LogAnd))
+            out = (x != 0) && (y != 0);
+        else if (VN_IS(bp, LogOr))
+            out = (x != 0) || (y != 0);
+        else if (VN_IS(bp, Eq) || VN_IS(bp, EqCase) || VN_IS(bp, EqWild))
+            out = x == y;
+        else if (VN_IS(bp, Neq) || VN_IS(bp, NeqCase) || VN_IS(bp, NeqWild))
+            out = x != y;
+        else if (VN_IS(bp, Lt))
+            out = x < y;
+        else if (VN_IS(bp, LtS))
+            out = sx < sy;
+        else if (VN_IS(bp, Lte))
+            out = x <= y;
+        else if (VN_IS(bp, LteS))
+            out = sx <= sy;
+        else if (VN_IS(bp, Gt))
+            out = x > y;
+        else if (VN_IS(bp, GtS))
+            out = sx > sy;
+        else if (VN_IS(bp, Gte))
+            out = x >= y;
+        else if (VN_IS(bp, GteS))
+            out = sx >= sy;
+        else if (VN_IS(bp, ShiftL))
+            out = y >= 64 ? 0 : x << y;
+        else if (VN_IS(bp, ShiftR))
+            out = y >= 64 ? 0 : x >> y;
+        else if (VN_IS(bp, ShiftRS))
+            out = static_cast<uint64_t>(y >= 64 ? (sx < 0 ? -1 : 0) : sx >> y);
         else if (VN_IS(bp, Pow)) {
             uint64_t r = 1;
             for (uint64_t i = 0; i < y && i < 64; ++i) r *= x;
             out = r;
-        } else return false;
+        } else
+            return false;
         out = maskTo(out, width);
         return true;
     }
@@ -4888,7 +5131,9 @@ private:
                 for (const char c : tok) {
                     if (c == '_') continue;
                     const int d = std::isdigit(static_cast<unsigned char>(c)) ? c - '0'
-                                  : (std::tolower(c) >= 'a' && std::tolower(c) <= 'f') ? std::tolower(c) - 'a' + 10 : 0;
+                                  : (std::tolower(c) >= 'a' && std::tolower(c) <= 'f')
+                                      ? std::tolower(c) - 'a' + 10
+                                      : 0;
                     v = (v << 4) | static_cast<uint64_t>(d);
                 }
                 if (words.size() <= addr) words.resize(addr + 1, 0);
@@ -4947,7 +5192,8 @@ private:
         for (auto& kv : m_mems) {
             if (!kv.second.asRegs) mems.push_back(&kv.second);
         }
-        std::sort(mems.begin(), mems.end(), [](const SMem* a, const SMem* b) { return a->name < b->name; });
+        std::sort(mems.begin(), mems.end(),
+                  [](const SMem* a, const SMem* b) { return a->name < b->name; });
         // Which read-port idents are consumed by ordinary logic (not just by
         // the absorbed register)?
         std::unordered_map<std::string, int> rdUses;
@@ -4967,7 +5213,8 @@ private:
                 }
                 if (!mp->clk.text.empty()) roots.insert(mp->clk.refs.begin(), mp->clk.refs.end());
             }
-            for (const SDeferredDff& dd : m_deferred) roots.insert(dd.en.refs.begin(), dd.en.refs.end());
+            for (const SDeferredDff& dd : m_deferred)
+                roots.insert(dd.en.refs.begin(), dd.en.refs.end());
             const std::vector<bool> alive = markLive(roots);
             for (size_t i = 0; i < m_items.size(); ++i) {
                 if (!alive[i]) continue;
@@ -4987,7 +5234,9 @@ private:
                 warn("memory " + m.name + " is never accessed; dropped");
                 continue;
             }
-            if (nw > 2) errMsg("memory " + m.name + ": " + std::to_string(nw) + " write ports, only 2 supported");
+            if (nw > 2)
+                errMsg("memory " + m.name + ": " + std::to_string(nw)
+                       + " write ports, only 2 supported");
             auto rdName = [&](size_t i) { return m.name + "_rdata" + std::to_string(i + 1); };
             auto declRd = [&](size_t i) {
                 SDecl d;
@@ -5002,10 +5251,12 @@ private:
             const SExpr zeroD = constExpr(0, m.dataWidth);
             auto addr = [&](const SExpr& e) { return resize(e, m.addrWidth, false); };
             std::vector<std::pair<std::string, std::string>> params
-                = {{"ADDR_WIDTH", std::to_string(m.addrWidth)}, {"DATA_WIDTH", std::to_string(m.dataWidth)}};
+                = {{"ADDR_WIDTH", std::to_string(m.addrWidth)},
+                   {"DATA_WIDTH", std::to_string(m.dataWidth)}};
             // the words actually used, when fewer than the address reaches: the
             // mapper sizes the block RAM to it (a 2.5 MB ROM is 20 deep blocks, not 32)
-            if (m.depth > 0 && m.depth < (1LL << m.addrWidth)) params.emplace_back("DEPTH", std::to_string(m.depth));
+            if (m.depth > 0 && m.depth < (1LL << m.addrWidth))
+                params.emplace_back("DEPTH", std::to_string(m.depth));
             if (!m.initFile.empty()) {
                 params.emplace_back("INIT_FILE", "\"" + m.initFile + "\"");
             } else if (m.hasInitWords) {
@@ -5018,7 +5269,8 @@ private:
                     char cwd[4096];
                     if (::getcwd(cwd, sizeof cwd)) dir = std::string(cwd) + "/" + dir;
                 }
-                const std::string f = dir + "/" + sanitizeName(m_modp->prettyName()) + "__" + m.name + ".hex";
+                const std::string f
+                    = dir + "/" + sanitizeName(m_modp->prettyName()) + "__" + m.name + ".hex";
                 std::ofstream hf{f};
                 for (const uint64_t w : m.initWords) hf << std::hex << w << "\n";
                 params.emplace_back("INIT_FILE", "\"" + f + "\"");
@@ -5055,10 +5307,10 @@ private:
                         pinIn(it, "addr" + sfx, addr(m.writes[k].idx));
                         pinIn(it, "wdata" + sfx, m.writes[k].data);
                         // READ_FIRST on both ports: it alone gives the other port's read at this
-                        // address the old word, as the RTL does.  It also loads this port's output in
-                        // every write, which is right when a write is also a read.  When a write can
-                        // come without the read, the output is held outside the block RAM in the
-                        // cycle after such a write.
+                        // address the old word, as the RTL does.  It also loads this port's output
+                        // in every write, which is right when a write is also a read.  When a
+                        // write can come without the read, the output is held outside the block
+                        // RAM in the cycle after such a write.
                         it.params.emplace_back("READ_FIRST" + sfx, "1");
                         if (!writeImpliesRead(sr.path, m.writes[k].path)) {
                             const std::string raw = sr.q + "__rd";
@@ -5084,8 +5336,8 @@ private:
             }
             if (nw == 2 && m.writes[0].clk.text != m.writes[1].clk.text) {
                 errMsg("memory " + m.name + ": written from two clock domains ("
-                     + m.writes[0].clk.text + ", " + m.writes[1].clk.text
-                     + ") but not as a true dual port; the primitive gets one clock");
+                       + m.writes[0].clk.text + ", " + m.writes[1].clk.text
+                       + ") but not as a true dual port; the primitive gets one clock");
             }
             // Every read port absorbed into a register and consumed nowhere else?
             bool allSync = nr > 0 && nw <= 1;
@@ -5099,7 +5351,9 @@ private:
                     for (const SDeferredDff& dd : m_deferred) {
                         if (dd.q != m.sync[i].q) continue;
                         SItem& it = addCell(dd.negedge ? "dffn_en" : "dff_en", newName("dff"));
-                        it.params = {{"WIDTH", std::to_string(dd.width)}, {"RESET_VAL", "0"}, {"IS_ASYNC", "0"}};
+                        it.params = {{"WIDTH", std::to_string(dd.width)},
+                                     {"RESET_VAL", "0"},
+                                     {"IS_ASYNC", "0"}};
                         pinIn(it, "clk", dd.clk);
                         it.pins.push_back({"rst", "1'b0"});
                         pinIn(it, "en", dd.en);
@@ -5121,8 +5375,8 @@ private:
                 if (!have || m.dataWidth > 64 || m.addrWidth > 16) {
                     // Nothing writes it and there is no image to read: every
                     // read would be 0, which is never what the source meant
-                    v3error("Synthesis: memory '" << m.name
-                            << "' is never written and has no loadable $readmemh image"
+                    v3error("Synthesis: memory '"
+                            << m.name << "' is never written and has no loadable $readmemh image"
                             << (m.initFile.empty() ? std::string{} : " (" + m.initFile + ")")
                             << "; its reads would all be 0");
                     for (size_t i = 0; i < nr; ++i) {
@@ -5145,8 +5399,8 @@ private:
             // reads on rd_clk): the single-clock primitives would move one side into
             // the other's domain, so it becomes a true dual port, port 1 writing on
             // the write clock, port 2 reading on the read clock
-            if (allSync && nw == 1 && nr == 1 && !m.writes[0].clk.text.empty() && !m.sync[0].clk.text.empty()
-                && m.writes[0].clk.text != m.sync[0].clk.text) {
+            if (allSync && nw == 1 && nr == 1 && !m.writes[0].clk.text.empty()
+                && !m.sync[0].clk.text.empty() && m.writes[0].clk.text != m.sync[0].clk.text) {
                 SItem& it = addCell("memory_tdp_sync", m.name + "_inst");
                 it.keep = true;
                 it.params = params;
@@ -5170,9 +5424,9 @@ private:
                 for (size_t i = 0; i < nr && i < m.sync.size(); ++i) {
                     if (!m.sync[i].clk.text.empty() && !m.writes[0].clk.text.empty()
                         && m.sync[i].clk.text != m.writes[0].clk.text)
-                        errMsg("memory " + m.name + ": read port " + std::to_string(i + 1) + " clocked by "
-                             + m.sync[i].clk.text + ", writes by " + m.writes[0].clk.text
-                             + "; the primitive has one clock");
+                        errMsg("memory " + m.name + ": read port " + std::to_string(i + 1)
+                               + " clocked by " + m.sync[i].clk.text + ", writes by "
+                               + m.writes[0].clk.text + "; the primitive has one clock");
                 }
             }
             if (allSync) {
@@ -5187,8 +5441,11 @@ private:
                 std::vector<std::vector<size_t>> banks;
                 size_t shared = nr;
                 bool sharedHeld = false;
-                if (nw) for (size_t i = 0; i < nr && shared == nr; ++i)
-                    if (m.readIdx[i].text == m.writes[0].idx.text && m.sync[i].en.hasVal && m.sync[i].en.val) shared = i;
+                if (nw)
+                    for (size_t i = 0; i < nr && shared == nr; ++i)
+                        if (m.readIdx[i].text == m.writes[0].idx.text && m.sync[i].en.hasVal
+                            && m.sync[i].en.val)
+                            shared = i;
                 if (nw && nr >= 2 && shared == nr) {
                     for (size_t i = 0; i < nr && shared == nr; ++i) {
                         if (m.readIdx[i].text == m.writes[0].idx.text) {
@@ -5199,18 +5456,21 @@ private:
                 }
                 if (shared != nr) {
                     std::vector<size_t> b{shared};
-                    for (size_t i = 0; i < nr && b.size() < 2; ++i) if (i != shared) b.push_back(i);
+                    for (size_t i = 0; i < nr && b.size() < 2; ++i)
+                        if (i != shared) b.push_back(i);
                     banks.push_back(b);
                 }
                 for (size_t i = 0; i < nr; ++i) {
                     bool used = false;
-                    for (const auto& b : banks) for (const size_t r : b) used = used || r == i;
+                    for (const auto& b : banks)
+                        for (const size_t r : b) used = used || r == i;
                     if (!used) banks.push_back({i});
                 }
                 for (size_t bank = 0; bank < banks.size(); ++bank) {
                     const bool two = banks[bank].size() == 2;
-                    SItem& it = addCell(two ? "memory_1w2r_sync" : "memory_1w1r_sync",
-                                        m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
+                    SItem& it
+                        = addCell(two ? "memory_1w2r_sync" : "memory_1w1r_sync",
+                                  m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
                     it.keep = true;
                     it.params = params;
                     pinIn(it, "clk", clk);
@@ -5247,18 +5507,23 @@ private:
                         m_regsInBlock.emplace_back(sr.q, m.dataWidth);
                     }
                 }
-                if (nr > 2) warn("memory " + m.name + ": " + std::to_string(nr) + " synchronous read ports; replicated into banks");
+                if (nr > 2)
+                    warn("memory " + m.name + ": " + std::to_string(nr)
+                         + " synchronous read ports; replicated into banks");
                 continue;
             }
             if (nr > 2 && nw <= 1) {
                 // More read ports than a primitive has: replicate the memory
                 // (register-file banking), every copy sharing the write port
                 warn("memory " + m.name + ": " + std::to_string(nr)
-                     + " read ports; replicated into " + std::to_string((nr + 1) / 2) + " memory_1w2r banks");
+                     + " read ports; replicated into " + std::to_string((nr + 1) / 2)
+                     + " memory_1w2r banks");
                 for (size_t bank = 0; bank * 2 < nr; ++bank) {
                     const size_t r0 = bank * 2;
                     const size_t r1 = std::min(r0 + 1, nr - 1);
-                    SItem& it = addCell("memory_1w2r", m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
+                    SItem& it
+                        = addCell("memory_1w2r",
+                                  m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
                     it.keep = true;
                     it.params = params;
                     pinIn(it, "clk", clk);
@@ -5283,11 +5548,14 @@ private:
                 // reads for every operand): replicate it, every copy taking
                 // both writes and two of the reads
                 warn("memory " + m.name + ": 2 write ports and " + std::to_string(nr)
-                     + " read ports; replicated into " + std::to_string((nr + 1) / 2) + " memory_2w2r_rf banks");
+                     + " read ports; replicated into " + std::to_string((nr + 1) / 2)
+                     + " memory_2w2r_rf banks");
                 for (size_t bank = 0; bank * 2 < nr; ++bank) {
                     const size_t r0 = bank * 2;
                     const size_t r1 = std::min(r0 + 1, nr - 1);
-                    SItem& it = addCell("memory_2w2r_rf", m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
+                    SItem& it
+                        = addCell("memory_2w2r_rf",
+                                  m.name + "_inst" + (bank ? "_" + std::to_string(bank + 1) : ""));
                     it.keep = true;
                     it.params = params;
                     pinIn(it, "clk", clk);
@@ -5309,8 +5577,12 @@ private:
                 }
                 continue;
             }
-            if (nr > 2) errMsg("memory " + m.name + ": " + std::to_string(nr) + " read ports, only 2 supported with 2 write ports");
-            if (nw <= 1 && (nr == 0 || (nr == 1 && (nw == 0 || m.readIdx[0].text == m.writes[0].idx.text)))) {
+            if (nr > 2)
+                errMsg("memory " + m.name + ": " + std::to_string(nr)
+                       + " read ports, only 2 supported with 2 write ports");
+            if (nw <= 1
+                && (nr == 0
+                    || (nr == 1 && (nw == 0 || m.readIdx[0].text == m.writes[0].idx.text)))) {
                 // Single-port: clk, we, addr, wdata, rdata
                 SItem& it = addCell("memory_sp", m.name + "_inst");
                 it.keep = true;
@@ -5379,7 +5651,8 @@ private:
         for (const SDecl& d : m_decls) {
             if (d.dir.isInput() && d.width == 1) {
                 const std::string n = d.name;
-                if (n == "clk" || n == "clock" || n == "clk_i" || n == "CLK") return identExpr(n, 1);
+                if (n == "clk" || n == "clock" || n == "clk_i" || n == "CLK")
+                    return identExpr(n, 1);
             }
         }
         for (const SDecl& d : m_decls) {
@@ -5394,9 +5667,13 @@ private:
             for (const auto& kv : m_renames) {
                 size_t p = 0;
                 while ((p = s.find(kv.first, p)) != std::string::npos) {
-                    const bool before = p == 0 || !(std::isalnum(static_cast<unsigned char>(s[p - 1])) || s[p - 1] == '_');
+                    const bool before = p == 0
+                                        || !(std::isalnum(static_cast<unsigned char>(s[p - 1]))
+                                             || s[p - 1] == '_');
                     const size_t e = p + kv.first.size();
-                    const bool after = e >= s.size() || !(std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_');
+                    const bool after
+                        = e >= s.size()
+                          || !(std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_');
                     if (before && after) {
                         s.replace(p, kv.first.size(), kv.second);
                         p += kv.second.size();
@@ -5465,11 +5742,20 @@ private:
     // cost no more than the operand muxes would.  The replaced operators lose
     // their only reader and dce() removes them.
     static bool sharable(const std::string& prim) {
-        static const std::set<std::string> prims
-            = {"adder", "adder_carry", "subtractor", "multiplier", "multiplier_signed", "divider",
-               "comparator_lt", "comparator_lte", "comparator_gt", "comparator_gte",
-               "comparator_lt_signed", "comparator_lte_signed", "comparator_gt_signed",
-               "comparator_gte_signed"};
+        static const std::set<std::string> prims = {"adder",
+                                                    "adder_carry",
+                                                    "subtractor",
+                                                    "multiplier",
+                                                    "multiplier_signed",
+                                                    "divider",
+                                                    "comparator_lt",
+                                                    "comparator_lte",
+                                                    "comparator_gt",
+                                                    "comparator_gte",
+                                                    "comparator_lt_signed",
+                                                    "comparator_lte_signed",
+                                                    "comparator_gt_signed",
+                                                    "comparator_gte_signed"};
         return prims.count(prim);
     }
     static std::string pinOf(const SItem& it, const std::string& name) {
@@ -5485,14 +5771,16 @@ private:
             const char c = text[i];
             if (std::isdigit(static_cast<unsigned char>(c))) {
                 // a number, and a sized literal's base and digits after it
-                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
-                                           || text[i] == '\'' || text[i] == '_')) {
+                while (i < text.size()
+                       && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '\''
+                           || text[i] == '_')) {
                     ++i;
                 }
             } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$') {
                 const size_t b = i;
-                while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i]))
-                                           || text[i] == '_' || text[i] == '$')) {
+                while (i < text.size()
+                       && (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '_'
+                           || text[i] == '$')) {
                     ++i;
                 }
                 refs.push_back(text.substr(b, i - b));
@@ -5632,8 +5920,9 @@ private:
         };
         prune(m_decls);
         prune(m_wires);
-        // A cached operator whose cell was just removed would hand a later genUnary/genBinary/genMux
-        // (shareOperators runs between dce passes) a wire nothing drives or declares
+        // A cached operator whose cell was just removed would hand a later
+        // genUnary/genBinary/genMux (shareOperators runs between dce passes) a wire nothing drives
+        // or declares
         for (auto it = m_opCache.begin(); it != m_opCache.end();) {
             it = used.count(it->second.text) ? std::next(it) : m_opCache.erase(it);
         }
@@ -5648,23 +5937,55 @@ private:
             std::vector<std::pair<std::string, std::string>> ren;
             std::string name;
             const std::string& p = it.prim;
-            if (p == "bitwise_not") { name = "RTL_INV"; ren = {{"in", "I0"}, {"out", "O"}}; }
-            else if (p == "bitwise_and") { name = "RTL_AND"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "bitwise_or") { name = "RTL_OR"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "bitwise_xor") { name = "RTL_XOR"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "mux2") { name = "RTL_MUX"; ren = {{"sel", "S"}, {"in0", "I0"}, {"in1", "I1"}, {"out", "O"}}; }
-            else if (p == "adder") { name = "RTL_ADD"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "subtractor") { name = "RTL_SUB"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "multiplier" || p == "multiplier_signed") { name = "RTL_MUL"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "shifter_left") { name = "RTL_LSHIFT"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "shifter_right" || p == "shifter_right_arith") { name = "RTL_RSHIFT"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_eq") { name = "RTL_EQ"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_neq") { name = "RTL_NEQ"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_lt" || p == "comparator_lt_signed") { name = "RTL_LT"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_lte" || p == "comparator_lte_signed") { name = "RTL_LEQ"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_gt" || p == "comparator_gt_signed") { name = "RTL_GT"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "comparator_gte" || p == "comparator_gte_signed") { name = "RTL_GEQ"; ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}}; }
-            else if (p == "dff_en" || p == "dffn_en") {
+            if (p == "bitwise_not") {
+                name = "RTL_INV";
+                ren = {{"in", "I0"}, {"out", "O"}};
+            } else if (p == "bitwise_and") {
+                name = "RTL_AND";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "bitwise_or") {
+                name = "RTL_OR";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "bitwise_xor") {
+                name = "RTL_XOR";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "mux2") {
+                name = "RTL_MUX";
+                ren = {{"sel", "S"}, {"in0", "I0"}, {"in1", "I1"}, {"out", "O"}};
+            } else if (p == "adder") {
+                name = "RTL_ADD";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "subtractor") {
+                name = "RTL_SUB";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "multiplier" || p == "multiplier_signed") {
+                name = "RTL_MUL";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "shifter_left") {
+                name = "RTL_LSHIFT";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "shifter_right" || p == "shifter_right_arith") {
+                name = "RTL_RSHIFT";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_eq") {
+                name = "RTL_EQ";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_neq") {
+                name = "RTL_NEQ";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_lt" || p == "comparator_lt_signed") {
+                name = "RTL_LT";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_lte" || p == "comparator_lte_signed") {
+                name = "RTL_LEQ";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_gt" || p == "comparator_gt_signed") {
+                name = "RTL_GT";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "comparator_gte" || p == "comparator_gte_signed") {
+                name = "RTL_GEQ";
+                ren = {{"a", "I0"}, {"b", "I1"}, {"out", "O"}};
+            } else if (p == "dff_en" || p == "dffn_en") {
                 std::string width = "1";
                 bool isAsync = false;
                 for (const auto& kv : it.params) {
@@ -5721,8 +6042,8 @@ private:
             os << " (\n";
             for (size_t i = 0; i < ports.size(); ++i) {
                 const SDecl& d = *ports[i];
-                os << "  " << d.dir.verilogKwd() << " " << rangeStr(d) << " " << d.name << d.unpacked
-                   << (i + 1 < ports.size() ? ",\n" : "\n");
+                os << "  " << d.dir.verilogKwd() << " " << rangeStr(d) << " " << d.name
+                   << d.unpacked << (i + 1 < ports.size() ? ",\n" : "\n");
             }
             os << ");\n";
         }
@@ -5731,7 +6052,8 @@ private:
             if (d.isParam) os << "  localparam " << d.name << " = " << d.paramValue << ";\n";
         }
         for (const SDecl& d : m_decls) {
-            if (!d.dir.isAny() && !d.isParam) os << "  " << rangeStr(d) << " " << d.name << d.unpacked << ";\n";
+            if (!d.dir.isAny() && !d.isParam)
+                os << "  " << rangeStr(d) << " " << d.name << d.unpacked << ";\n";
         }
         for (const SDecl& d : m_wires) os << "  " << rangeStr(d) << " " << d.name << ";\n";
         if (!m_items.empty()) os << "\n";
@@ -5745,7 +6067,8 @@ private:
                 if (!it.params.empty()) {
                     os << " #(";
                     for (size_t i = 0; i < it.params.size(); ++i) {
-                        os << (i ? ", " : "") << "." << it.params[i].first << "(" << it.params[i].second << ")";
+                        os << (i ? ", " : "") << "." << it.params[i].first << "("
+                           << it.params[i].second << ")";
                     }
                     os << ")";
                 }
@@ -6034,10 +6357,10 @@ class StructIfaceLower final {
                         const auto pit = parentp->sig.find(kv.first);
                         if (pit == parentp->sig.end()) continue;
                         const bool out = kv.second->direction() == VDirection::OUTPUT;
-                        AstPin* const npinp = new AstPin{
-                            pinp->fileline(), pinp->pinNum(), kv.second->name(),
-                            new AstVarRef{pinp->fileline(), pit->second,
-                                          out ? VAccess::WRITE : VAccess::READ}};
+                        AstPin* const npinp
+                            = new AstPin{pinp->fileline(), pinp->pinNum(), kv.second->name(),
+                                         new AstVarRef{pinp->fileline(), pit->second,
+                                                       out ? VAccess::WRITE : VAccess::READ}};
                         npinp->modVarp(kv.second);
                         pinp->addNextHere(npinp);
                     }
@@ -6070,7 +6393,8 @@ static void emitStructTo(std::ostream& os) {
     const bool xilinx = v3Global.opt.structOnlyXilinxRtl();
     if (xilinx) {
         os << "// Generated by xilinx_rtl backend\n"
-              "// Cells use Vivado RTL elaboration vocabulary (RTL_INV, RTL_AND, RTL_REG_SYNC, ...)\n\n";
+              "// Cells use Vivado RTL elaboration vocabulary (RTL_INV, RTL_AND, RTL_REG_SYNC, "
+              "...)\n\n";
     } else {
         os << "// Generated by structural converter\n"
               "// Primitives defined in: structural_primitives.sv\n\n";

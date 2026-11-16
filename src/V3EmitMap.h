@@ -7,6 +7,7 @@
 #define VERILATOR_V3EMITMAP_H_
 #include "config_build.h"
 #include "verilatedos.h"
+
 #include <string>
 class V3EmitMap final {
 public:
