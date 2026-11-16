@@ -2287,13 +2287,32 @@ private:
             for (const auto& pin : c.ins) for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
             for (const auto& pin : c.outs) for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
         }
+        // A clock input also gets a BUFG behind its IBUF (yosys's clkbufmap):
+        // the clock pins of the registers, DSPs and memories it feeds are then
+        // on the global clock tree, where nextpnr would otherwise route a pad
+        // clock through the fabric (simpleuart: 147 MHz against 172).
+        std::unordered_set<int> clockVars;  // AIG vars (resolved) read as clocks
+        for (const Design::Reg& r : m_d.regs) clockVars.insert(m_aig.resolve(r.clk) >> 1);
+        for (const AigB::Dsp& d : m_aig.m_dsps) clockVars.insert(m_aig.resolve(d.clk) >> 1);
+        for (const Design::Cell& c : m_d.cells2) {
+            if (c.type.rfind("memory_", 0) != 0) continue;
+            for (const auto& pin : c.ins)
+                if (pin.first == "clk") for (const int l : pin.second) clockVars.insert(m_aig.resolve(l) >> 1);
+        }
+        clockVars.erase(0);  // the constant
         for (const auto& kv : m_d.inputs) {
             std::vector<std::string> nets;
             size_t b = 0;
             for (const int l : kv.second) {
                 const std::string n = netOfLit(l);
-                if (noIobuf || bufferedVars.count(m_aig.resolve(l) >> 1)) {
+                const int v = m_aig.resolve(l) >> 1;
+                if (noIobuf || bufferedVars.count(v)) {
                     nets.push_back(n);
+                } else if (clockVars.count(v)) {
+                    const std::string pad = newNet(), ib = newNet();
+                    cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + pad + "]"}}, {{"O", "[" + ib + "]"}});
+                    cell("BUFG", "bufg_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + ib + "]"}}, {{"O", "[" + n + "]"}});
+                    nets.push_back(pad);
                 } else {
                     const std::string pad = newNet();
                     cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + pad + "]"}}, {{"O", "[" + n + "]"}});
