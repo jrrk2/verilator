@@ -751,6 +751,7 @@ class Mapper final {
     AigB m_aig;
     Design m_d;
     std::string m_top;
+    std::map<std::string, std::pair<int, bool>> m_portRange;  // top port -> (declared lsb, ascending)
     // AIG primary inputs: placeholder var -> PI index; and PI index -> var
     std::unordered_map<int, int> m_piOf;
     std::vector<int> m_piVar;
@@ -781,6 +782,20 @@ public:
             p.parseFile(mods);
         }
         m_top = sanitize(v3Global.rootp()->topModulep()->prettyName());
+        // The declared index range of each top port.  The structural netlist is
+        // written 0-based, so this comes from the AST: `input [5:1] addr` has
+        // bit 0 at index 1, which the JSON says as yosys does ("offset": 1, and
+        // "upto": 1 for an ascending range).
+        for (AstNode* np = v3Global.rootp()->topModulep()->stmtsp(); np; np = np->nextp()) {
+            const AstVar* const varp = VN_CAST(np, Var);
+            if (!varp || !varp->isIO() || !varp->dtypep()) continue;
+            const AstNodeDType* const d = varp->dtypep()->skipRefp();
+            VNumRange r;
+            if (const AstBasicDType* const bp = VN_CAST(d, BasicDType)) r = bp->declRange();
+            else if (const AstPackArrayDType* const pp = VN_CAST(d, PackArrayDType)) r = pp->declRange();
+            else continue;
+            if (r.lo() != 0 || r.ascending()) m_portRange[sanitize(varp->prettyName())] = {r.lo(), r.ascending()};
+        }
         if (!mods.count(m_top)) {
             for (const auto& kv : mods) {  // top = a module nobody instantiates
                 bool used = false;
@@ -2264,8 +2279,20 @@ private:
         auto port = [&](const std::string& name, const char* dir, const std::vector<std::string>& nets) {
             m_portRecs.push_back({name, dir, nets});
             if (std::string(dir) != "output") for (const std::string& n : nets) m_drivenNets.insert(n);
-            ports << (first ? "" : ",\n") << "    \"" << name << "\": {\"direction\": \"" << dir << "\", \"bits\": " << bitsJson(nets) << "}";
-            netnames << (first ? "" : ",\n") << "    \"" << name << "\": {\"hide_name\": 0, \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
+            // A port declared [5:1] has bit 0 at index 1: yosys writes that as
+            // "offset", and so does this, or every reader that names bits by
+            // index (an equivalence check against another synthesis, a pin
+            // constraint on addr[1]) takes the port's bit 1 for its bit 0.
+            std::string offset;
+            {
+                const auto rit = m_portRange.find(name);
+                if (rit != m_portRange.end()) {
+                    if (rit->second.first != 0) offset += ", \"offset\": " + std::to_string(rit->second.first);
+                    if (rit->second.second) offset += ", \"upto\": 1";
+                }
+            }
+            ports << (first ? "" : ",\n") << "    \"" << name << "\": {\"direction\": \"" << dir << "\"" << offset << ", \"bits\": " << bitsJson(nets) << "}";
+            netnames << (first ? "" : ",\n") << "    \"" << name << "\": {\"hide_name\": 0" << offset << ", \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             first = false;
         };
         // Every pad needs an IO buffer (yosys's iopadmap): a port bit that no
@@ -2382,7 +2409,9 @@ private:
                 if (!nets[b].empty() && nets[b][0] != '"') m_netName.emplace(nets[b], bitName(kv.first, b));
             }
             if (!anyInv) {
-                netnames << ",\n    \"" << kv.first << "\": {\"hide_name\": 0, \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
+                netnames << ",\n    \"" << kv.first << "\": {\"hide_name\": 0"
+                         << (kv.second.lsb != 0 ? ", \"offset\": " + std::to_string(kv.second.lsb) : std::string())
+                         << ", \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             } else {
                 for (size_t b = 0; b < nets.size(); ++b) {
                     if (nets[b].empty() || nets[b][0] == '"') continue;
