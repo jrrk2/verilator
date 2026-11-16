@@ -1021,14 +1021,24 @@ private:
                 }
                 return r;
             }
+            // A variable position is a shift by that position, taken w bits
+            // wide: a mux tree over the index bits (log2 depth), where a
+            // chain of per-position compares would be linear and map badly.
+            // A position below the declared lsb reads 0, like one past the end.
             const Vec idx = eval(ie, sc);
-            Vec r(w, m_bl.F());
-            for (size_t s = 0; s < base.size(); ++s) {
-                const int hit = m_bl.eq(idx, m_bl.constVec(s + lsb + (e->ival2 ? w - 1 : 0), idx.size()));
-                for (int i = 0; i < w; ++i) {
-                    const size_t k = s + i;
-                    r[i] = m_bl.MUX(hit, r[i], k < base.size() ? base[k] : m_bl.F());
-                }
+            const long long c = lsb + (e->ival2 ? w - 1 : 0);
+            Vec pos = idx;
+            int below = m_bl.F();
+            if (c != 0) {
+                const Vec cv = m_bl.constVec(static_cast<unsigned long long>(c), idx.size());
+                below = m_bl.ltU(idx, cv);
+                pos = m_bl.sub(idx, cv);
+            }
+            const Vec sh = m_bl.shr(base, pos, false);
+            Vec r;
+            for (int i = 0; i < w; ++i) {
+                const int bit = i < static_cast<int>(sh.size()) ? sh[i] : m_bl.F();
+                r.push_back(m_bl.MUX(below, bit, m_bl.F()));
             }
             return r;
         }
