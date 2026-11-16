@@ -508,6 +508,17 @@ void V3ParseImp::tokenPull() {
     VL_RESTORER(yylval);
     yylexReadTok();  // sets yylval
     UINFO(9, "tokenPulled " << yylval);
+    if (m_attrFullCase || m_attrParallelCase) {
+        const int tok = yylval.token;
+        if (tok == yCASE || tok == yCASEX || tok == yCASEZ) {
+            m_attrCaseFl = yylval.fl;
+            m_attrCaseFull = m_attrFullCase;
+            m_attrCaseParallel = m_attrParallelCase;
+            m_attrFullCase = m_attrParallelCase = false;
+        } else if (tok != yUNIQUE && tok != yUNIQUE0 && tok != yPRIORITY) {
+            m_attrFullCase = m_attrParallelCase = false;  // attribute of something else
+        }
+    }
     m_tokensAhead.push_back(yylval);
     if (debug() >= 10) dumpTokensAhead(__LINE__);
 }

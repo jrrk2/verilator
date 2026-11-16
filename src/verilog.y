@@ -3913,11 +3913,11 @@ unique_priorityE<uniqstate>:    // IEEE: unique_priority + empty
 
 caseStart<casep>:               // IEEE: part of case_statement
                 yCASE  '(' exprTypeCompare ')'
-                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASE, $3, nullptr}; }
+                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASE, $3, nullptr}; PARSEP->attrCaseApply($$); }
         |       yCASEX '(' exprTypeCompare ')'
-                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASEX, $3, nullptr}; }
+                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASEX, $3, nullptr}; PARSEP->attrCaseApply($$); }
         |       yCASEZ '(' exprTypeCompare ')'
-                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASEZ, $3, nullptr}; }
+                        { $$ = GRAMMARP->m_caseAttrp = new AstCase{$1, VCaseType::CT_CASEZ, $3, nullptr}; PARSEP->attrCaseApply($$); }
         ;
 
 caseAttrE:

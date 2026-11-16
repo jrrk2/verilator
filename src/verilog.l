@@ -1096,7 +1096,11 @@ vnum    {vnum1}|{vnum2}|{vnum3}|{vnum4}|{vnum5}
   /************************************************************************/
   /* Attributes */
 <ATTRMODE>{crnl}        { yymore(); }
-<ATTRMODE>"*)"          { FL_FWD; yy_pop_state(); FL_BRK; }
+<ATTRMODE>"*)"          { FL_FWD;
+                          { const string attr(yytext, yyleng);
+                            PARSEP->lexAttrCase(attr.find("full_case") != string::npos,
+                                                attr.find("parallel_case") != string::npos); }
+                          yy_pop_state(); FL_BRK; }
 <ATTRMODE>{word}        { yymore(); }
 <ATTRMODE>.             { yymore(); }
 <ATTRMODE><<EOF>>       { FL; yylval.fl->v3error("EOF in (*");

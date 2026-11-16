@@ -308,6 +308,7 @@ private:
     bool m_structOnlyXilinxRtl = false;  // main switch: --struct-only-xilinx-rtl
     bool m_structOnlyWidePackedMem = false;  // main switch: --struct-only-wide-packed-mem
     bool m_structOnlyReport = false;  // main switch: --struct-only-report
+    bool m_structOnlyFullCase = false;  // main switch: --struct-only-full-case
     bool m_mapOnlyKeepTemps = false;  // main switch: --map-only-keep-temps
     bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
@@ -774,6 +775,7 @@ public:
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }
     bool structOnlyReport() const { return m_structOnlyReport; }
+    bool structOnlyFullCase() const { return m_structOnlyFullCase; }
     // True if a synthesis netlist (structural, BIR or mapped) is requested
     bool synthOnly() const {
         return !m_structOnlyOutput.empty() || !m_birOnlyOutput.empty() || !m_mapOnlyOutput.empty()

@@ -689,14 +689,17 @@ private:
         return out;
     }
     void genDff(const std::string& q, const std::vector<std::string>& qRefs, const SExpr& d,
-                const SExpr& en, int width, uint64_t resetVal, bool useRst) {
+                const SExpr& en, int width, uint64_t resetVal, bool useRst,
+                const SExpr* ownRstp = nullptr) {
         if (m_seq) m_regsInBlock.emplace_back(q, width);
         SItem& it = addCell(m_negedge ? "dffn_en" : "dff_en", newName("dff"));
         it.params = {{"WIDTH", std::to_string(width)},
                      {"RESET_VAL", std::to_string(resetVal)},
-                     {"IS_ASYNC", (useRst && m_rstAsync) ? "1" : "0"}};
+                     {"IS_ASYNC", (useRst && !ownRstp && m_rstAsync) ? "1" : "0"}};
         pinIn(it, "clk", m_clk);
-        if (useRst) {
+        if (ownRstp) {
+            pinIn(it, "rst", *ownRstp);
+        } else if (useRst) {
             pinIn(it, "rst", m_rst);
         } else {
             it.pins.push_back({"rst", "1'b0"});
@@ -1031,6 +1034,10 @@ private:
                 // verification constructs: no hardware
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 lowerPass(bp->stmtsp());
+            } else if (VN_IS(nodep, Class)) {
+                // A class declaration is not hardware.  A use of the class
+                // in the design's logic is reported where it occurs.
+                warnNode(nodep, "class declaration dropped (no hardware)");
             } else {
                 warnNode(nodep, "unsupported module item dropped");
             }
@@ -1144,7 +1151,10 @@ private:
             if (ep->width() > 64) return fail();
             const int w = ep->width();
             if (AstConst* const cp = VN_CAST(ep, Const)) {
-                if (cp->num().isFourState() || cp->num().width() > 64) return fail();
+                // A string or real literal has no bit value to interpret
+                if (!cp->num().isNumber() || cp->num().isFourState() || cp->num().width() > 64) {
+                    return fail();
+                }
                 return mask(cp->num().toUQuad(), w);
             }
             if (AstVarRef* const vp = VN_CAST(ep, VarRef)) {
@@ -1152,7 +1162,10 @@ private:
                 if (it == scalars.end()) {
                     // never written here: its declaration value, else 0
                     if (const AstConst* const ip = VN_CAST(vp->varp()->valuep(), Const)) {
-                        if (!ip->num().isFourState() && ip->num().width() <= 64) return mask(ip->num().toUQuad(), w);
+                        if (ip->num().isNumber() && !ip->num().isFourState()
+                            && ip->num().width() <= 64) {
+                            return mask(ip->num().toUQuad(), w);
+                        }
                     }
                     return 0;
                 }
@@ -1924,18 +1937,25 @@ private:
             return;
         }
         if (cls.kind == BlockKind::UNSYNTH) {
-            warnNode(ap, "unsynthesizable always block: " + cls.reason);
-            // The block's registers would be dropped and their loads left
-            // floating: stop here rather than hand a gutted netlist to P&R.
             if (cls.neverFires) {
+                // Nothing can trigger the block, so its registers keep the
+                // declaration values the declaration pass already emitted.
+                // The netlist is complete: a note, not a loss.
+                warnNode(ap, "always block dropped: " + cls.reason);
                 std::cerr << "%Warning-STRUCT: " << ap->fileline()->ascii()
                           << ": always block dropped: " << cls.reason << "\n";
             } else {
+                warnNode(ap, "unsynthesizable always block: " + cls.reason);
+                // The block's registers would be dropped and their loads left
+                // floating: stop here rather than hand a gutted netlist to P&R.
                 ap->v3error("Synthesis would drop this always block: " << cls.reason);
             }
             SItem it;
             it.kind = SItem::COMMENT;
-            it.text = "/* unsynthesizable always block: " + cls.reason + " */";
+            it.text = std::string{"/* "}
+                      + (cls.neverFires ? "always block never fires: "
+                                        : "unsynthesizable always block: ")
+                      + cls.reason + " */";
             it.keep = true;
             m_items.push_back(it);
             return;
@@ -2013,9 +2033,11 @@ private:
             if (m_seq) {
                 SExpr d = val;
                 SExpr en = constExpr(1, 1);
+                std::vector<std::pair<std::string, bool>> enPath;
                 // `q <= rst ? C : x`  -> the register's reset pin / RESET_VAL
                 uint64_t resetVal = 0;
                 bool useRst = false;
+                bool haveEn = false;
                 if (m_hasRst) {
                     const auto rit = m_muxes.find(d.text);
                     if (rit != m_muxes.end() && rit->second.sel.text == m_rst.text
@@ -2025,8 +2047,13 @@ private:
                         useRst = true;
                     } else if (rit != m_muxes.end() && rit->second.sel.text == m_rst.text
                                && rit->second.in1.text == key) {
-                        // reset branch holds: no reset on this register
+                        // The reset branch does not assign this register, so it
+                        // holds while the reset is active: no reset pin, but the
+                        // write must still be gated by !rst (spimemio's obuffer).
                         d = rit->second.in0;
+                        en = materialize(notBit(m_rst));
+                        enPath.emplace_back(m_rst.text, true);
+                        haveEn = true;
                     } else if (rit != m_muxes.end() && m_rstNegated
                                && rit->second.sel.text == m_rstRaw.text && rit->second.in0.hasVal) {
                         // `q <= rst_n ? x : C`: the reset is the mux's other arm
@@ -2036,16 +2063,18 @@ private:
                     } else if (rit != m_muxes.end() && m_rstNegated
                                && rit->second.sel.text == m_rstRaw.text && rit->second.in0.text == key) {
                         d = rit->second.in1;
+                        en = m_rstRaw;
+                        enPath.emplace_back(m_rstRaw.text, false);
+                        haveEn = true;
                     }
                 }
                 // `if (en) q <= d;` -> dff_en with EN; nested holds
                 // (`if (en) if (we) ... else q <= d;`) fold into one enable
-                std::vector<std::pair<std::string, bool>> enPath;
                 for (int level = 0; level < 4; ++level) {
                     const auto mit = m_muxes.find(d.text);
                     if (mit == m_muxes.end()) break;
                     SExpr lvlEn;
-                    if (mit->second.in0.text == key && (level > 0 || mit->second.sel.isIdent)) {
+                    if (mit->second.in0.text == key && (level > 0 || haveEn || mit->second.sel.isIdent)) {
                         lvlEn = mit->second.sel;
                         enPath.emplace_back(mit->second.sel.text, false);
                         d = mit->second.in1;
@@ -2057,7 +2086,46 @@ private:
                     } else {
                         break;
                     }
-                    en = level == 0 ? lvlEn : materialize(andBits(en, lvlEn));
+                    en = !haveEn ? lvlEn : materialize(andBits(en, lvlEn));
+                    haveEn = true;
+                }
+                // A synchronous reset the block's classification did not take as
+                // its reset: one written after the assignments (`q <= x; ...
+                // if (rst) q <= 0;`, Vivado's macc example) or on a condition of
+                // its own.  `q <= c ? K : x` goes on the register's reset pin
+                // (FDRE / FDSE have one for free; a mux costs a LUT per bit).
+                // Inside an enable the reset only fires with it: rst = c & en.
+                // Not when the other arm is a block RAM read, which the read
+                // port absorbs below.
+                SExpr ownRst;
+                bool useOwnRst = false;
+                if (!useRst && !m_rstAsync) {
+                    const auto mit = m_muxes.find(d.text);
+                    if (mit != m_muxes.end()) {
+                        const MuxInfo mx = mit->second;
+                        const auto isRead = [&](const SExpr& e) {
+                            if (e.isIdent && m_readPorts.count(e.text)) return true;
+                            const auto it2 = m_muxes.find(e.text);
+                            return it2 != m_muxes.end()
+                                   && ((it2->second.in0.isIdent && m_readPorts.count(it2->second.in0.text))
+                                       || (it2->second.in1.isIdent && m_readPorts.count(it2->second.in1.text)));
+                        };
+                        if (mx.in1.hasVal && !mx.in0.hasVal && mx.in0.text != key && !isRead(mx.in0)) {
+                            resetVal = mx.in1.val;
+                            ownRst = mx.sel;
+                            d = mx.in0;
+                            useOwnRst = true;
+                        } else if (mx.in0.hasVal && !mx.in1.hasVal && mx.in1.text != key && !isRead(mx.in1)) {
+                            resetVal = mx.in0.val;
+                            ownRst = materialize(notBit(mx.sel));
+                            d = mx.in1;
+                            useOwnRst = true;
+                        }
+                        if (useOwnRst) {
+                            if (!(en.hasVal && en.val)) ownRst = materialize(andBits(ownRst, en));
+                            useRst = true;
+                        }
+                    }
                 }
                 // `if (we) q <= wd; else q <= mem[a];` -- a write-first port (LiteX's
                 // L2 cache, LiteEth's buffers).  Nonblocking, mem[a] is the old word,
@@ -2118,7 +2186,7 @@ private:
                         continue;
                     }
                 }
-                genDff(key, qRefs, d, en, width, resetVal, useRst);
+                genDff(key, qRefs, d, en, width, resetVal, useRst, useOwnRst ? &ownRst : nullptr);
             } else if (m_latch || m_comb) {
                 std::map<std::string, HoldSplit> memo;
                 const HoldSplit hs = splitHold(val, key, memo);
@@ -3700,12 +3768,23 @@ private:
                             << " matches no item and there is no default"
                             << " (IEEE 1800-2023 12.5.3)");
         }
-        if (cp->fullPragma() || cp->parallelPragma()) {
-            warnNode(cp, "full_case/parallel_case comment ignored; the netlist follows the"
-                         " case's own semantics (use unique/unique0/priority)");
-        }
         full = f.full == CaseProp::YES;
         parallel = f.parallel == CaseProp::YES;
+        if (cp->fullPragma() || cp->parallelPragma()) {
+            if (v3Global.opt.structOnlyFullCase()) {
+                // --struct-only-full-case: the pragma is a synthesis don't-care
+                // claim, as vendor tools and yosys read it.  full_case: selector
+                // values no item matches never occur, so the last item is taken
+                // on them instead of holding (no latch).  parallel_case: items
+                // never overlap, so a balanced tree may pick either.
+                if (cp->fullPragma() && !hasDefault) full = true;
+                if (cp->parallelPragma()) parallel = true;
+            } else {
+                warnNode(cp, "full_case/parallel_case pragma ignored; the netlist follows"
+                             " the case's own semantics (use unique/unique0/priority,"
+                             " or --struct-only-full-case)");
+            }
+        }
         if (f.full == CaseProp::UNKNOWN && claimsFull && !hasDefault) {
             full = true;
             warnNode(cp, "fullness of case not decidable; trusting '" + kw + "'");
@@ -4252,21 +4331,9 @@ private:
                 return isAnd != rneg ? genMux(r, c, x, 1) : genMux(r, x, c, 1);
             }
         }
-        if (AstNodeBiop* const bp = VN_CAST(nodep, NodeBiop)) return lowerBiop(bp, env);
-        if (VN_IS(nodep, CastSize) || VN_IS(nodep, CastWrap)) {
-            AstNodeExpr* const inner = VN_IS(nodep, CastSize)
-                                           ? VN_AS(nodep, CastSize)->lhsp()
-                                           : VN_AS(nodep, CastWrap)->lhsp();
-            return resize(lowerExpr(inner, env), width, nodep->isSigned());
-        }
-        if (VN_IS(nodep, ExprStmt)) {
-            AstExprStmt* const ep = VN_AS(nodep, ExprStmt);
-            lowerStmts(ep->stmtsp(), env);
-            return lowerExpr(ep->resultp(), env);
-        }
-        if (VN_IS(nodep, CReset)) return constExpr(0, width);
         if (AstNodeStream* const stp = VN_CAST(nodep, NodeStream)) {
-            // {<< S {x}} reverses the order of S-bit slices; {>> S {x}} is the identity
+            // {<< S {x}} reverses the order of S-bit slices; {>> S {x}} is the identity.
+            // A stream is an AstNodeBiop, so it must be taken before lowerBiop.
             const SExpr src = materialize(lowerExpr(stp->lhsp(), env));
             const SExpr slice = lowerExpr(stp->rhsp(), env);
             if (VN_IS(stp, StreamR) || !slice.hasVal || slice.val == 0) {
@@ -4301,6 +4368,19 @@ private:
             addAssign(w.text, e);
             return resize(w, width, false);
         }
+        if (AstNodeBiop* const bp = VN_CAST(nodep, NodeBiop)) return lowerBiop(bp, env);
+        if (VN_IS(nodep, CastSize) || VN_IS(nodep, CastWrap)) {
+            AstNodeExpr* const inner = VN_IS(nodep, CastSize)
+                                           ? VN_AS(nodep, CastSize)->lhsp()
+                                           : VN_AS(nodep, CastWrap)->lhsp();
+            return resize(lowerExpr(inner, env), width, nodep->isSigned());
+        }
+        if (VN_IS(nodep, ExprStmt)) {
+            AstExprStmt* const ep = VN_AS(nodep, ExprStmt);
+            lowerStmts(ep->stmtsp(), env);
+            return lowerExpr(ep->resultp(), env);
+        }
+        if (VN_IS(nodep, CReset)) return constExpr(0, width);
         if (VN_IS(nodep, VarXRef)) {
             warnNode(nodep, "hierarchical reference replaced by 0");
             return constExpr(0, width);
@@ -4308,6 +4388,19 @@ private:
         if (VN_IS(nodep, StructSel) || VN_IS(nodep, MemberSel)) {
             warnNode(nodep, "unpacked struct member select replaced by 0");
             return constExpr(0, width);
+        }
+        if (AstCExpr* const cxp = VN_CAST(nodep, CExpr)) {
+            // V3Assert guards every check with a simulator context query
+            // (assertOn(), time(), executingFinal(), ...).  None is hardware,
+            // and 0 is the value under which the design's own logic stands.
+            std::string text;
+            for (AstNode* np = cxp->nodesp(); np; np = np->nextp()) {
+                if (const AstText* const tp = VN_CAST(np, Text)) text += tp->text();
+            }
+            if (text.find("_vm_contextp__->") != std::string::npos) {
+                warnNode(nodep, "simulator runtime query treated as 0");
+                return constExpr(0, width);
+            }
         }
         warnNode(nodep, "unsupported expression replaced by 0");
         return constExpr(0, width);
@@ -4980,12 +5073,21 @@ private:
                     have = readHexWords(m.initFile, words);
                 }
                 if (!have || m.dataWidth > 64 || m.addrWidth > 16) {
-                    // Nothing writes it and there is no image to read: every
-                    // read would be 0, which is never what the source meant
-                    v3error("Synthesis: memory '" << m.name
-                            << "' is never written and has no loadable $readmemh image"
-                            << (m.initFile.empty() ? std::string{} : " (" + m.initFile + ")")
-                            << "; its reads would all be 0");
+                    if (have) {
+                        // An image the logic cannot hold: its data would be lost
+                        v3error("Synthesis: memory '" << m.name
+                                << "' is never written and its image is too large to"
+                                   " lower to logic; its reads would all be 0");
+                    } else {
+                        // Nothing writes it and there is no image to read.  In
+                        // simulation every read is X, of which 0 is a legal
+                        // refinement, but a design rarely means this: say so.
+                        std::cerr << "%Warning-STRUCT: memory '" << m.name
+                                  << "' is never written and has no loadable $readmemh image"
+                                  << (m.initFile.empty() ? std::string{} : " (" + m.initFile + ")")
+                                  << "; its reads are all 0\n";
+                        warn("memory " + m.name + " is never written and has no image; reads are 0");
+                    }
                     for (size_t i = 0; i < nr; ++i) {
                         declRd(i);
                         addAssign(rdName(i), zeroD);
@@ -5257,30 +5359,40 @@ private:
 
     // Which items are live given these extra root consumers (fixed point of
     // "an item is dead if nothing live reads what it drives")
+    // Live items are those reachable backwards from the roots: the module's
+    // outputs, the names in `roots`, and the cells that are kept regardless.
+    // A reachability closure, not "unread until nothing changes": a cycle
+    // that nothing outside reads (a debug register fed by a wire of its own
+    // value) would keep itself alive under the latter.
     std::vector<bool> markLive(const std::unordered_set<std::string>& roots) const {
-        std::vector<bool> alive(m_items.size(), true);
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            std::unordered_set<std::string> consumed = roots;
-            for (const SDecl& d : m_decls) {
-                if (d.dir.isWritable()) consumed.insert(d.name);
-            }
-            for (size_t i = 0; i < m_items.size(); ++i) {
-                if (!alive[i]) continue;
-                for (const std::string& r : m_items[i].reads) consumed.insert(r);
-            }
-            for (size_t i = 0; i < m_items.size(); ++i) {
-                if (!alive[i]) continue;
-                const SItem& it = m_items[i];
-                if (it.keep || it.kind == SItem::USERCELL || it.kind == SItem::COMMENT) continue;
-                bool used = false;
-                for (const std::string& w : it.writes) used |= consumed.count(w) > 0;
-                if (!used) {
-                    alive[i] = false;
-                    changed = true;
-                }
-            }
+        std::unordered_map<std::string, std::vector<size_t>> writers;
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            for (const std::string& w : m_items[i].writes) writers[w].push_back(i);
+        }
+        std::vector<bool> alive(m_items.size(), false);
+        std::vector<size_t> work;
+        const auto mark = [&](size_t i) {
+            if (alive[i]) return;
+            alive[i] = true;
+            work.push_back(i);
+        };
+        const auto markWriters = [&](const std::string& name) {
+            const auto it = writers.find(name);
+            if (it == writers.end()) return;
+            for (const size_t i : it->second) mark(i);
+        };
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            const SItem& it = m_items[i];
+            if (it.keep || it.kind == SItem::USERCELL || it.kind == SItem::COMMENT) mark(i);
+        }
+        for (const std::string& r : roots) markWriters(r);
+        for (const SDecl& d : m_decls) {
+            if (d.dir.isWritable()) markWriters(d.name);
+        }
+        while (!work.empty()) {
+            const size_t i = work.back();
+            work.pop_back();
+            for (const std::string& r : m_items[i].reads) markWriters(r);
         }
         return alive;
     }

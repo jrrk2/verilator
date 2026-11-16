@@ -170,6 +170,11 @@ class V3ParseImp final {
     VOptionBool m_unconnectedDrive;  // Last unconnected drive
 
     int m_lexPrevToken = 0;  // previous parsed token (for lexer)
+    bool m_attrFullCase = false;  // (* full_case *) seen, not yet attached to a case
+    bool m_attrParallelCase = false;  // (* parallel_case *) seen, not yet attached
+    FileLine* m_attrCaseFl = nullptr;  // FileLine of the case token the attributes belong to
+    bool m_attrCaseFull = false;  // ... which claimed full_case
+    bool m_attrCaseParallel = false;  // ... which claimed parallel_case
     bool m_afterColonColon = false;  // The previous token was '::'
     V3ParseBisonYYSType m_tokenLastBison{};  // Token we last sent to Bison
     std::deque<V3ParseBisonYYSType> m_tokensAhead;  // Tokens we parsed ahead of parser
@@ -292,6 +297,20 @@ public:
     void lexDestroy() VL_MT_DISABLED;
     static int stateVerilogRecent() VL_MT_DISABLED;  // Parser -> lexer communication
     int lexPrevToken() const { return m_lexPrevToken; }  // Parser -> lexer communication
+    // (* full_case *) / (* parallel_case *) attributes: the lexer records them,
+    // tokenPull attaches them to the case token that follows (through any
+    // unique/unique0/priority), and caseStart applies them to the AstCase.
+    void lexAttrCase(bool full, bool parallel) {
+        m_attrFullCase |= full;
+        m_attrParallelCase |= parallel;
+    }
+    void attrCaseApply(AstCase* casep) {
+        if (!m_attrCaseFl || casep->fileline() != m_attrCaseFl) return;
+        if (m_attrCaseFull) casep->fullPragma(true);
+        if (m_attrCaseParallel) casep->parallelPragma(true);
+        m_attrCaseFl = nullptr;
+        m_attrCaseFull = m_attrCaseParallel = false;
+    }
     size_t flexPpInputToLex(char* buf, size_t max_size) { return ppInputToLex(buf, max_size); }
 
     //==== Symbol tables

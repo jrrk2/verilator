@@ -1672,6 +1672,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-struct-only-xilinx-rtl", OnOff, &m_structOnlyXilinxRtl);
     DECL_OPTION("-struct-only-wide-packed-mem", OnOff, &m_structOnlyWidePackedMem);
     DECL_OPTION("-struct-only-report", OnOff, &m_structOnlyReport);
+    DECL_OPTION("-struct-only-full-case", OnOff, &m_structOnlyFullCase);
 
     DECL_OPTION("-LDFLAGS", CbVal, callStrSetter(&V3Options::addLdLibs));
     DECL_OPTION("-l2-name", Set, &m_l2Name);

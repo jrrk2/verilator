@@ -1388,8 +1388,8 @@ Summary:
    when the analysis cannot decide (labels that are not constants, or that
    test too many selector bits), the keyword is trusted.  A parallel case
    becomes a balanced mux tree, any other a priority chain; a full case drops
-   its unreachable default.  :code:`full_case`/:code:`parallel_case` comments
-   are ignored.
+   its unreachable default.  :code:`full_case`/:code:`parallel_case` pragmas
+   are ignored unless :vlopt:`--struct-only-full-case` is given.
 
    An :code:`always_comb` that does not assign a variable on every path is an
    error, as it would need a latch.  :code:`always_latch` and :code:`always
@@ -1413,6 +1413,17 @@ Summary:
 
    With :vlopt:`--struct-only-output`, print a Design-Compiler-style
    inferred-register table for every clocked block to stderr.
+
+.. option:: --struct-only-full-case
+
+   With :vlopt:`--struct-only-output`, read ``full_case`` and
+   ``parallel_case`` pragmas (as ``(* full_case *)`` attributes or
+   ``// synopsys full_case`` comments) the way vendor synthesis tools do: a
+   ``full_case`` without a default takes its last item on selector values no
+   item matches instead of holding (so no latch is inferred), and a
+   ``parallel_case`` is built as a balanced tree even when its items overlap.
+   Off by default: the netlist then follows the case's own semantics and the
+   pragma is reported as ignored.
 
 .. option:: --l2-name <value>
 
