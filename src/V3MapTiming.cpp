@@ -268,6 +268,28 @@ double combDelay(const V3MapTiming::Cell& c, const std::string& in, int ib, cons
     return kNaN;
 }
 
+// The tightest launch-to-capture distance between two related clocks: the
+// least positive gap from a rising edge of A (period pa, first edge at
+// offa) to the next rising edge of B, over their common period
+double minEdgeDistance(double pa, double offa, double pb, double offb) {
+    const long a = std::lround(pa * 1000), b = std::lround(pb * 1000);
+    long g = a, h = b;
+    while (h) {
+        const long t = g % h;
+        g = h;
+        h = t;
+    }
+    const long edgesA = std::min<long>(b / g, 100000);  // launch edges in the common period
+    double best = pb;
+    for (long k = 0; k < edgesA; ++k) {
+        const double t = offa + k * pa;
+        const double m = std::ceil((t - offb) / pb + 1e-9);
+        const double gap = offb + m * pb - t;
+        if (gap > 1e-6 && gap < best) best = gap;
+    }
+    return best;
+}
+
 // Tcl-style * and ? match
 bool globMatch(const char* pat, const char* s) {
     for (; *pat; ++pat, ++s) {
@@ -303,6 +325,11 @@ struct V3MapTiming::Impl final {
     std::map<std::string, std::vector<NodeId>> portNodes;  // "led" -> all bits, "led[3]" -> one
     std::unordered_map<std::string, NodeId> pinNodes;  // "cell/PORT" or "cell/PORT[3]" -> node
     std::map<DomainId, double> periods;
+    struct Wave final {  // a clock's edges, for the constraints between related clocks
+        double period = 0, offset = 0;
+        int family = -1;  // clocks of one MMCM, with the clock feeding it
+    };
+    std::map<DomainId, Wave> waves;
     NodeId constNode;
     const std::vector<Cell>* cells = nullptr;
     std::unique_ptr<tatum::FixedDelayCalculator> dc;
@@ -468,22 +495,30 @@ struct V3MapTiming::Impl final {
         }
         return out;
     }
-    DomainId newDomain(const std::string& name, double period) {
+    DomainId newDomain(const std::string& name, double period, double offset = 0, int family = -1) {
         const DomainId d = tc.create_clock_domain(name);
         periods[d] = period;
+        waves[d] = {period, offset, family};
         tc.set_setup_constraint(d, d, Time(period));
         return d;
     }
-    // The clock root a CPIN is fed from, through I/O and clock buffers
-    NodeId clockRoot(NodeId cpin) {
-        NodeId n = cpin;
+    // The clock root a pin is fed from, through I/O and clock buffers, and
+    // the delay of that path (nets and buffers)
+    NodeId clockRoot(NodeId pin, double* delay = nullptr) {
+        NodeId n = pin;
+        if (delay) *delay = 0;
         for (int guard = 0; guard < 16; ++guard) {
             const auto nit = nets.find(nodeNet[size_t(n)]);
             if (nit == nets.end() || !nit->second.driver) return NodeId::INVALID();
+            if (delay) *delay += netDelay(nit->second.sinks.size());
             n = nit->second.driver;
             if (tg.node_type(n) != NodeType::OPIN) return n;
             const int ci = nodeCell[size_t(n)];
             if (ci < 0 || !isBufferType(nodeType[size_t(n)])) return n;
+            if (delay && cells) {
+                const double d = combDelay((*cells)[ci], "I", 0, "O", 0);
+                if (!std::isnan(d)) *delay += d;
+            }
             // the buffer's data input: the first IPIN of the same cell
             NodeId in;
             for (size_t k = size_t(n); k-- > 0;) {
@@ -503,28 +538,56 @@ struct V3MapTiming::Impl final {
     // An MMCME2 / PLLE2 output is a clock of its own, with the period its
     // multiplier and dividers make of the input clock's (as Vivado derives
     // it): CLKOUTn = CLKIN1 * DIVCLK_DIVIDE * CLKOUTn_DIVIDE / CLKFBOUT_MULT
+    // The outputs are propagated clocks: their edges sit where the input
+    // clock's do at CLKIN1 (its insertion from the pad, plus any latency of
+    // its own domain), less the feedback path the MMCM deskews (CLKFBOUT to
+    // CLKFBIN through its buffer, for ZHOLD / BUF_IN compensation), shifted
+    // by CLKOUTn_PHASE; and the clocks of one MMCM, with the clock feeding
+    // it, are related: every pair gets the tightest launch-to-capture gap of
+    // their waveforms as its setup constraint.
     void generatedClocks() {
         if (!cells) return;
-        for (const Cell& c : *cells) {
+        int families = 0;
+        for (size_t ci = 0; ci < cells->size(); ++ci) {
+            const Cell& c = (*cells)[ci];
             const bool mmcm = startsWith(c.type, "MMCME2");
             const bool pll = startsWith(c.type, "PLLE2");
             if (!mmcm && !pll) continue;
-            double in = 0;
+            double in = 0, latency = 0;
+            int family = -1;
             const auto cit = pinNodes.find(c.name + "/CLKIN1");
             if (cit != pinNodes.end()) {
-                const DomainId d = domainFeeding(cit->second);
-                if (d) in = periods[d];
+                double insertion = 0;
+                const NodeId root = clockRoot(cit->second, &insertion);
+                const DomainId d = root ? tc.node_clock_domain(root) : DomainId::INVALID();
+                if (d) {
+                    in = periods[d];
+                    latency = insertion + tc.source_latency(d, tatum::ArrivalType::LATE).value();
+                    Wave& w = waves[d];
+                    if (w.family < 0) w.family = families++;
+                    family = w.family;
+                }
             }
             if (in <= 0) in = paramReal(c, "CLKIN1_PERIOD", 0);
             if (in <= 0) {
                 warn(c.name + ": no clock on CLKIN1 and no CLKIN1_PERIOD: its outputs are not clocks");
                 continue;
             }
+            if (family < 0) family = families++;
+            // the deskew: what the feedback path takes, when it is the cell's own CLKFBOUT
+            const auto fit = pinNodes.find(c.name + "/CLKFBIN");
+            const auto fot = pinNodes.find(c.name + "/CLKFBOUT");
+            if (fit != pinNodes.end() && fot != pinNodes.end()) {
+                double fb = 0;
+                const NodeId root = clockRoot(fit->second, &fb);
+                if (root && root == fot->second) latency -= fb;
+            }
             const double mult = paramReal(c, mmcm ? "CLKFBOUT_MULT_F" : "CLKFBOUT_MULT", 5);
             const double div = paramReal(c, "DIVCLK_DIVIDE", 1);
             for (int n = 0; n < 7; ++n) {
                 const std::string odivName = (mmcm && n == 0) ? "CLKOUT0_DIVIDE_F" : "CLKOUT" + std::to_string(n) + "_DIVIDE";
                 const double odiv = paramReal(c, odivName.c_str(), 1);
+                const double phase = paramReal(c, ("CLKOUT" + std::to_string(n) + "_PHASE").c_str(), 0);
                 for (const char* suffix : {"", "B"}) {
                     const std::string pinName = c.name + "/CLKOUT" + std::to_string(n) + suffix;
                     const auto pit = pinNodes.find(pinName);
@@ -535,8 +598,22 @@ struct V3MapTiming::Impl final {
                     if (nit == nets.end() || nit->second.sinks.empty()) continue;  // unused output
                     if (mult <= 0 || div <= 0 || odiv <= 0) continue;
                     const double period = in * div * odiv / mult;
-                    tc.set_clock_domain_source(clockSource(node), newDomain(pinName, period));
+                    double offset = period * phase / 360.0 + (suffix[0] ? period / 2 : 0);
+                    offset -= period * std::floor(offset / period);
+                    const DomainId d = newDomain(pinName, period, offset, family);
+                    tc.set_clock_domain_source(clockSource(node), d);
+                    tc.set_source_latency(d, tatum::ArrivalType::EARLY, Time(latency));
+                    tc.set_source_latency(d, tatum::ArrivalType::LATE, Time(latency));
                 }
+            }
+        }
+        for (const auto& a : waves) {
+            if (a.second.family < 0) continue;
+            for (const auto& b : waves) {
+                if (a.first == b.first || b.second.family != a.second.family) continue;
+                if (tc.should_analyze(a.first, b.first)) continue;  // constrained already
+                tc.set_setup_constraint(a.first, b.first,
+                                        Time(minEdgeDistance(a.second.period, a.second.offset, b.second.period, b.second.offset)));
             }
         }
     }
@@ -703,8 +780,13 @@ std::string V3MapTiming::summaryText() const {
     os.setf(std::ios::fixed);
     for (const Domain& d : m_impl->summary.domains) {
         os.precision(3);
-        os << "clock " << d.name << " period " << d.period << " ns: WNS " << d.wns << " ns, TNS " << d.tns << " ns, "
-           << d.failing << "/" << d.endpoints << " endpoints failing";
+        os << "clock " << d.name << " period " << d.period << " ns: ";
+        if (!d.endpoints) {
+            os << "no endpoints\n";
+            continue;
+        }
+        os << "WNS " << d.wns << " ns, TNS " << d.tns << " ns, " << d.failing << "/" << d.endpoints
+           << " endpoints failing";
         os.precision(1);
         os << " (Fmax " << d.fmax() << " MHz)\n";
     }
