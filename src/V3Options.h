@@ -318,7 +318,7 @@ private:
     int m_mapOnlyMaxFanout = -1;  // main switch: --map-only-max-fanout (-1: 32 with timing, else none)
     int m_mapOnlyTimingPaths = 20;  // main switch: --map-only-timing-paths
     double m_mapOnlyPeriod = 0;  // main switch: --map-only-period
-    double m_mapOnlyTimingMargin = 0;  // main switch: --map-only-timing-margin
+    double m_mapOnlyTimingMargin = -1;  // main switch: --map-only-timing-margin (-1: a fifth of the period)
     bool m_lintOnly = false;        // main switch: --lint-only
     bool m_gmake = false;           // main switch: --make gmake
     bool m_makeJson = false;        // main switch: --make json

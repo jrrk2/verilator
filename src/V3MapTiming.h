@@ -85,6 +85,8 @@ public:
     static double lutDelay(int inputs, double netDelay = -1);
     // The mean delay of the nets LUTs and muxes drive, in the analysed netlist
     double averageNetDelay() const;
+    // The shortest clock period constrained (0 when none)
+    double minPeriod() const;
 
 private:
     struct Impl;

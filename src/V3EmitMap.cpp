@@ -1108,13 +1108,17 @@ private:
             const auto it = m_netOfVar.find(m_piVar[i]);
             if (it != m_netOfVar.end()) ciArrival[i] = timing.arrival(it->second);
         }
-        // A cone abc has to speed up gets its required time (less the margin);
-        // one that meets it keeps the arrival it has, so area recovery does
-        // not spend the slack it was given on logic the routing then eats
+        // A cone abc has to speed up gets its required time less a margin (a
+        // fifth of the period unless given: abc's per-level delay is an
+        // average, the routing of what it builds is not); one that meets it
+        // keeps the arrival it has, so area recovery does not spend the slack
+        // it was given on logic the routing then eats
+        const double margin = v3Global.opt.mapOnlyTimingMargin() >= 0 ? v3Global.opt.mapOnlyTimingMargin()
+                                                                       : 0.2 * timing.minPeriod();
         for (size_t i = 0; i < m_po.size() && i < m_poNet.size(); ++i) {
             const std::string& n = m_poNet[i];
             if (n.empty() || n[0] == '"') continue;
-            const double req = timing.required(n) - v3Global.opt.mapOnlyTimingMargin();
+            const double req = timing.required(n) - margin;
             const double arr = timing.arrival(n);
             coRequired[i] = std::isnan(arr) ? req : std::min(req, arr);
         }

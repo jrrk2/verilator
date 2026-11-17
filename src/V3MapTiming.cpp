@@ -117,6 +117,21 @@ int paramInt(const V3MapTiming::Cell& c, const char* name, int dflt) {
     return dflt;
 }
 
+// A real-valued parameter (MMCM multipliers), from a JSON string or number
+double paramReal(const V3MapTiming::Cell& c, const char* name, double dflt) {
+    for (const auto& p : c.params) {
+        if (p.first != name) continue;
+        std::string v = p.second;
+        if (!v.empty() && v[0] == '"') v = v.substr(1, v.size() - 2);
+        if (v.empty()) return dflt;
+        bool bin = v.size() > 1;
+        for (const char ch : v) bin &= (ch == '0' || ch == '1');
+        if (bin) return paramInt(c, name, 0);
+        return std::atof(v.c_str());
+    }
+    return dflt;
+}
+
 enum class Kind : uint8_t { CombIn, CombOut, Clk, SeqIn, SeqOut, BbIn, BbOut, Ignore };
 struct PinClass final {
     Kind kind = Kind::Ignore;
@@ -289,6 +304,7 @@ struct V3MapTiming::Impl final {
     std::unordered_map<std::string, NodeId> pinNodes;  // "cell/PORT" or "cell/PORT[3]" -> node
     std::map<DomainId, double> periods;
     NodeId constNode;
+    const std::vector<Cell>* cells = nullptr;
     std::unique_ptr<tatum::FixedDelayCalculator> dc;
     std::unique_ptr<tatum::SetupTimingAnalyzer> analyzer;
     Summary summary;
@@ -326,7 +342,8 @@ struct V3MapTiming::Impl final {
         nets[net].sinks.push_back(n);
     }
 
-    void build(const std::vector<Cell>& cells, const std::vector<Port>& ports) {
+    void build(const std::vector<Cell>& cellsIn, const std::vector<Port>& ports) {
+        cells = &cellsIn;
         constNode = addNode(NodeType::SOURCE, "<const>", "const");
         tc.set_constant_generator(constNode);
         for (const Port& p : ports) {
@@ -349,8 +366,8 @@ struct V3MapTiming::Impl final {
             int bit;
         };
         std::set<std::string> unknownTypes;
-        for (size_t ci = 0; ci < cells.size(); ++ci) {
-            const Cell& c = cells[ci];
+        for (size_t ci = 0; ci < cellsIn.size(); ++ci) {
+            const Cell& c = cellsIn[ci];
             std::vector<PinNode> pins;
             std::map<std::string, NodeId> clkNode;
             for (const Conn& cn : c.conns) {
@@ -478,6 +495,51 @@ struct V3MapTiming::Impl final {
         }
         return n;
     }
+    // The clock domain a node's net comes from, through the clock and I/O buffers
+    DomainId domainFeeding(NodeId n) {
+        const NodeId r = clockRoot(n);
+        return r ? tc.node_clock_domain(r) : DomainId::INVALID();
+    }
+    // An MMCME2 / PLLE2 output is a clock of its own, with the period its
+    // multiplier and dividers make of the input clock's (as Vivado derives
+    // it): CLKOUTn = CLKIN1 * DIVCLK_DIVIDE * CLKOUTn_DIVIDE / CLKFBOUT_MULT
+    void generatedClocks() {
+        if (!cells) return;
+        for (const Cell& c : *cells) {
+            const bool mmcm = startsWith(c.type, "MMCME2");
+            const bool pll = startsWith(c.type, "PLLE2");
+            if (!mmcm && !pll) continue;
+            double in = 0;
+            const auto cit = pinNodes.find(c.name + "/CLKIN1");
+            if (cit != pinNodes.end()) {
+                const DomainId d = domainFeeding(cit->second);
+                if (d) in = periods[d];
+            }
+            if (in <= 0) in = paramReal(c, "CLKIN1_PERIOD", 0);
+            if (in <= 0) {
+                warn(c.name + ": no clock on CLKIN1 and no CLKIN1_PERIOD: its outputs are not clocks");
+                continue;
+            }
+            const double mult = paramReal(c, mmcm ? "CLKFBOUT_MULT_F" : "CLKFBOUT_MULT", 5);
+            const double div = paramReal(c, "DIVCLK_DIVIDE", 1);
+            for (int n = 0; n < 7; ++n) {
+                const std::string odivName = (mmcm && n == 0) ? "CLKOUT0_DIVIDE_F" : "CLKOUT" + std::to_string(n) + "_DIVIDE";
+                const double odiv = paramReal(c, odivName.c_str(), 1);
+                for (const char* suffix : {"", "B"}) {
+                    const std::string pinName = c.name + "/CLKOUT" + std::to_string(n) + suffix;
+                    const auto pit = pinNodes.find(pinName);
+                    if (pit == pinNodes.end()) continue;
+                    const NodeId node = pit->second;
+                    if (tc.node_is_clock_source(node)) continue;  // create_clock named it
+                    const auto nit = nets.find(nodeNet[size_t(node)]);
+                    if (nit == nets.end() || nit->second.sinks.empty()) continue;  // unused output
+                    if (mult <= 0 || div <= 0 || odiv <= 0) continue;
+                    const double period = in * div * odiv / mult;
+                    tc.set_clock_domain_source(clockSource(node), newDomain(pinName, period));
+                }
+            }
+        }
+    }
     void constrain() {
         for (const V3MapSdcClock& c : sdc.clocks) {
             if (tc.find_clock_domain(c.name)) {
@@ -491,6 +553,7 @@ struct V3MapTiming::Impl final {
                 for (const NodeId n : nodes) tc.set_clock_domain_source(clockSource(n), d);
             }
         }
+        generatedClocks();
         if (opt.defaultPeriod > 0) {
             std::map<NodeId, std::string> roots;
             for (const NodeId n : tg.nodes()) {
@@ -662,6 +725,13 @@ double V3MapTiming::lutDelay(int inputs, double netDelay) {
     const double net = netDelay >= 0 ? netDelay : 0.35;
     if (inputs <= 6) return kLut + net;
     return kLut + net + kMuxF * (inputs - 6);
+}
+
+double V3MapTiming::minPeriod() const {
+    double p = 0;
+    for (const auto& kv : m_impl->periods)
+        if (p == 0 || kv.second < p) p = kv.second;
+    return p;
 }
 
 double V3MapTiming::averageNetDelay() const {
