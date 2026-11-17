@@ -110,6 +110,24 @@ LIBS_ABC_WIN := -lshlwapi  # PathMatchSpecA, for ABC's liberty reader
 endif
 LIBS += $(ABC_DIR)/libabc.a -lpthread -ldl $(LIBS_ABC_WIN)
 
+# Tatum (third_party/tatum: VTR's timing analyser, MIT) and libsdcparse
+# (third_party/sdcparse: VTR's flex/bison SDC reader, MIT) for the mapper's
+# timing analysis (--map-only-sdc / --map-only-period).  Both use exceptions,
+# so they and the units that call them are compiled without -fno-exceptions
+# and with the third-party warning settings.
+TATUM_DIR ?= $(srcdir)/../third_party/tatum
+SDCPARSE_DIR ?= $(srcdir)/../third_party/sdcparse
+CPPFLAGS += -I$(TATUM_DIR) -I$(SDCPARSE_DIR)
+TATUM_SRCS := $(wildcard $(TATUM_DIR)/tatum/*.cpp $(TATUM_DIR)/tatum/*/*.cpp)
+TATUM_OBJS := $(patsubst %.cpp,tatum_%.o,$(notdir $(TATUM_SRCS)))
+SDCPARSE_OBJS := sdcparse_sdc_common.o sdcparse_sdc_error.o sdcparse_sdc_lexer.o sdcparse_sdcparse.o \
+  sdcparse_sdc_lexer_gen.o sdcparse_sdc_parser_gen.o
+THIRD_PARTY_OBJS := $(TATUM_OBJS) $(SDCPARSE_OBJS)
+TIMING_OBJS := V3MapSdc.o V3MapTiming.o  # Verilator units built with exceptions, for Tatum and libsdcparse
+vpath %.cpp $(sort $(dir $(TATUM_SRCS))) $(SDCPARSE_DIR)
+vpath %.l $(SDCPARSE_DIR)
+vpath %.y $(SDCPARSE_DIR)
+
 CPPFLAGS += -DVERILATOR_INTERNAL_
 CPPFLAGS += -MMD
 CPPFLAGS += -I. -I$(bldsrc) -I$(srcdir) -I$(incdir) -I../../include
@@ -129,6 +147,8 @@ LDFLAGS += $(CFG_LDFLAGS_SRC)
 
 CPPFLAGSWALL = $(CPPFLAGS)
 CPPFLAGSPARSER = $(CPPFLAGS) $(CFG_CXXFLAGS_PARSER)
+CPPFLAGSTHIRD = $(filter-out -Werror -fno-exceptions,$(CPPFLAGS)) -fexceptions -w
+CPPFLAGSTIMING = $(filter-out -fno-exceptions,$(CPPFLAGSWALL)) -fexceptions
 
 # Allow RPM builds to specify hardcoded data directories
 # To do this:
@@ -302,6 +322,7 @@ RAW_OBJS_PCH_ASTNOMT = \
   V3EmitMkJson.o \
   V3EmitBir.o \
   V3EmitMap.o \
+  V3MapAbc.o \
   V3EmitStruct.o \
   V3ExecGraph.o \
   V3Expand.o \
@@ -423,6 +444,7 @@ ASTGENFLAGS += $(foreach f,$(DFG_DEFS),--dfgdef $f)
 ifeq ($(VL_VLCOV),)
   PREDEP_H = V3Ast__gen_forward_class_decls.h
   OBJS += $(RAW_OBJS) $(RAW_OBJS_PCH_ASTMT) $(RAW_OBJS_PCH_ASTNOMT)
+  OBJS += $(THIRD_PARTY_OBJS) $(TIMING_OBJS)
 else
   PREDEP_H =
   OBJS += $(VLCOV_OBJS)
@@ -453,6 +475,33 @@ V3ParseImp.o: V3ParseImp.cpp V3ParseBison.c
 
 V3PreProc.o: V3PreProc.cpp V3PreLex.yy.cpp
 	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CXXFLAGSOBJ} ${CPPFLAGSPARSER} -c $< -o $@
+
+# Timing analysis: Tatum, libsdcparse and the Verilator units built on them
+thirdparty: $(THIRD_PARTY_OBJS)
+
+tatum_%.o: %.cpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSTHIRD} -c $< -o $@
+
+sdc_parser.gen.cpp sdc_parser.gen.hpp &: sdc_parser.y
+	${YACC} -d -o sdc_parser.gen.cpp $<
+
+sdc_lexer.gen.cpp sdc_lexer.gen.hpp &: sdc_lexer.l sdc_parser.gen.hpp
+	${LEX} --header-file=sdc_lexer.gen.hpp -o sdc_lexer.gen.cpp $<
+
+sdcparse_sdc_parser_gen.o: sdc_parser.gen.cpp sdc_lexer.gen.hpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSTHIRD} -c $< -o $@
+
+sdcparse_sdc_lexer_gen.o: sdc_lexer.gen.cpp sdc_parser.gen.hpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSTHIRD} -c $< -o $@
+
+sdcparse_%.o: %.cpp sdc_parser.gen.hpp sdc_lexer.gen.hpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CPPFLAGSTHIRD} -c $< -o $@
+
+V3MapTiming.o: V3MapTiming.cpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CXXFLAGSOBJ} ${CPPFLAGSTIMING} -c $< -o $@
+
+V3MapSdc.o: V3MapSdc.cpp sdc_parser.gen.hpp sdc_lexer.gen.hpp
+	$(OBJCACHE) ${CXX} ${CXXFLAGS} ${CXXFLAGSOBJ} ${CPPFLAGSTIMING} -c $< -o $@
 
 define CXX_ASTMT_template
 $(1): $(basename $(1)).cpp V3PchAstMT.h.gch

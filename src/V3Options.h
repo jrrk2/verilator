@@ -314,6 +314,11 @@ private:
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
     bool m_mapOnlyNoWideLut = false;  // main switch: --map-only-no-wide-lut
     bool m_mapOnlyKeepEquivRegs = false;  // main switch: --map-only-keep-equivalent-registers
+    int m_mapOnlyTimingIterations = 1;  // main switch: --map-only-timing-iterations
+    int m_mapOnlyMaxFanout = -1;  // main switch: --map-only-max-fanout (-1: 32 with timing, else none)
+    int m_mapOnlyTimingPaths = 20;  // main switch: --map-only-timing-paths
+    double m_mapOnlyPeriod = 0;  // main switch: --map-only-period
+    double m_mapOnlyTimingMargin = 0;  // main switch: --map-only-timing-margin
     bool m_lintOnly = false;        // main switch: --lint-only
     bool m_gmake = false;           // main switch: --make gmake
     bool m_makeJson = false;        // main switch: --make json
@@ -438,6 +443,8 @@ private:
     string      m_mapOnlyVerilog;  // main switch: --map-only-verilog
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
+    string      m_mapOnlySdc;  // main switch: --map-only-sdc
+    string      m_mapOnlyTimingReport;  // main switch: --map-only-timing-report
     std::set<string> m_structOnlyBlackbox;  // main switch: --struct-only-blackbox
     string      m_l2Name;       // main switch: --l2name; "" for top-module's name
     string      m_libCreate;    // main switch: --lib-create {lib_name}
@@ -773,6 +780,16 @@ public:
     bool mapOnlyNoIobuf() const { return m_mapOnlyNoIobuf; }
     bool mapOnlyNoWideLut() const { return m_mapOnlyNoWideLut; }
     bool mapOnlyKeepEquivRegs() const { return m_mapOnlyKeepEquivRegs; }
+    string mapOnlySdc() const { return m_mapOnlySdc; }
+    string mapOnlyTimingReport() const { return m_mapOnlyTimingReport; }
+    int mapOnlyTimingIterations() const { return m_mapOnlyTimingIterations; }
+    int mapOnlyTimingPaths() const { return m_mapOnlyTimingPaths; }
+    double mapOnlyPeriod() const { return m_mapOnlyPeriod; }
+    double mapOnlyTimingMargin() const { return m_mapOnlyTimingMargin; }
+    bool mapOnlyTiming() const { return !m_mapOnlySdc.empty() || m_mapOnlyPeriod > 0; }
+    int mapOnlyMaxFanout() const {
+        return m_mapOnlyMaxFanout >= 0 ? m_mapOnlyMaxFanout : mapOnlyTiming() ? 32 : 0;
+    }
     const std::set<string>& structOnlyBlackbox() const { return m_structOnlyBlackbox; }
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }

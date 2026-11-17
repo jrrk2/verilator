@@ -49,15 +49,20 @@
 
 #include "V3EmitStruct.h"
 #include "V3Global.h"
+#include "V3MapAbc.h"
+#include "V3MapTiming.h"
 #include <unistd.h>
 
 #include "struct_netlist.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <sstream>
 #include <tuple>
 #include <unordered_map>
@@ -838,23 +843,281 @@ public:
         const std::string base = filename.empty() ? v3Global.opt.mapOnlyEdif() : filename;
         const std::string aig = base + ".aig";
         const std::string blif = base + ".blif";
-        std::map<std::string, Lut> luts;
-        std::vector<std::string> lutOrder;
-        // Nothing comes out of the fabric (no top outputs, register inputs or
-        // hard-cell pins: a module with no outputs, or one whose logic all
-        // folded away): no LUTs to map, and ABC asserts on a network with no
-        // outputs (Abc_NtkCheckNames), so it is not run
-        if (!m_po.empty()) {
-            writeAiger(aig);
-            runAbc(aig, blif);
-            readBlif(blif, luts, lutOrder);
-            if (!v3Global.opt.mapOnlyKeepTemps()) {
-                unlink(aig.c_str());
-                unlink(blif.c_str());
+        m_record = !v3Global.opt.mapOnlyEdif().empty() || !v3Global.opt.mapOnlyVerilog().empty();
+        // Timing: the constraints, and the analyser the mapped netlist goes through
+        std::unique_ptr<V3MapTiming> timing;
+        V3MapSdcConstraints sdc;
+        if (v3Global.opt.mapOnlyTiming()) {
+            if (!v3Global.opt.mapOnlySdc().empty()) {
+                std::string err;
+                if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err)) v3fatal("Synthesis: " << err);
+            }
+            V3MapTiming::Options to;
+            to.defaultPeriod = v3Global.opt.mapOnlyPeriod();
+            to.reportPaths = v3Global.opt.mapOnlyTimingPaths();
+            timing = std::make_unique<V3MapTiming>(sdc, to);
+            m_record = true;
+        }
+        // With timing, the first mapping is analysed and its arrival and
+        // required times at abc's boundary drive a second mapping (and so on,
+        // --map-only-timing-iterations); only the last one is written out.
+        const int passes = timing ? 1 + std::max(0, v3Global.opt.mapOnlyTimingIterations()) : 1;
+        const std::vector<int> poSnapshot = m_po;
+        std::vector<double> ciArrival, coRequired;
+        std::vector<std::string> timingNotes;
+        // The pass the analysis liked best (worst slack, then total) is the one written
+        std::map<std::string, Lut> bestLuts;
+        std::vector<std::string> bestOrder;
+        int bestPass = -1;
+        double bestWns = 0, bestTns = 0;
+        for (int pass = 0; pass < passes; ++pass) {
+            bool last = pass + 1 == passes;
+            std::map<std::string, Lut> luts;
+            std::vector<std::string> lutOrder;
+            if (pass) {
+                m_po = poSnapshot;
+                resetEmission();
+            }
+            // Nothing comes out of the fabric (no top outputs, register inputs or
+            // hard-cell pins: a module with no outputs, or one whose logic all
+            // folded away): no LUTs to map, and ABC asserts on a network with no
+            // outputs (Abc_NtkCheckNames), so it is not run
+            if (!m_po.empty()) {
+                writeAiger(aig);
+                runAbc(aig, blif, timing != nullptr, pass ? &ciArrival : nullptr, pass ? &coRequired : nullptr);
+                readBlif(blif, luts, lutOrder);
+                if (last && !v3Global.opt.mapOnlyKeepTemps()) {
+                    unlink(aig.c_str());
+                    unlink(blif.c_str());
+                }
+            }
+            if (timing && passes > 1) last = false;  // written below, once the best pass is known
+            // abc's netlist as read, before the emission reworks it (register
+            // polarity, fanout copies): what a re-emission of this pass starts from
+            const std::map<std::string, Lut> lutsRead = timing ? luts : std::map<std::string, Lut>{};
+            const std::vector<std::string> orderRead = timing ? lutOrder : std::vector<std::string>{};
+            emitJson(last ? filename : std::string{}, luts, lutOrder, last);
+            if (timing) {
+                std::string err;
+                if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
+                std::istringstream lines{timing->summaryText()};
+                for (std::string l; std::getline(lines, l);)
+                    timingNotes.push_back((passes > 1 ? "pass " + std::to_string(pass) + ": " : "") + l);
+                double wns = 0, tns = 0;
+                for (const V3MapTiming::Domain& d : timing->summary().domains) {
+                    wns = std::min(wns, d.wns);
+                    tns += d.tns;
+                }
+                if (bestPass < 0 || wns > bestWns + 1e-6 || (std::abs(wns - bestWns) <= 1e-6 && tns > bestTns)) {
+                    bestPass = pass;
+                    bestWns = wns;
+                    bestTns = tns;
+                    bestLuts = lutsRead;
+                    bestOrder = orderRead;
+                }
+                if (pass + 1 < passes) {
+                    boundaryTimes(*timing, ciArrival, coRequired);
+                    m_lutNetDelay = timing->averageNetDelay();
+                }
             }
         }
-        emitJson(filename, luts, lutOrder);
+        if (timing && passes > 1) {
+            m_po = poSnapshot;
+            resetEmission();
+            emitJson(filename, bestLuts, bestOrder, true);
+            std::string err;
+            if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
+            timingNotes.push_back("written: pass " + std::to_string(bestPass));
+        }
+        if (timing) {
+            for (const std::string& l : timingNotes) std::cerr << "%Info: map-timing: " << l << "\n";
+            for (const std::string& w : sdc.warnings) m_warnings.push_back(w);
+            for (const std::string& w : timing->summary().warnings) m_warnings.push_back(w);
+            if (!v3Global.opt.mapOnlyTimingReport().empty()) {
+                std::string err;
+                if (!timing->writeReport(v3Global.opt.mapOnlyTimingReport(), err)) v3fatal("Synthesis: " << err);
+            }
+        }
         for (const std::string& w : m_warnings) std::cerr << "%Warning-MAP: " << w << "\n";
+    }
+
+private:
+    // Forget one emission so the next pass starts clean (the net numbering
+    // of the sources is kept: it is theirs, not the pass's)
+    void resetEmission() {
+        m_cells.str("");
+        m_cells.clear();
+        m_ncells = 0;
+        m_counts.clear();
+        m_recs.clear();
+        m_portRecs.clear();
+        m_firstLoad.clear();
+        m_drivenNets.clear();
+        m_regQ.clear();
+        m_netName.clear();
+        m_netNames.clear();
+        m_warnings.clear();
+        m_poNet.clear();
+        m_flippedDpo.clear();
+        m_flippedVar.clear();
+        m_flipGain = 0;
+        m_curPath.clear();
+        m_curLeaf.clear();
+        m_edifIds = 0;
+        m_regDup.clear();
+        m_spread.clear();
+        m_dupLuts = m_dupRegs = 0;
+    }
+
+    // ---- fanout ----
+    // A net read by more than --map-only-max-fanout pins is slow: the router
+    // fans it out through several wires and a long one to the far readers (a
+    // fanout of 400 costs a nanosecond on a 7-series).  A LUT driving such a
+    // net is copied, each copy taking a share of the readers, and so is a
+    // flip-flop (a second register with the same D, enable and reset).  The
+    // readers are the LUTs abc wrote (a 7- or 8-input cover is two or four
+    // LUT6s) and the pins outside abc (register D, enable and reset pins --
+    // an enable serves every bit of its register -- hard-cell pins, pads);
+    // the register pins are spread over the copies when the registers are
+    // emitted, everything else stays on the original.  Done on abc's netlist
+    // before it is numbered.
+    struct Spread final {
+        std::vector<std::string> names;  // the node, then its copies (BLIF names)
+        size_t readerGroup = 0, readerFill = 0;  // where the LUT readers stopped filling
+        size_t outsideNext = 0;  // outside consumers handed out so far
+    };
+    std::unordered_map<std::string, Spread> m_spread;  // by node
+    std::map<std::pair<size_t, size_t>, std::vector<std::string>> m_regDup;  // (register, bit) -> copies' BLIF names
+    int m_dupLuts = 0;
+    int m_dupRegs = 0;
+    struct Lut;  // abc's LUT (BLIF back, below)
+    static bool isBufLut(const Lut& l) { return isBufLutImpl(l); }  // (defined with Lut, below)
+    // abc's buffers (`.names a b / 1 1`) become net aliases when emitted: the node a name stands for
+    static std::string resolveLut(const std::map<std::string, Lut>& luts, std::string n) {
+        for (int guard = 0; guard < 64; ++guard) {
+            const auto it = luts.find(n);
+            if (it == luts.end() || !isBufLut(it->second)) break;
+            n = it->second.ins[0];
+        }
+        return n;
+    }
+    // The node a PO's net comes from: a LUT, a PI passed straight through, or none (a constant)
+    std::string poNode(const std::map<std::string, Lut>& luts, size_t i) {
+        const std::string pn = "po" + std::to_string(i);
+        if (luts.count(pn)) return resolveLut(luts, pn);
+        const int r = m_aig.resolve(m_po[i]);
+        const auto pit = m_piOf.find(r >> 1);
+        if (r <= 1 || pit == m_piOf.end()) return std::string{};
+        return "pi" + std::to_string(pit->second);
+    }
+    void limitFanout(std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
+        const size_t F = v3Global.opt.mapOnlyMaxFanout();
+        if (F < 2) return;
+        std::unordered_map<int, std::pair<size_t, size_t>> regOfVar;  // Q var -> (register, bit)
+        std::vector<size_t> poUses(m_po.size(), 1);  // pins outside abc reading each PO
+        for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
+            const Design::Reg& r = m_d.regs[ri];
+            if (r.latch) continue;
+            const RegOut& ro = m_regPo[ri];
+            if (ro.en >= 0 && static_cast<size_t>(ro.en) < poUses.size()) poUses[ro.en] += r.q.size() - 1;
+            if (ro.rst >= 0 && static_cast<size_t>(ro.rst) < poUses.size()) poUses[ro.rst] += r.q.size() - 1;
+            for (size_t b = 0; b < r.q.size(); ++b) {
+                const int ql = m_aig.resolve(r.q[b]);
+                if (ql < 2 || (ql & 1)) continue;
+                regOfVar[ql >> 1] = {ri, b};
+            }
+        }
+        struct Reader final {
+            std::string lut;
+            size_t input, weight;
+        };
+        std::unordered_map<std::string, std::vector<Reader>> readers;  // node -> LUT inputs reading it
+        std::unordered_map<std::string, size_t> outside;  // node -> pins outside abc reading it
+        for (const std::string& o : order) {
+            const Lut& l = luts[o];
+            if (isBufLut(l)) continue;  // its readers are counted on the node it aliases
+            const size_t w = l.ins.size() <= 6 ? 1 : l.ins.size() == 7 ? 2 : 4;
+            for (size_t i = 0; i < l.ins.size(); ++i) readers[resolveLut(luts, l.ins[i])].push_back({o, i, w});
+        }
+        for (size_t i = 0; i < m_po.size(); ++i) {
+            const std::string node = poNode(luts, i);
+            if (!node.empty()) outside[node] += poUses[i];
+        }
+        const auto spread = [&](const std::string& node, const std::function<std::string(int)>& makeCopy) {
+            size_t total = 0;
+            const auto rit = readers.find(node);
+            if (rit != readers.end()) for (const Reader& r : rit->second) total += r.weight;
+            const auto oit = outside.find(node);
+            if (oit != outside.end()) total += oit->second;
+            if (total <= F) return 0;
+            Spread sp;
+            sp.names.push_back(node);
+            const size_t copies = (total + F - 1) / F - 1;
+            for (size_t k = 1; k <= copies; ++k) sp.names.push_back(makeCopy(static_cast<int>(k)));
+            size_t g = 0, fill = 0;
+            if (rit != readers.end()) {
+                for (const Reader& r : rit->second) {
+                    if (fill + r.weight > F && g + 1 < sp.names.size()) {
+                        ++g;
+                        fill = 0;
+                    }
+                    fill += r.weight;
+                    if (g) luts[r.lut].ins[r.input] = sp.names[g];
+                }
+            }
+            sp.readerGroup = g;
+            sp.readerFill = fill;
+            m_spread[node] = sp;
+            return static_cast<int>(copies);
+        };
+        const std::vector<std::string> names = order;  // the copies are appended
+        for (const std::string& o : names) {
+            if (luts[o].ins.size() < 2) continue;  // buffers and constants are aliases, inverters go into the readers
+            m_dupLuts += spread(o, [&](int k) {
+                Lut c = luts[o];
+                c.out = o + "$dup" + std::to_string(k);
+                luts[c.out] = c;
+                order.push_back(c.out);
+                return c.out;
+            });
+        }
+        for (size_t i = 0; i < m_piVar.size(); ++i) {
+            const auto rit = regOfVar.find(m_piVar[i]);
+            if (rit == regOfVar.end()) continue;
+            const std::string pi = "pi" + std::to_string(i);
+            m_dupRegs += spread(pi, [&](int k) {
+                const std::string cp = pi + "$dup" + std::to_string(k);
+                m_regDup[rit->second].push_back(cp);
+                return cp;
+            });
+        }
+        if ((m_dupLuts || m_dupRegs) && v3Global.opt.structOnlyReport())
+            std::cerr << "%Info: map-fanout: " << m_dupLuts << " LUT and " << m_dupRegs
+                      << " flip-flop copies for a fanout of at most " << F << "\n";
+    }
+    double m_lutNetDelay = -1;  // the net a LUT level costs in abc's library (< 0: the model's default)
+    // The analysed netlist's times at abc's boundary: when every source (a
+    // register output, a hard cell's output, an input pad) delivers each
+    // primary input, and when every primary output (a register's D, a hard
+    // cell's input, an output pad) must be ready; NaN where unconstrained
+    void boundaryTimes(const V3MapTiming& timing, std::vector<double>& ciArrival, std::vector<double>& coRequired) {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        ciArrival.assign(m_piVar.size(), nan);
+        coRequired.assign(m_po.size(), nan);
+        for (size_t i = 0; i < m_piVar.size(); ++i) {
+            const auto it = m_netOfVar.find(m_piVar[i]);
+            if (it != m_netOfVar.end()) ciArrival[i] = timing.arrival(it->second);
+        }
+        // A cone abc has to speed up gets its required time (less the margin);
+        // one that meets it keeps the arrival it has, so area recovery does
+        // not spend the slack it was given on logic the routing then eats
+        for (size_t i = 0; i < m_po.size() && i < m_poNet.size(); ++i) {
+            const std::string& n = m_poNet[i];
+            if (n.empty() || n[0] == '"') continue;
+            const double req = timing.required(n) - v3Global.opt.mapOnlyTimingMargin();
+            const double arr = timing.arrival(n);
+            coRequired[i] = std::isnan(arr) ? req : std::min(req, arr);
+        }
     }
 
 private:
@@ -1442,7 +1705,8 @@ private:
         UINFO(1, "map: AIG " << I << " inputs, " << m_po.size() << " outputs, " << order.size() << " ANDs");
     }
 
-    void runAbc(const std::string& aig, const std::string& blif) {
+    void runAbc(const std::string& aig, const std::string& blif, bool timed, const std::vector<double>* ciArrival,
+                const std::vector<double>* coRequired) {
         static bool started = false;
         if (!started) {
             ABC_NAMESPACE::Abc_Start();
@@ -1474,14 +1738,35 @@ private:
         // LUT6 + MUXF7 / MUXF8 trees
         // when the cells are emitted.
         const int kMax = v3Global.opt.mapOnlyNoWideLut() ? 6 : 8;
+        // With timing, the delays are in ns (a LUT level with an average net,
+        // a MUXF7/8 more per input past six) and, from the second pass on, the
+        // network carries the arrival and required times the analysis of the
+        // previous mapping found at its boundary: abc's `if` then maps for the
+        // real slack, pulling late sources (block RAM data) towards the
+        // registers and relaxing paths with time to spare.
         const std::string lib = aig + ".lut";
         {
             std::ofstream os{lib};
-            for (int k = 1; k <= kMax; ++k) os << k << " " << (k <= 6 ? 1 : k == 7 ? 2 : 4) << ".00 1.00\n";
+            os.setf(std::ios::fixed);
+            os.precision(3);
+            for (int k = 1; k <= kMax; ++k)
+                os << k << " " << (k <= 6 ? 1 : k == 7 ? 2 : 4) << ".00 "
+                   << (timed ? V3MapTiming::lutDelay(k, m_lutNetDelay) : 1.0) << "\n";
         }
         const std::string pre = "read_lut " + lib + "; ";
         if (script.empty()) script = kScript;
-        const std::string cmd = "read_aiger " + aig + "; " + pre + script + "; write_blif " + blif;
+        std::string cmd = "read_aiger " + aig + "; " + pre + script + "; write_blif " + blif;
+        if (ciArrival && coRequired) {
+            const std::string read = "read_aiger " + aig;
+            UINFO(1, "map: abc: " << read);
+            if (ABC_NAMESPACE::Cmd_CommandExecute(pAbc, read.c_str())) v3fatal("abc failed on: " << read);
+            std::string err;
+            double required = 0;
+            for (const double r : *coRequired) if (!std::isnan(r)) required = std::max(required, r);
+            if (!V3MapAbc::setTimes(*ciArrival, *coRequired, required > 0 ? required : 1e9, err))
+                v3fatal("Synthesis: " << err);
+            cmd = pre + script + "; write_blif " + blif;
+        }
         UINFO(1, "map: abc: " << cmd);
         const int rc = ABC_NAMESPACE::Cmd_CommandExecute(pAbc, cmd.c_str());
         if (!v3Global.opt.mapOnlyKeepTemps()) unlink(lib.c_str());
@@ -1494,6 +1779,9 @@ private:
         std::string out;
         std::vector<std::pair<std::string, char>> cover;
     };
+    static bool isBufLutImpl(const Lut& l) {
+        return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1" && l.cover[0].second == '1';
+    }
     void readBlif(const std::string& path, std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
         std::ifstream in{path};
         if (!in) v3fatal("abc produced no BLIF: " << path);
@@ -1615,16 +1903,11 @@ private:
         return "\"" + s + "\"";
     }
     // The netlist as records, for the EDIF writer (filled alongside the JSON)
-    struct Conn { std::string port; bool out; std::vector<std::string> bits; };
+    using Conn = V3MapTiming::Conn;
     std::vector<std::pair<std::string, std::string>> m_regQ;  // (Q net, register cell) for every flip-flop
-    struct CellRec {
-        std::string type, name;
-        std::string path;  // hierarchical instance path of the module it belongs to ("" = top)
-        std::string leaf;  // instance name inside that module (Vivado style), "" = use name
-        std::vector<std::pair<std::string, std::string>> params;  // JSON-encoded values
-        std::vector<Conn> conns;
-    };
+    using CellRec = V3MapTiming::Cell;
     std::vector<CellRec> m_recs;
+    bool m_record = false;  // keep the records: EDIF, Verilog or timing analysis wants them
     std::string m_curPath;  // path given to cells recorded now
     std::string m_curLeaf;  // leaf name for the next recorded cell
     std::map<std::pair<std::string, std::string>, std::string> m_netNames;  // (module path, net id) -> name
@@ -1662,7 +1945,7 @@ private:
         if ((i == b.size() && a[i] == '.')) return b;
         return any ? a.substr(0, lastDot) : std::string();
     }
-    struct PortRec { std::string name, dir; std::vector<std::string> bits; };
+    using PortRec = V3MapTiming::Port;
     std::vector<PortRec> m_portRecs;
     // "[12, \"0\", 13]" -> {"12", "\"0\"", "13"}
     static std::vector<std::string> splitBits(const std::string& j) {
@@ -1681,7 +1964,7 @@ private:
               const std::vector<std::pair<std::string, std::string>>& ins,
               const std::vector<std::pair<std::string, std::string>>& outs,
               const std::vector<std::pair<std::string, std::string>>& attrs = {}) {
-        if (!v3Global.opt.mapOnlyEdif().empty() || !v3Global.opt.mapOnlyVerilog().empty()) {
+        if (m_record) {
             CellRec r{type, name, m_curPath, m_curLeaf, params, {}};
             m_curLeaf.clear();
             for (const auto& p : ins) r.conns.push_back({p.first, false, splitBits(p.second)});
@@ -1862,13 +2145,15 @@ private:
         return flipped;
     }
 
-    void emitJson(const std::string& filename, std::map<std::string, Lut>& luts, const std::vector<std::string>& order) {
+    void emitJson(const std::string& filename, std::map<std::string, Lut>& luts, std::vector<std::string>& order,
+                  bool write) {
         {
             const int n = flipRegisterPolarity(luts);
             if (n && v3Global.opt.structOnlyReport())
                 std::cerr << "%Info: map-regs: " << n << " register bits stored inverted, " << m_flipGain
                           << " inverter LUTs removed\n";
         }
+        limitFanout(luts, order);
         // 1. nets for PIs (sources) and for every LUT output; resolve BLIF names
         std::unordered_map<std::string, std::string> netOfName;  // blif name -> net json
         for (size_t i = 0; i < m_piVar.size(); ++i) {
@@ -1877,6 +2162,22 @@ private:
             if (it == m_netOfVar.end()) it = m_netOfVar.emplace(v, newNet()).first;
             netOfName["pi" + std::to_string(i)] = it->second;
         }
+        for (const auto& kv : m_regDup)
+            for (const std::string& cp : kv.second) netOfName[cp] = newNet();
+        // The net a register pin reads a PO from: the node's, or one of its
+        // fanout copies' (limitFanout) once the first group is full
+        const size_t F = std::max<size_t>(1, v3Global.opt.mapOnlyMaxFanout());
+        const auto poNetFor = [&](int i) -> std::string {
+            const std::string& base = m_poNet[i];
+            if (base.empty() || base[0] == '"' || m_spread.empty()) return base;
+            const auto it = m_spread.find(poNode(luts, i));
+            if (it == m_spread.end()) return base;
+            Spread& sp = it->second;
+            const size_t g = sp.readerGroup + (sp.readerFill + sp.outsideNext++) / F;
+            if (g == 0) return base;
+            const auto nit = netOfName.find(sp.names[std::min(g, sp.names.size() - 1)]);
+            return nit == netOfName.end() ? base : nit->second;
+        };
         auto netOf = [&](const std::string& n) -> std::string {
             const auto it = netOfName.find(n);
             if (it == netOfName.end()) v3fatal("internal: abc BLIF name '" << n << "' has no driver");
@@ -2175,11 +2476,11 @@ private:
             m_curPath = pathOf(r.name);
             const RegOut& ro = m_regPo[ri];
             const std::string clk = netOfLit(r.clk);
-            const std::string en = m_poNet[ro.en];
-            const std::string rst = m_poNet[ro.rst];
             for (size_t b = 0; b < r.q.size(); ++b) {
+                const std::string en = poNetFor(ro.en);
+                const std::string rst = poNetFor(ro.rst);
                 const std::string q = netOfLit(r.q[b]);
-                const std::string d = m_poNet[ro.d0 + b];
+                const std::string d = poNetFor(ro.d0 + b);
                 const size_t bn = r.bitNo.empty() ? b : static_cast<size_t>(r.bitNo[b]);
                 const bool flip = m_flippedDpo.count(ro.d0 + b) != 0;  // stored inverted
                 const bool setv = bitOf(r.resetVal, bn) != flip;
@@ -2224,6 +2525,15 @@ private:
                     }
                 }
                 cell(type, sanitize(r.name) + "_" + std::to_string(bn), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}}, attrs);
+                // its copies for fanout (limitFanout): the same register again
+                const auto dit = m_regDup.find({ri, b});
+                if (dit != m_regDup.end()) {
+                    for (size_t k = 0; k < dit->second.size(); ++k) {
+                        m_curLeaf.clear();
+                        cell(type, sanitize(r.name) + "_" + std::to_string(bn) + "_dup" + std::to_string(k + 1),
+                             {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + netOfName.at(dit->second[k]) + "]"}}, attrs);
+                    }
+                }
             }
         }
         // 4. memories and pass-through cells
@@ -2459,6 +2769,7 @@ private:
             if (floating.size() > 20)
                 m_warnings.push_back(std::to_string(floating.size() - 20) + " more floating inputs");
         }
+        if (!write) return;  // a pass the timing analysis looks at, not the one written out
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
         if (!v3Global.opt.mapOnlyVerilog().empty()) writeVerilog(v3Global.opt.mapOnlyVerilog());
         if (filename.empty()) return;  // --map-only-edif / --map-only-verilog alone
