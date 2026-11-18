@@ -724,7 +724,7 @@ set_source_files_properties(${abc_sources} PROPERTIES LANGUAGE CXX)
 set(abc_lib abc${CMAKE_BUILD_TYPE})
 add_library(${abc_lib} STATIC EXCLUDE_FROM_ALL ${abc_sources})
 set_property(TARGET ${abc_lib} PROPERTY OUTPUT_NAME abc)
-target_include_directories(${abc_lib} PUBLIC ${abc_dir}/src)
+target_include_directories(${abc_lib} SYSTEM PUBLIC ${abc_dir}/src)
 target_compile_definitions(
     ${abc_lib}
     PUBLIC
@@ -738,7 +738,11 @@ target_compile_definitions(
 )
 if(MSVC)
     # /std:c++20 implies /permissive-; abc's C in C++ needs the permissive mode
-    target_compile_options(${abc_lib} PRIVATE /permissive /w /bigobj)
+    # ... and not to the warnings ci-win-compile.ps1 makes errors (/we4715 /we4806 /we4805)
+    target_compile_options(
+        ${abc_lib}
+        PRIVATE /permissive /w /wd4715 /wd4806 /wd4805 /bigobj
+    )
 else()
     target_compile_features(${abc_lib} PRIVATE cxx_std_17)
     target_compile_options(${abc_lib} PRIVATE -fpermissive -w)
@@ -758,9 +762,9 @@ file(GLOB tatum_sources ${tatum_dir}/tatum/*.cpp ${tatum_dir}/tatum/*/*.cpp)
 set(tatum_lib tatum${CMAKE_BUILD_TYPE})
 add_library(${tatum_lib} STATIC EXCLUDE_FROM_ALL ${tatum_sources})
 set_property(TARGET ${tatum_lib} PROPERTY OUTPUT_NAME tatum)
-target_include_directories(${tatum_lib} PUBLIC ${tatum_dir})
+target_include_directories(${tatum_lib} SYSTEM PUBLIC ${tatum_dir})
 if(MSVC)
-    target_compile_options(${tatum_lib} PRIVATE /w)
+    target_compile_options(${tatum_lib} PRIVATE /w /wd4715 /wd4806 /wd4805)
 else()
     target_compile_features(${tatum_lib} PRIVATE cxx_std_17)
     target_compile_options(${tatum_lib} PRIVATE -w)
@@ -801,10 +805,11 @@ add_library(
 set_property(TARGET ${sdcparse_lib} PROPERTY OUTPUT_NAME sdcparse)
 target_include_directories(
     ${sdcparse_lib}
+    SYSTEM
     PUBLIC ${sdcparse_dir} ${CMAKE_CURRENT_BINARY_DIR}
 )
 if(MSVC)
-    target_compile_options(${sdcparse_lib} PRIVATE /w)
+    target_compile_options(${sdcparse_lib} PRIVATE /w /wd4715 /wd4806 /wd4805)
 else()
     target_compile_features(${sdcparse_lib} PRIVATE cxx_std_17)
     target_compile_options(${sdcparse_lib} PRIVATE -w)

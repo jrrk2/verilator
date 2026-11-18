@@ -4072,11 +4072,6 @@ private:
             bool driver;
         };
         std::map<std::string, std::vector<Ep>> nets;  // net id -> endpoints
-        auto instRefOf = [&](size_t i) {
-            const std::string& n = instNames[i];
-            if (n[0] != '(') return n;
-            return n.substr(8, n.find(' ', 8) - 8);
-        };
         auto member = [&](const std::string& port, size_t width, size_t bit) {
             if (width == 1) return edifName(port);
             return "(member " + edifName(port) + " " + std::to_string(width - 1 - bit) + ")";
