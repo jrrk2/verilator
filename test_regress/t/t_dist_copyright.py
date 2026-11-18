@@ -18,7 +18,7 @@ EXEMPT_AUTHOR_RE = (
     r'(^ci/|^nodist/fastcov.py|^nodist/fuzzer|^test_regress/t/.*\.(cpp|h|mk|s?vh?|vlt)$'
     # The synthesis backend of the verilator-synth fork, and its tests
     r'|^src/(V3Emit(Bir|Map|Struct)|V3Map(Abc|Sdc|Timing)|struct_netlist|mingw-ar)\.'
-    r'|^test_regress/t/t_(struct|synth)_.*\.py$)')
+    r'|^test_regress/t/t_(struct|synth)_.*\.(py|sdc)$)')
 
 EXEMPT_COPYRIGHT_RE = r'(^\.|/\.|\.gitignore$|\.dat|\.gprof|\.mem|\.out$|\.png$|\.tree|\.vc$|\.vcd$|^\.)'
 

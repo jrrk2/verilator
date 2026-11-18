@@ -6,6 +6,6 @@
 
 module t(input [1:0] a, output [71:0] o);
   reg [71:0] rom [0:3];
-  initial $readmemh("t/t_synth_rom_bad.hex", rom);
+  initial $readmemh("t/t_synth_rom_bad.mem", rom);
   assign o = rom[a];
 endmodule

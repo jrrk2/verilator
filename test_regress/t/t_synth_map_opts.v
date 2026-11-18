@@ -8,7 +8,7 @@ module t(input clk, input we, input [9:0] wa, input [9:0] ra, input [7:0] wd,
          input [7:0] a, input [7:0] b, input [7:0] c, input [7:0] d,
          output reg [7:0] rd, output reg [9:0] sum, output reg [7:0] q1, output reg [7:0] q2);
   reg [7:0] mem [0:1023];
-  initial $readmemh("t/t_synth_map_opts.hex", mem);
+  initial $readmemh("t/t_synth_map_opts.mem", mem);
   always @(posedge clk) begin
     if (we) mem[wa] <= wd;
     rd <= mem[ra];
