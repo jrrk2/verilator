@@ -749,6 +749,15 @@ if(MSVC)
         ${abc_lib}
         PRIVATE /permissive /Zc:__cplusplus /w /wd4715 /wd4806 /wd4805 /bigobj
     )
+    # opt/ufar defines its own timeval, which winsock.h (via windows.h) would
+    # repeat, and includes abc's pthreads-win32 header, whose timespec the C
+    # runtime already has; it then needs that library next to the binary
+    target_compile_definitions(
+        ${abc_lib}
+        PRIVATE WIN32_LEAN_AND_MEAN HAVE_STRUCT_TIMESPEC
+    )
+    target_link_libraries(${abc_lib} PUBLIC ${abc_dir}/lib/x64/pthreadVC2.lib)
+    install(FILES ${abc_dir}/lib/x64/pthreadVC2.dll TYPE BIN)
 else()
     target_compile_features(${abc_lib} PRIVATE cxx_std_17)
     target_compile_options(${abc_lib} PRIVATE -fpermissive -w)
