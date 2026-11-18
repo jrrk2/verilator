@@ -745,9 +745,18 @@ if(MSVC)
     # /std:c++20 implies /permissive-; abc's C in C++ needs the permissive mode.
     # /Zc:__cplusplus: abc tests __cplusplus for its C++20 paths (opt/eslim)
     # ... and not to the warnings ci-win-compile.ps1 makes errors (/we4715 /we4806 /we4805)
+    # /wd4576: kissat's C99 compound literals, an error in C++ by default
     target_compile_options(
         ${abc_lib}
-        PRIVATE /permissive /Zc:__cplusplus /w /wd4715 /wd4806 /wd4805 /bigobj
+        PRIVATE
+            /permissive
+            /Zc:__cplusplus
+            /w
+            /wd4715
+            /wd4806
+            /wd4805
+            /wd4576
+            /bigobj
     )
     # opt/ufar defines its own timeval, which winsock.h (via windows.h) would
     # repeat, and includes abc's pthreads-win32 header, whose timespec the C
