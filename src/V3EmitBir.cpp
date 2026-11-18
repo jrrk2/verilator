@@ -192,10 +192,10 @@ public:
 
 private:
     void warn(const AstNode* nodep, const std::string& msg) {
-        UINFO(3, "bir: " << msg << " (" << nodep->prettyTypeName() << " at " << nodep->fileline()->ascii() << ")");
+        UINFO(3, "bir: " << msg << " (" << nodep->prettyTypeNameQ() << " at " << nodep->fileline()->ascii() << ")");
         if (v3Global.opt.structOnlyReport()) {
             std::cerr << "%Warning-BIR: " << nodep->fileline()->ascii() << ": " << msg << " ("
-                      << nodep->prettyTypeName() << ")\n";
+                      << nodep->prettyTypeNameQ() << ")\n";
         }
     }
 
@@ -262,7 +262,7 @@ private:
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 declNested(bp->declsp());
                 declNested(bp->stmtsp());
-            } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                 declNested(ip->thensp());
                 declNested(ip->elsesp());
             } else if (AstCase* const cp = VN_CAST(nodep, Case)) {
@@ -539,7 +539,7 @@ private:
             if (VN_IS(ap, AssignForce)) return "";
             return assign(ap->lhsp(), ap->rhsp());
         }
-        if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+        if (AstIf* const ip = VN_CAST(nodep, If)) {
             return "{\"s\":\"if\",\"c\":" + expr(ip->condp()) + ",\"t\":" + joinList(stmts(ip->thensp())) + ",\"e\":" + joinList(stmts(ip->elsesp())) + "}";
         }
         if (AstCase* const cp = VN_CAST(nodep, Case)) {
@@ -600,7 +600,7 @@ private:
                 if (!isElab(bp->stmtsp())) return false;
                 continue;
             }
-            if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            if (AstIf* const ip = VN_CAST(nodep, If)) {
                 if (!isElab(ip->thensp()) || !isElab(ip->elsesp())) return false;
                 continue;
             }
@@ -633,7 +633,7 @@ private:
         // evaluate a single statement (ignore its siblings)
         if (VN_IS(nodep, Assign) || VN_IS(nodep, AssignDly) || VN_IS(nodep, Var)) return true;
         if (AstBegin* const bp = VN_CAST(nodep, Begin)) return isElab(bp->stmtsp());
-        if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) return isElab(ip->thensp()) && isElab(ip->elsesp());
+        if (AstIf* const ip = VN_CAST(nodep, If)) return isElab(ip->thensp()) && isElab(ip->elsesp());
         if (AstJumpBlock* const jp = VN_CAST(nodep, JumpBlock)) return isElab(jp->stmtsp());
         if (VN_IS(nodep, Loop)) {
             AstLoop* const lp = VN_AS(nodep, Loop);
@@ -879,7 +879,7 @@ private:
                 }
             }
         }
-        if (AstVar* const rv = VN_CAST(fp->fvarp(), Var)) nameVar(rv, "");
+        if (AstVar* const rv = fp->fvarp()) nameVar(rv, "");
         for (AstNode* sp = fp->stmtsp(); sp; sp = sp->nextp()) {
             if (VN_IS(sp, Var)) continue;
             const std::string s = stmt(sp);

@@ -469,7 +469,7 @@ class StructModule final {
             while (headp->backp() && headp->backp()->nextp() == headp) headp = headp->backp();
             const AstNode* const upp = headp->backp();
             if (!upp || VN_IS(upp, NodeModule)) break;
-            if (const AstNodeIf* const ifp = VN_CAST(upp, NodeIf)) {
+            if (const AstIf* const ifp = VN_CAST(upp, If)) {
                 if (headp == ifp->thensp()) path.emplace_back(ifp, false);
                 else if (headp == ifp->elsesp()) path.emplace_back(ifp, true);
             } else if (const AstCaseItem* const itemp = VN_CAST(upp, CaseItem)) {
@@ -534,7 +534,7 @@ private:
     }
     static void errMsg(const std::string& msg) { v3error("Synthesis: " << msg); }
     void warnNode(const AstNode* nodep, const std::string& msg) {
-        warn(msg + " (" + nodep->prettyTypeName() + " at " + nodep->fileline()->ascii() + ")");
+        warn(msg + " (" + nodep->prettyTypeNameQ() + " at " + nodep->fileline()->ascii() + ")");
     }
 
     // ---- naming ----
@@ -979,7 +979,7 @@ private:
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 declareNested(bp->declsp());
                 declareNested(bp->stmtsp());
-            } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                 declareNested(ip->thensp());
                 declareNested(ip->elsesp());
             } else if (AstCase* const cp = VN_CAST(nodep, Case)) {
@@ -1063,7 +1063,7 @@ private:
                 all = false;
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 all &= harvestReadMem(bp->stmtsp());
-            } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                 all &= harvestReadMem(ip->thensp()) & harvestReadMem(ip->elsesp());
             } else if (VN_IS(nodep, Comment) || VN_IS(nodep, Var)) {
             } else {
@@ -1195,7 +1195,7 @@ private:
                 if (!taskp || taskp->dpiImport() || taskp->prototype() || ++depth > 64) return fail();
                 std::vector<AstVar*> formals, locals;
                 sm.collectFtaskVars(taskp->stmtsp(), formals, locals);
-                AstVar* const retp = VN_CAST(taskp->fvarp(), Var);
+                AstVar* const retp = taskp->fvarp();
                 std::vector<uint64_t> argv(formals.size(), 0);
                 size_t pos = 0;
                 for (AstArg* ap = fp->argsp(); ap; ap = VN_AS(ap->nextp(), Arg)) {
@@ -1320,7 +1320,7 @@ private:
                     run(sp->stmtsp());  // a local's declaration-time value
                 } else if (AstInitialAutomaticStmt* const sp = VN_CAST(nodep, InitialAutomaticStmt)) {
                     run(sp->stmtsp());
-                } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+                } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                     run(eval(ip->condp()) ? ip->thensp() : ip->elsesp());  // whole branch list
                 } else if (AstLoop* const lp = VN_CAST(nodep, Loop)) {
                     for (long long iter = 0;; ++iter) {
@@ -1351,7 +1351,7 @@ private:
                 run(sp->stmtsp());
             } else if (AstInitialAutomaticStmt* const sp = VN_CAST(nodep, InitialAutomaticStmt)) {
                 run(sp->stmtsp());
-            } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                 run(eval(ip->condp()) ? ip->thensp() : ip->elsesp());
             } else if (VN_IS(nodep, Loop)) {
                 AstNode* const nextp = nodep->nextp();
@@ -1734,7 +1734,7 @@ private:
             collectResetChain(bp->stmtsp(), out);
             return;
         }
-        if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+        if (AstIf* const ip = VN_CAST(nodep, If)) {
             const AstVar* const v = predicateVar(ip->condp());
             if (!v) return;
             if (assignsOnlyConstants(ip->thensp())) {
@@ -2619,7 +2619,7 @@ private:
             }
             const bool blocking = !VN_IS(ap, AssignDly);
             lowerAssign(ap->lhsp(), ap->rhsp(), blocking, env);
-        } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+        } else if (AstIf* const ip = VN_CAST(nodep, If)) {
             lowerIf(ip, env);
         } else if (AstCase* const cp = VN_CAST(nodep, Case)) {
             lowerCase(cp, env);
@@ -2668,7 +2668,7 @@ private:
             lowerStmts(ep->stmtsp(), env);
         } else {
             nodep->v3error("Synthesis would drop this statement: unsupported "
-                           << nodep->prettyTypeName());
+                           << nodep->prettyTypeNameQ());
         }
     }
 
@@ -3420,7 +3420,7 @@ private:
     }
 
     // ---- if / case ----
-    void lowerIf(AstNodeIf* ip, Env& env) {
+    void lowerIf(AstIf* ip, Env& env) {
         const SExpr cond = materialize(toBool(lowerExpr(ip->condp(), env)));
         if (cond.hasVal) {
             lowerStmts(cond.val ? ip->thensp() : ip->elsesp(), env);
@@ -4069,7 +4069,7 @@ private:
         std::vector<AstVar*> formals;
         std::vector<AstVar*> locals;
         collectFtaskVars(taskp->stmtsp(), formals, locals);
-        AstVar* const retp = VN_CAST(taskp->fvarp(), Var);
+        AstVar* const retp = taskp->fvarp();
         // Arguments (positional, or by name)
         std::vector<AstNodeExpr*> args(formals.size(), nullptr);
         {
@@ -4216,7 +4216,7 @@ private:
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 collectFtaskVars(bp->declsp(), formals, locals);
                 collectFtaskVars(bp->stmtsp(), formals, locals);
-            } else if (AstNodeIf* const ip = VN_CAST(nodep, NodeIf)) {
+            } else if (AstIf* const ip = VN_CAST(nodep, If)) {
                 collectFtaskVars(ip->thensp(), formals, locals);
                 collectFtaskVars(ip->elsesp(), formals, locals);
             } else if (AstJumpBlock* const jp = VN_CAST(nodep, JumpBlock)) {
@@ -4385,7 +4385,7 @@ private:
             warnNode(nodep, "hierarchical reference replaced by 0");
             return constExpr(0, width);
         }
-        if (VN_IS(nodep, StructSel) || VN_IS(nodep, MemberSel)) {
+        if (VN_IS(nodep, StructSel) || VN_IS(nodep, MemberRef)) {
             warnNode(nodep, "unpacked struct member select replaced by 0");
             return constExpr(0, width);
         }
