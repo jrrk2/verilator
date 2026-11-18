@@ -310,6 +310,8 @@ private:
     bool m_structOnlyReport = false;  // main switch: --struct-only-report
     bool m_structOnlyFullCase = false;  // main switch: --struct-only-full-case
     bool m_mapOnlyKeepTemps = false;  // main switch: --map-only-keep-temps
+    bool m_mapOnlyWholeProgram = false;  // main switch: --map-only-whole-program
+    int m_mapOnlyPartitionMin = 1000;  // main switch: --map-only-partition-min
     bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
     bool m_mapOnlyNoWideLut = false;  // main switch: --map-only-no-wide-lut
@@ -319,6 +321,7 @@ private:
     int m_mapOnlyTimingPaths = 20;  // main switch: --map-only-timing-paths
     double m_mapOnlyPeriod = 0;  // main switch: --map-only-period
     double m_mapOnlyTimingMargin = -1;  // main switch: --map-only-timing-margin (-1: a fifth of the period)
+    bool m_mapOnlyKeepSumChains = false;  // main switch: --map-only-keep-sum-chains
     bool m_lintOnly = false;        // main switch: --lint-only
     bool m_gmake = false;           // main switch: --make gmake
     bool m_makeJson = false;        // main switch: --make json
@@ -441,6 +444,7 @@ private:
     string      m_mapOnlyOutput;  // main switch: --map-only-output
     string      m_mapOnlyEdif;  // main switch: --map-only-edif
     string      m_mapOnlyVerilog;  // main switch: --map-only-verilog
+    string      m_mapOnlyMemInit;  // main switch: --map-only-meminit
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
     string      m_mapOnlySdc;  // main switch: --map-only-sdc
@@ -773,9 +777,12 @@ public:
     string mapOnlyOutput() const { return m_mapOnlyOutput; }
     string mapOnlyEdif() const { return m_mapOnlyEdif; }
     string mapOnlyVerilog() const { return m_mapOnlyVerilog; }
+    string mapOnlyMemInit() const { return m_mapOnlyMemInit; }
     bool mapOnlyEdifFlat() const { return m_mapOnlyEdifFlat; }
     string mapOnlyAbcScript() const { return m_mapOnlyAbcScript; }
     bool mapOnlyKeepTemps() const { return m_mapOnlyKeepTemps; }
+    bool mapOnlyWholeProgram() const { return m_mapOnlyWholeProgram; }
+    int mapOnlyPartitionMin() const { return m_mapOnlyPartitionMin; }
     bool mapOnlyBramCascade() const { return m_mapOnlyBramCascade; }
     bool mapOnlyNoIobuf() const { return m_mapOnlyNoIobuf; }
     bool mapOnlyNoWideLut() const { return m_mapOnlyNoWideLut; }
@@ -790,6 +797,7 @@ public:
     int mapOnlyMaxFanout() const {
         return m_mapOnlyMaxFanout >= 0 ? m_mapOnlyMaxFanout : mapOnlyTiming() ? 32 : 0;
     }
+    bool mapOnlyKeepSumChains() const { return m_mapOnlyKeepSumChains; }
     const std::set<string>& structOnlyBlackbox() const { return m_structOnlyBlackbox; }
     bool structOnlyXilinxRtl() const { return m_structOnlyXilinxRtl; }
     bool structOnlyWidePackedMem() const { return m_structOnlyWidePackedMem; }

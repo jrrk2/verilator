@@ -17,5 +17,5 @@ test.compile(verilator_flags2=['--map-only-output', mapped],
              make_top_shell=False,
              make_main=False)
 test.file_grep_not(mapped, r'"type": "DSP48E1"')
-test.file_grep_count(mapped, r'"type": "LUT6"', 32)
+test.file_grep_count(mapped, r'"type": "LUT6"', 36)
 test.passes()

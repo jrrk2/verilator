@@ -1661,6 +1661,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
         m_mapOnlyVerilog = valp;
         m_jsonOnly = true;  // same pipeline cut-point as --json-only
     });
+    DECL_OPTION("-map-only-meminit", Set, &m_mapOnlyMemInit);
     DECL_OPTION("-map-only-abc-script", Set, &m_mapOnlyAbcScript);
     DECL_OPTION("-map-only-keep-temps", OnOff, &m_mapOnlyKeepTemps);
     DECL_OPTION("-map-only-bram-cascade", OnOff, &m_mapOnlyBramCascade);
@@ -1676,6 +1677,9 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-period", CbVal, [this](const char* valp) { m_mapOnlyPeriod = std::atof(valp); });
     DECL_OPTION("-map-only-max-fanout", CbVal, [this](const char* valp) { m_mapOnlyMaxFanout = std::atoi(valp); });
     DECL_OPTION("-map-only-timing-margin", CbVal, [this](const char* valp) { m_mapOnlyTimingMargin = std::atof(valp); });
+    DECL_OPTION("-map-only-keep-sum-chains", OnOff, &m_mapOnlyKeepSumChains);
+    DECL_OPTION("-map-only-whole-program", OnOff, &m_mapOnlyWholeProgram);
+    DECL_OPTION("-map-only-partition-min", Set, &m_mapOnlyPartitionMin);
     DECL_OPTION("-struct-only-blackbox", CbVal, [this](const char* valp) {
         m_structOnlyBlackbox.insert(valp);
     });

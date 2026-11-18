@@ -6,7 +6,8 @@
 
 // Multiplies by a constant of few signed digits are shifts and adds, not DSP48E1s: an index
 // 32 * (p * W + l) keeps its 5 low bits visibly 0, so the read below selects one of 4 words
-// (32 LUT6), not any of 1024 bit positions (tens of thousands of LUTs)
+// (a 4:1 mux per bit and the range check: 36 LUT6), not any of 1024 bit positions (tens of
+// thousands of LUTs)
 module t (
     input logic clk,
     input logic [1023:0] q,
