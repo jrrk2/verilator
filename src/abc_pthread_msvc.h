@@ -22,6 +22,10 @@
 #ifndef VERILATOR_ABC_PTHREAD_MSVC_H_
 #define VERILATOR_ABC_PTHREAD_MSVC_H_
 
+// MSVC only: elsewhere the C++ thread library brings in the real pthread.h,
+// whose names these are (the test define is for a check on Linux)
+#if defined(_MSC_VER) || defined(VERILATOR_ABC_PTHREAD_MSVC_TEST)
+
 #define PTHREAD_H  // third_party/abc/lib/pthread.h is then empty
 
 #include <cerrno>
@@ -86,4 +90,5 @@ inline int pthread_cond_timedwait(pthread_cond_t* cp, pthread_mutex_t* mp,
     return cp->cond.wait_until(mp->mutex, deadline) == std::cv_status::timeout ? ETIMEDOUT : 0;
 }
 
+#endif  // _MSC_VER
 #endif  // Guard
