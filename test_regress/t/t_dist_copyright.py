@@ -17,7 +17,7 @@ RELEASE_OK_RE = r'(^test_regress/t/.*\.(cpp|h|map|mk|sv|v|vlt)|^test_regress/t_d
 EXEMPT_AUTHOR_RE = (
     r'(^ci/|^nodist/fastcov.py|^nodist/fuzzer|^test_regress/t/.*\.(cpp|h|mk|s?vh?|vlt)$'
     # The synthesis backend of the verilator-synth fork, and its tests
-    r'|^src/(V3Emit(Bir|Map|Struct)|V3Map(Abc|Sdc|Timing)|struct_netlist|mingw-ar|abc_gzlib_msvc)\.'
+    r'|^src/(V3Emit(Bir|Map|Struct)|V3Map(Abc|Sdc|Timing)|struct_netlist|mingw-ar|abc_[a-z]+_msvc)\.'
     r'|^test_regress/t/t_(struct|synth)_.*\.(py|sdc)$)')
 
 EXEMPT_COPYRIGHT_RE = r'(^\.|/\.|\.gitignore$|\.dat|\.gprof|\.mem|\.out$|\.png$|\.tree|\.vc$|\.vcd$|^\.)'
