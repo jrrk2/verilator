@@ -70,7 +70,6 @@
 #include <memory>
 #include <sstream>
 #include <tuple>
-#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1134,8 +1133,8 @@ public:
                        pass ? &bt.coRequired : nullptr);
                 readBlif(blif, luts, lutOrder);
                 if (last && !v3Global.opt.mapOnlyKeepTemps()) {
-                    unlink(aig.c_str());
-                    unlink(blif.c_str());
+                    std::remove(aig.c_str());
+                    std::remove(blif.c_str());
                 }
             } else {
                 mapPartitioned(base, luts, lutOrder, timing != nullptr, pass ? &bt : nullptr);
@@ -2169,7 +2168,7 @@ private:
         }
         UINFO(1, "map: abc: " << cmd);
         const int rc = ABC_NAMESPACE::Cmd_CommandExecute(pAbc, cmd.c_str());
-        if (!v3Global.opt.mapOnlyKeepTemps()) unlink(lib.c_str());
+        if (!v3Global.opt.mapOnlyKeepTemps()) std::remove(lib.c_str());
         if (rc) v3fatalSrc("abc failed on: " << cmd);
     }
 
@@ -2369,8 +2368,8 @@ private:
             std::vector<std::string> po;
             readBlif(blif, pl, po);
             if (!v3Global.opt.mapOnlyKeepTemps()) {
-                unlink(aig.c_str());
-                unlink(blif.c_str());
+                std::remove(aig.c_str());
+                std::remove(blif.c_str());
             }
             {
                 const auto& sc = m_scopes[kv.first];

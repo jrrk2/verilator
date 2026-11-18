@@ -70,7 +70,6 @@
 #include <memory>
 #include <set>
 #include <sstream>
-#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -5380,10 +5379,7 @@ private:
                 // the mapper's INIT strings) see the same contents
                 std::string dir = v3Global.opt.makeDir();
                 V3Os::createDir(dir);
-                if (!dir.empty() && dir[0] != '/') {
-                    char cwd[4096];
-                    if (::getcwd(cwd, sizeof cwd)) dir = std::string(cwd) + "/" + dir;
-                }
+                if (!dir.empty() && dir[0] != '/') dir = V3Os::filenameJoin(V3Os::cwd(), dir);
                 const std::string f
                     = dir + "/" + sanitizeName(m_modp->prettyName()) + "__" + m.name + ".hex";
                 std::ofstream hf{f};
