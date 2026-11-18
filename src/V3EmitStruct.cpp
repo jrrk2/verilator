@@ -1094,7 +1094,10 @@ private:
             } else if (AstBegin* const bp = VN_CAST(nodep, Begin)) {
                 all &= harvestReadMem(bp->stmtsp());
             } else if (AstIf* const ip = VN_CAST(nodep, If)) {
-                all &= harvestReadMem(ip->thensp()) & harvestReadMem(ip->elsesp());
+                // both branches are harvested whatever the first found
+                const bool thenOk = harvestReadMem(ip->thensp());
+                const bool elseOk = harvestReadMem(ip->elsesp());
+                all = all && thenOk && elseOk;
             } else if (VN_IS(nodep, Comment) || VN_IS(nodep, Var)) {
             } else {
                 all = false;
@@ -1918,7 +1921,6 @@ private:
         std::vector<AstNodeExpr*>
             edgeExprs;  // parallel to edges: the item when not a plain signal
         size_t constEdges = 0;
-        int levels = 0;
         if (AstSenTree* const stp = ap->sentreep()) {
             for (AstSenItem* ip = stp->sensesp(); ip; ip = VN_AS(ip->nextp(), SenItem)) {
                 const AstVarRef* const vrp = VN_CAST(ip->sensp(), VarRef);
@@ -1942,9 +1944,7 @@ private:
                         c.reason = "edge-sensitive item that is not a signal or a bit of one";
                         return c;
                     }
-                } else {
-                    ++levels;
-                }
+                }  // a level-sensitive item is not an edge
             }
         }
         const bool isFf = ap->keyword() == VAlwaysKwd::ALWAYS_FF;

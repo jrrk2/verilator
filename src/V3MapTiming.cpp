@@ -82,7 +82,6 @@ constexpr double kDspInSetupToM = 1.9;  // A/B through the multiplier into M
 constexpr double kDspInSetupToP = 3.0;  // A/B through multiplier and adder into P
 constexpr double kDspCSetup = 1.2;
 constexpr double kDspCtlSetup = 0.5;
-constexpr double kLutramClkQ = 1.2;
 constexpr double kLutramComb = 0.45;  // asynchronous read
 constexpr double kLutramSetup = 0.35;
 constexpr double kIbuf = 0.60;
