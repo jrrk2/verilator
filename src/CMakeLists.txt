@@ -742,11 +742,12 @@ target_compile_definitions(
         $<$<BOOL:${WIN32}>:WIN32_NO_DLL>
 )
 if(MSVC)
-    # /std:c++20 implies /permissive-; abc's C in C++ needs the permissive mode
+    # /std:c++20 implies /permissive-; abc's C in C++ needs the permissive mode.
+    # /Zc:__cplusplus: abc tests __cplusplus for its C++20 paths (opt/eslim)
     # ... and not to the warnings ci-win-compile.ps1 makes errors (/we4715 /we4806 /we4805)
     target_compile_options(
         ${abc_lib}
-        PRIVATE /permissive /w /wd4715 /wd4806 /wd4805 /bigobj
+        PRIVATE /permissive /Zc:__cplusplus /w /wd4715 /wd4806 /wd4805 /bigobj
     )
 else()
     target_compile_features(${abc_lib} PRIVATE cxx_std_17)
