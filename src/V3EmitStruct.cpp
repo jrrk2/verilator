@@ -54,7 +54,6 @@
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
-
 #include "V3EmitStruct.h"
 
 #include "V3Global.h"
