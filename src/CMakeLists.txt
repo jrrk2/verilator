@@ -838,6 +838,17 @@ else()
     target_compile_features(${sdcparse_lib} PRIVATE cxx_std_17)
     target_compile_options(${sdcparse_lib} PRIVATE -w)
 endif()
+# The libraries link into the verilator target, so they use its C runtime
+# (static in Release, see MSVC_RUNTIME_LIBRARY below); a mismatch leaves
+# the DLL runtime's __imp_ symbols unresolved
+set_target_properties(
+    ${abc_lib}
+    ${tatum_lib}
+    ${sdcparse_lib}
+    PROPERTIES
+        MSVC_RUNTIME_LIBRARY
+            MultiThreaded$<IF:$<OR:$<CONFIG:Release>,$<CONFIG:CoverageRelease>>,,DebugDLL>
+)
 if(WIN32)
     target_compile_definitions(${sdcparse_lib} PRIVATE YY_NO_UNISTD_H)
     target_include_directories(${sdcparse_lib} PRIVATE ${WIN_FLEX_BISON})
