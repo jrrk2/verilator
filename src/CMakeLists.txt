@@ -718,6 +718,11 @@ foreach(module ${abc_modules})
     endforeach()
 endforeach()
 list(REMOVE_ITEM abc_sources ${abc_dir}/src/base/main/main.c)
+if(MSVC)
+    # gzlib.c passes its const void* path to wcstombs/_wopen: C, not C++
+    list(REMOVE_ITEM abc_sources ${abc_dir}/src/misc/zlib/gzlib.c)
+    list(APPEND abc_sources ${srcdir}/abc_gzlib_msvc.cpp)
+endif()
 # ABC_USE_NAMESPACE: compiled as C++ inside namespace abc
 set_source_files_properties(${abc_sources} PROPERTIES LANGUAGE CXX)
 
