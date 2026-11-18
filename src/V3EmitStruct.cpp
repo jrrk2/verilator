@@ -54,7 +54,6 @@
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
-#include "verilated_config.h"  // VERILATOR_VERSION_INTEGER
 
 #include "V3EmitStruct.h"
 
@@ -2985,16 +2984,10 @@ private:
                 out.push_back(genMux(sel, materialize(f[k]), materialize(t[k]), width));
             return true;
         }
-#if VERILATOR_VERSION_INTEGER >= 5053000  // AstInitArray became AstConsArray (verilator #8809)
         if (AstConsArray* const ip = VN_CAST(ep, ConsArray)) {
-#define STRUCT_ARRAY_VALUE(k) ip->valuep(static_cast<uint64_t>(k))
-#else
-        if (AstInitArray* const ip = VN_CAST(ep, InitArray)) {
-#define STRUCT_ARRAY_VALUE(k) ip->getIndexDefaultedValuep(static_cast<uint64_t>(k))
-#endif
             const int outer = arrayDims(ep->dtypep())[0].size;
             for (int k = 0; k < outer; ++k) {
-                AstNodeExpr* const vp = STRUCT_ARRAY_VALUE(k);
+                AstNodeExpr* const vp = ip->valuep(static_cast<uint64_t>(k));
                 if (!vp) {
                     errNode(ep, "array pattern leaves element " + std::to_string(k) + " unset");
                     return false;
@@ -3006,7 +2999,6 @@ private:
                 }
             }
             return true;
-#undef STRUCT_ARRAY_VALUE
         }
         std::vector<AstNodeExpr*> chain;
         const AstVarRef* const vp = arrayChain(ep, chain);
@@ -3109,11 +3101,7 @@ private:
         std::vector<AstNodeExpr*> chain;
         const AstVarRef* const vp = arrayChain(lhsp, chain);
         const std::string name = vp ? varName(vp->varp()) : std::string{"array"};
-#if VERILATOR_VERSION_INTEGER >= 5053000  // AstInitArray became AstConsArray (verilator #8809)
         const bool pattern = VN_IS(rhsp, ConsArray);
-#else
-        const bool pattern = VN_IS(rhsp, InitArray);
-#endif
         if (!VN_IS(rhsp, CReset) && !pattern && !arraysAlign(lhsp->dtypep(), rhsp->dtypep())) {
             errNode(rhsp, "whole-array assignment to " + name
                               + " from an array of another shape or direction unsupported");
