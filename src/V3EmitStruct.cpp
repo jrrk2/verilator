@@ -1198,6 +1198,7 @@ private:
                 AstNodeFTask* const taskp = fp->taskp();
                 if (!taskp || taskp->dpiImport() || taskp->prototype() || ++depth > 64) return fail();
                 std::vector<AstVar*> formals, locals;
+                sm.collectFtaskVars(taskp->declsp(), formals, locals);  // formals and locals live here
                 sm.collectFtaskVars(taskp->stmtsp(), formals, locals);
                 AstVar* const retp = taskp->fvarp();
                 std::vector<uint64_t> argv(formals.size(), 0);
@@ -4133,6 +4134,7 @@ private:
         // Formals in declaration order
         std::vector<AstVar*> formals;
         std::vector<AstVar*> locals;
+        collectFtaskVars(taskp->declsp(), formals, locals);  // formals and locals live here
         collectFtaskVars(taskp->stmtsp(), formals, locals);
         AstVar* const retp = taskp->fvarp();
         // Arguments (positional, or by name)
@@ -4273,6 +4275,7 @@ private:
                                  std::vector<AstVar*>& locals) {
         for (; nodep; nodep = nodep->nextp()) {
             if (AstVar* const vp = VN_CAST(nodep, Var)) {
+                if (vp->isFuncReturn()) continue;  // the return variable (fvarp), declared with the formals
                 if (vp->isIO()) {
                     formals.push_back(vp);
                 } else {

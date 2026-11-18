@@ -870,8 +870,10 @@ private:
     std::string lowerFunc(AstNodeFTask* fp) {
         std::vector<std::string> params;
         std::vector<std::string> body;
-        for (AstNode* sp = fp->stmtsp(); sp; sp = sp->nextp()) {
+        // the formals and locals are the declarations, apart from the statements
+        for (AstNode* sp = fp->declsp(); sp; sp = sp->nextp()) {
             if (AstVar* const vp = VN_CAST(sp, Var)) {
+                if (vp->isFuncReturn()) continue;  // named below as the return variable
                 nameVar(vp, "");
                 if (vp->isIO()) {
                     const char* dir = vp->direction() == VDirection::OUTPUT ? "output" : vp->direction() == VDirection::INOUT ? "inout" : "input";
