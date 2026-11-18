@@ -12,11 +12,9 @@ name: Synthesis
 
 on:
   push:
-    branches:
-      - synthesis
+    branches: [synthesis]
   pull_request:
-    branches:
-      - synthesis
+    branches: [synthesis]
   workflow_dispatch:
 
 permissions:

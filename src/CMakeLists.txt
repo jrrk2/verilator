@@ -92,13 +92,16 @@ set(HEADERS
     V3DfgVertices.h
     V3DiagSarif.h
     V3DupFinder.h
+    V3EmitBir.h
     V3EmitC.h
     V3EmitCBase.h
     V3EmitCConstInit.h
     V3EmitCFunc.h
     V3EmitCMain.h
+    V3EmitMap.h
     V3EmitMk.h
     V3EmitMkJson.h
+    V3EmitStruct.h
     V3EmitV.h
     V3Error.h
     V3ExecGraph.h
@@ -142,6 +145,9 @@ set(HEADERS
     V3LinkWith.h
     V3List.h
     V3Localize.h
+    V3MapAbc.h
+    V3MapSdc.h
+    V3MapTiming.h
     V3MemberMap.h
     V3MergeCond.h
     V3Mutex.h
@@ -217,6 +223,7 @@ set(HEADERS
     VlcSource.h
     VlcTest.h
     VlcTop.h
+    struct_netlist.h
 )
 
 set(COMMON_SOURCES
@@ -273,6 +280,7 @@ set(COMMON_SOURCES
     V3DfgSynthesize.cpp
     V3DiagSarif.cpp
     V3DupFinder.cpp
+    V3EmitBir.cpp
     V3EmitCBase.cpp
     V3EmitCConstPool.cpp
     V3EmitCExecGraph.cpp
@@ -285,8 +293,10 @@ set(COMMON_SOURCES
     V3EmitCPch.cpp
     V3EmitCRtmd.cpp
     V3EmitCSyms.cpp
+    V3EmitMap.cpp
     V3EmitMk.cpp
     V3EmitMkJson.cpp
+    V3EmitStruct.cpp
     V3EmitV.cpp
     V3Error.cpp
     V3ExecGraph.cpp
@@ -328,6 +338,9 @@ set(COMMON_SOURCES
     V3LinkResolve.cpp
     V3LinkWith.cpp
     V3Localize.cpp
+    V3MapAbc.cpp
+    V3MapSdc.cpp
+    V3MapTiming.cpp
     V3MergeCond.cpp
     V3Name.cpp
     V3Number.cpp
@@ -560,6 +573,248 @@ if(NOT TARGET vlcovgen)
 endif()
 
 #
+# Synthesis backend (V3EmitMap): libabc from the third_party/abc submodule,
+# and Tatum with libsdcparse (vendored under third_party) for its timing
+# analysis.  Mirrors src/Makefile_obj.in; the library targets carry the
+# build type suffix like the verilator target, as the directory is added
+# once per configuration under DEBUG_AND_RELEASE_AND_COVERAGE.
+
+set(third_party_dir ${srcdir}/../third_party)
+
+# libabc: the module list of abc's Makefile (with CUDD, without readline),
+# each module's module.make lists its sources.  Read directly, as abc's own
+# CMakeLists.txt needs GNU make at configure time.
+set(abc_dir ${third_party_dir}/abc)
+if(NOT EXISTS ${abc_dir}/Makefile)
+    message(
+        FATAL_ERROR
+        "${abc_dir} is empty: git submodule update --init third_party/abc"
+    )
+endif()
+set(abc_modules
+    base/abc
+    base/abci
+    base/cmd
+    base/io
+    base/main
+    base/exor
+    base/ver
+    base/wlc
+    base/wln
+    base/sn
+    base/parter
+    base/acb
+    base/pla
+    base/test
+    map/mapper
+    map/mio
+    map/super
+    map/if
+    map/if/acd
+    map/amap
+    map/cov
+    map/scl
+    map/mpm
+    map/emap
+    misc/extra
+    misc/mvc
+    misc/st
+    misc/util
+    misc/nm
+    misc/vec
+    misc/hash
+    misc/tim
+    misc/bzlib
+    misc/zlib
+    misc/mem
+    misc/bar
+    misc/bbl
+    misc/parse
+    misc/btor
+    opt/cut
+    opt/fxu
+    opt/fxch
+    opt/rwr
+    opt/mfs
+    opt/sim
+    opt/ret
+    opt/fret
+    opt/res
+    opt/lpk
+    opt/nwk
+    opt/rwt
+    opt/rar
+    opt/cgt
+    opt/csw
+    opt/dar
+    opt/drw
+    opt/dau
+    opt/dsc
+    opt/sfm
+    opt/sbd
+    opt/eslim
+    opt/ufar
+    opt/untk
+    opt/util
+    sat/bsat
+    sat/xsat
+    sat/satoko
+    sat/csat
+    sat/msat
+    sat/psat
+    sat/cnf
+    sat/bmc
+    sat/glucose
+    sat/glucose2
+    sat/kissat
+    sat/cadical
+    bool/bdc
+    bool/deco
+    bool/dec
+    bool/decpla
+    bool/kit
+    bool/lms
+    bool/lucky
+    bool/rsb
+    bool/rpo
+    proof/pdr
+    proof/abs
+    proof/live
+    proof/ssc
+    proof/int
+    proof/cec
+    proof/acec
+    proof/dch
+    proof/fraig
+    proof/fra
+    proof/ssw
+    aig/aig
+    aig/saig
+    aig/gia
+    aig/ioa
+    aig/ivy
+    aig/hop
+    aig/miniaig
+    bdd/cudd
+    bdd/extrab
+    bdd/dsd
+    bdd/epd
+    bdd/mtr
+    bdd/reo
+    bdd/cas
+    bdd/bbr
+    bdd/llb
+)
+set(abc_sources)
+foreach(module ${abc_modules})
+    # "SRC += a.c \" continuation lines: every token ending in .c or .cpp
+    file(READ ${abc_dir}/src/${module}/module.make module_text)
+    string(REGEX MATCHALL "[^ \t\r\n\\\\]+" words "${module_text}")
+    foreach(word ${words})
+        string(REGEX REPLACE "^\\+=" "" word "${word}")
+        if(word MATCHES "\\.(c|cpp)$")
+            list(APPEND abc_sources ${abc_dir}/${word})
+        endif()
+    endforeach()
+endforeach()
+list(REMOVE_ITEM abc_sources ${abc_dir}/src/base/main/main.c)
+# ABC_USE_NAMESPACE: compiled as C++ inside namespace abc
+set_source_files_properties(${abc_sources} PROPERTIES LANGUAGE CXX)
+
+set(abc_lib abc${CMAKE_BUILD_TYPE})
+add_library(${abc_lib} STATIC EXCLUDE_FROM_ALL ${abc_sources})
+set_property(TARGET ${abc_lib} PROPERTY OUTPUT_NAME abc)
+target_include_directories(${abc_lib} PUBLIC ${abc_dir}/src)
+target_compile_definitions(
+    ${abc_lib}
+    PUBLIC
+        ABC_NAMESPACE=abc
+        ABC_USE_STDINT_H=1
+        ABC_USE_CUDD=1
+        $<$<NOT:$<BOOL:${MSVC}>>:ABC_USE_PTHREADS>
+        # ABC tests WIN32, which MSVC defines and MinGW does not; no DLL export decorations
+        $<$<BOOL:${WIN32}>:WIN32>
+        $<$<BOOL:${WIN32}>:WIN32_NO_DLL>
+)
+if(MSVC)
+    # /std:c++20 implies /permissive-; abc's C in C++ needs the permissive mode
+    target_compile_options(${abc_lib} PRIVATE /permissive /w /bigobj)
+else()
+    target_compile_features(${abc_lib} PRIVATE cxx_std_17)
+    target_compile_options(${abc_lib} PRIVATE -fpermissive -w)
+endif()
+target_link_libraries(${abc_lib} PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(${abc_lib} PUBLIC rt)
+endif()
+if(WIN32)
+    # PathMatchSpecA, for ABC's liberty reader
+    target_link_libraries(${abc_lib} PUBLIC shlwapi)
+endif()
+
+# Tatum (VTR's timing analyser, MIT)
+set(tatum_dir ${third_party_dir}/tatum)
+file(GLOB tatum_sources ${tatum_dir}/tatum/*.cpp ${tatum_dir}/tatum/*/*.cpp)
+set(tatum_lib tatum${CMAKE_BUILD_TYPE})
+add_library(${tatum_lib} STATIC EXCLUDE_FROM_ALL ${tatum_sources})
+set_property(TARGET ${tatum_lib} PROPERTY OUTPUT_NAME tatum)
+target_include_directories(${tatum_lib} PUBLIC ${tatum_dir})
+if(MSVC)
+    target_compile_options(${tatum_lib} PRIVATE /w)
+else()
+    target_compile_features(${tatum_lib} PRIVATE cxx_std_17)
+    target_compile_options(${tatum_lib} PRIVATE -w)
+endif()
+
+# libsdcparse (VTR's flex/bison SDC reader, MIT); the generated lexer and
+# parser land in the build directory
+set(sdcparse_dir ${third_party_dir}/sdcparse)
+add_custom_command(
+    OUTPUT sdc_parser.gen.cpp sdc_parser.gen.hpp
+    MAIN_DEPENDENCY ${sdcparse_dir}/sdc_parser.y
+    COMMAND
+        ${BISON_EXECUTABLE} -d -o sdc_parser.gen.cpp
+        "${sdcparse_dir}/sdc_parser.y"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+add_custom_command(
+    OUTPUT sdc_lexer.gen.cpp sdc_lexer.gen.hpp
+    MAIN_DEPENDENCY ${sdcparse_dir}/sdc_lexer.l
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sdc_parser.gen.hpp
+    COMMAND
+        ${FLEX_EXECUTABLE} --header-file=sdc_lexer.gen.hpp -o sdc_lexer.gen.cpp
+        "${sdcparse_dir}/sdc_lexer.l"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set(sdcparse_lib sdcparse${CMAKE_BUILD_TYPE})
+add_library(
+    ${sdcparse_lib}
+    STATIC
+    EXCLUDE_FROM_ALL
+    ${sdcparse_dir}/sdc_common.cpp
+    ${sdcparse_dir}/sdc_error.cpp
+    ${sdcparse_dir}/sdc_lexer.cpp
+    ${sdcparse_dir}/sdcparse.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/sdc_parser.gen.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/sdc_lexer.gen.cpp
+)
+set_property(TARGET ${sdcparse_lib} PROPERTY OUTPUT_NAME sdcparse)
+target_include_directories(
+    ${sdcparse_lib}
+    PUBLIC ${sdcparse_dir} ${CMAKE_CURRENT_BINARY_DIR}
+)
+if(MSVC)
+    target_compile_options(${sdcparse_lib} PRIVATE /w)
+else()
+    target_compile_features(${sdcparse_lib} PRIVATE cxx_std_17)
+    target_compile_options(${sdcparse_lib} PRIVATE -w)
+endif()
+if(WIN32)
+    target_compile_definitions(${sdcparse_lib} PRIVATE YY_NO_UNISTD_H)
+    target_include_directories(${sdcparse_lib} PRIVATE ${WIN_FLEX_BISON})
+endif()
+
+#
 # Set up the verilator binary target
 
 set(verilator verilator${CMAKE_BUILD_TYPE})
@@ -605,6 +860,10 @@ add_dependencies(
 )
 
 target_link_libraries(${verilator} PRIVATE Threads::Threads)
+target_link_libraries(
+    ${verilator}
+    PRIVATE ${abc_lib} ${tatum_lib} ${sdcparse_lib}
+)
 
 if(NOT MSVC)
     target_compile_features(${verilator} PRIVATE cxx_std_11)

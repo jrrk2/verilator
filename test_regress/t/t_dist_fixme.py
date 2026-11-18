@@ -33,6 +33,8 @@ for filename in files.split():
     filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):
         continue
+    if os.path.isdir(filename):  # Submodule
+        continue
     wholefile = test.file_contents(filename)
     if re.search(regex, wholefile):
         names[filename] = True

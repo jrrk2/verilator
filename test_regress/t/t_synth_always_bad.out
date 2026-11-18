@@ -1,0 +1,6 @@
+%Error: t/t_synth_always_bad.v:9:3: Synthesis would drop this always block: multi-edge always block but body has no reset-style chain
+                                  : ... note: In instance 't'
+    9 |   always @(posedge clk or posedge rst) q <= d;
+      |   ^~~~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

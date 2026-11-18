@@ -165,6 +165,15 @@ Summary:
 
    See also :vlopt:`-j`.
 
+.. option:: --bir-only-output <filename>
+
+   Emit the elaborated design as the System-Verilog-suite Behavioral IR, a
+   JSON file of every module's signals, processes, instances and functions
+   with the statements kept as expression trees rather than lowered to
+   cells, for the suite's decompiler and miter flows.  Runs at the same
+   pipeline point as :vlopt:`--json-only` (which it implies).
+
+
 .. option:: --build
 
    After generating the SystemC/C++ code, Verilator will invoke the
@@ -1369,62 +1378,6 @@ Summary:
    :vlopt:`--json-only`. Using this option automatically sets
    :vlopt:`--json-only`.
 
-.. option:: --struct-only-output <filename>
-
-   Emit the elaborated design as structural Verilog: every module becomes a
-   netlist of primitive cells (adder, bitwise_and, mux2, comparator_eq,
-   dff_en, memory_sp, ...) and user-module instances, with always blocks
-   lowered to mux trees and registers, loops unrolled and functions/tasks
-   inlined.  The cell library is ``structural_primitives.sv`` from the
-   System-Verilog-suite.  Runs at the same pipeline point as
-   :vlopt:`--json-only` (which it implies) but streams the result from the
-   in-memory AST, so no JSON tree is written unless :vlopt:`--json-only-output`
-   is also given.
-
-   Every case statement is analysed before its hardware is chosen: whether
-   every selector value matches an item (full) and whether any value matches
-   two items (parallel).  A :code:`unique`, :code:`unique0` or
-   :code:`priority` keyword whose claim the analysis disproves is an error;
-   when the analysis cannot decide (labels that are not constants, or that
-   test too many selector bits), the keyword is trusted.  A parallel case
-   becomes a balanced mux tree, any other a priority chain; a full case drops
-   its unreachable default.  :code:`full_case`/:code:`parallel_case` pragmas
-   are ignored unless :vlopt:`--struct-only-full-case` is given.
-
-   An :code:`always_comb` that does not assign a variable on every path is an
-   error, as it would need a latch.  :code:`always_latch` and :code:`always
-   @*` produce a latch enabled on the paths that assign; an
-   :code:`always_latch` that assigns on every path is emitted as
-   combinational logic.
-
-.. option:: --struct-only-xilinx-rtl
-
-   With :vlopt:`--struct-only-output`, relabel the primitive cells to the
-   Vivado RTL elaboration vocabulary (RTL_INV, RTL_AND, RTL_MUX, RTL_ADD,
-   RTL_REG_SYNC__BREG_<W>, ...).
-
-.. option:: --struct-only-wide-packed-mem
-
-   With :vlopt:`--struct-only-output`, also treat packed vectors wider than
-   512 bits as flattened memories (depth inferred from a DATA_WIDTH
-   parameter, else 64/32/16/8).  Off by default.
-
-.. option:: --struct-only-report
-
-   With :vlopt:`--struct-only-output`, print a Design-Compiler-style
-   inferred-register table for every clocked block to stderr.
-
-.. option:: --struct-only-full-case
-
-   With :vlopt:`--struct-only-output`, read ``full_case`` and
-   ``parallel_case`` pragmas (as ``(* full_case *)`` attributes or
-   ``// synopsys full_case`` comments) the way vendor synthesis tools do: a
-   ``full_case`` without a default takes its last item on selector values no
-   item matches instead of holding (so no latch is inferred), and a
-   ``parallel_case`` is built as a balanced tree even when its items overlap.
-   Off by default: the netlist then follows the case's own semantics and the
-   pragma is reported as ignored.
-
 .. option:: --l2-name <value>
 
    Instead of using the module name when showing Verilog scope, use the
@@ -1563,6 +1516,150 @@ Summary:
    "-a -b"``), or use multiple -MAKEFLAGS arguments (e.g.
    ``-MAKEFLAGS -l -MAKEFLAGS -k``). Use of this option should not be
    required for simple builds using the host toolchain.
+
+.. option:: --map-only-abc-script <script>
+
+   With :vlopt:`--map-only-output`, the ABC commands run on each network
+   between reading the AIG and writing the mapped BLIF, in place of the
+   built-in ``strash; dc2; dch -f; if; mfs2; strash; dc2; dch -f; if -F 4
+   -A 8 -C 16``.  The LUT library is read before the script runs.
+
+.. option:: --map-only-bram-cascade
+
+   With :vlopt:`--map-only-output`, a memory that needs more than one
+   RAMB36E1 is built as cascaded pairs (the CASCADEOUT/CASCADEIN chain of
+   UG473), halving the output mux, instead of as independent blocks whose
+   outputs are multiplexed.  Off by default.
+
+.. option:: --map-only-edif <filename>
+
+   Emit the mapped netlist of :vlopt:`--map-only-output` (which it implies)
+   as hierarchical EDIF 2.0.0 for Vivado's ``read_edif``, one EDIF cell per
+   mapped partition.
+
+.. option:: --map-only-edif-flat
+
+   With :vlopt:`--map-only-edif`, write the design as one flat EDIF cell
+   instead of one cell per partition.
+
+.. option:: --map-only-keep-equivalent-registers
+
+   With :vlopt:`--map-only-output`, keep registers whose next-state
+   functions, clocks and controls are identical; by default they are merged
+   into one register with the fanout of both.
+
+.. option:: --map-only-keep-sum-chains
+
+   With :vlopt:`--map-only-output`, keep chained additions (``a + b + c +
+   ...``) as the source's linear chain of CARRY4 adders; by default a chain
+   of three or more is rebuilt as a balanced tree, which is shallower.
+
+.. option:: --map-only-keep-temps
+
+   With :vlopt:`--map-only-output`, keep the AIGER, LUT library and BLIF
+   files exchanged with ABC (next to the output file) instead of deleting
+   them when the mapping is done.
+
+.. option:: --map-only-max-fanout <value>
+
+   With :vlopt:`--map-only-output`, the most loads a LUT output may drive
+   before the LUT is duplicated; 0 for no limit.  The default is no limit,
+   or 32 when the mapping is timing-driven (:vlopt:`--map-only-sdc` or
+   :vlopt:`--map-only-period`).
+
+.. option:: --map-only-meminit <filename>
+
+   With :vlopt:`--map-only-output`, also write a JSON manifest of the block
+   RAM contents: for every memory with an initial image, its RAMB36E1/RAMB18E1
+   tiles and the words each one holds, for a loader that fills the RAMs
+   after configuration.
+
+.. option:: --map-only-no-iobuf
+
+   With :vlopt:`--map-only-output`, put no IBUF, OBUF or BUFG cells on the
+   top module's ports: the top is a block to be instantiated in another
+   netlist, not the chip.
+
+.. option:: --map-only-no-wide-lut
+
+   With :vlopt:`--map-only-output`, map to LUT6 and smaller only.  By
+   default ABC may also cover 7- and 8-input functions, which become LUT6
+   pairs under a MUXF7 or four LUT6 under MUXF7s and a MUXF8.
+
+.. option:: --map-only-output <filename>
+
+   Map the elaborated design to a Xilinx 7-series cell netlist (LUT1-LUT6,
+   MUXF7/MUXF8, FDRE/FDSE/FDCE/FDPE, CARRY4, RAMB36E1/RAMB18E1, RAM64X1D,
+   DSP48E1, IBUF/OBUF/BUFG) and write it as Yosys JSON, for nextpnr-xilinx
+   or Vivado.  The structural netlist of :vlopt:`--struct-only-output` is
+   turned into an and-inverter graph, ABC maps the logic to LUTs (see
+   :vlopt:`--map-only-abc-script`), and memories, multipliers and carry
+   chains are matched to the hard blocks.  Each module instance large enough
+   (:vlopt:`--map-only-partition-min`) is mapped on its own unless
+   :vlopt:`--map-only-whole-program`.  Runs at the same pipeline point as
+   :vlopt:`--json-only` (which it implies).
+
+.. option:: --map-only-partition-min <value>
+
+   With :vlopt:`--map-only-output`, the smallest instance, in AIG nodes, that
+   ABC maps as a network of its own; a smaller instance is folded into its
+   parent's.  The default is 1000.
+
+.. option:: --map-only-period <ns>
+
+   With :vlopt:`--map-only-output`, the clock period in nanoseconds applied
+   to every clock that :vlopt:`--map-only-sdc` does not constrain (or to all
+   clocks without an SDC file).  Makes the mapping timing-driven: the mapped
+   netlist is analysed with 7-series cell and net delays, and the arrival
+   and required times at ABC's boundaries steer a second mapping (see
+   :vlopt:`--map-only-timing-iterations`).
+
+.. option:: --map-only-sdc <filename>
+
+   With :vlopt:`--map-only-output`, read the clocks and I/O delays from an
+   SDC/XDC file (``create_clock``, ``create_generated_clock``,
+   ``set_input_delay``, ``set_output_delay``, ``set_clock_groups``,
+   ``set_false_path``, ``set_max_delay``, ``set_min_delay``) and map
+   timing-driven for them, as :vlopt:`--map-only-period`.
+
+.. option:: --map-only-timing-iterations <value>
+
+   With a timing-driven :vlopt:`--map-only-output`, how many times the
+   mapping is redone with the previous mapping's boundary times; 0 maps once
+   and only reports.  The default is 1.
+
+.. option:: --map-only-timing-margin <ns>
+
+   With a timing-driven :vlopt:`--map-only-output`, the slack in nanoseconds
+   kept back from the required times handed to ABC, for the routing delay
+   placement adds later.  The default is a fifth of the clock period.
+
+.. option:: --map-only-timing-paths <value>
+
+   With a timing-driven :vlopt:`--map-only-output`, how many of the worst
+   paths the report (:vlopt:`--map-only-timing-report`) lists for each clock.
+   The default is 20.
+
+.. option:: --map-only-timing-report <filename>
+
+   With a timing-driven :vlopt:`--map-only-output`, write the timing
+   analysis of the final mapping (each clock's period, the achievable
+   frequency, and the worst paths cell by cell) to the given file.
+
+.. option:: --map-only-verilog <filename>
+
+   Emit the mapped netlist of :vlopt:`--map-only-output` (which it implies)
+   as structural Verilog instantiating the 7-series unisim cells, for
+   simulation of the mapped design or for Vivado's ``read_verilog``.
+
+.. option:: --map-only-whole-program
+
+   With :vlopt:`--map-only-output`, flatten the design and map it as one ABC
+   network, so logic may be optimised across instance boundaries; by default
+   each instance of at least :vlopt:`--map-only-partition-min` AIG nodes is
+   mapped on its own, which is faster and keeps instance names in the
+   netlist.
+
 
 .. option:: --max-num-width <value>
 
@@ -2164,6 +2261,69 @@ Summary:
 .. option:: --no-stop-fail
 
    Don't call $stop when assertion fails. Simulation will continue.
+
+.. option:: --struct-only-blackbox <module>
+
+   With :vlopt:`--struct-only-output`, leave the named module's contents out
+   of the netlist: its instances remain as instances of a cell of that name
+   with the ports of the source module, for a hard macro or an IP block the
+   netlist is to be joined with later.  May be given more than once.
+
+.. option:: --struct-only-full-case
+
+   With :vlopt:`--struct-only-output`, read ``full_case`` and
+   ``parallel_case`` pragmas (as ``(* full_case *)`` attributes or
+   ``// synopsys full_case`` comments) the way vendor synthesis tools do: a
+   ``full_case`` without a default takes its last item on selector values no
+   item matches instead of holding (so no latch is inferred), and a
+   ``parallel_case`` is built as a balanced tree even when its items overlap.
+   Off by default: the netlist then follows the case's own semantics and the
+   pragma is reported as ignored.
+
+.. option:: --struct-only-output <filename>
+
+   Emit the elaborated design as structural Verilog: every module becomes a
+   netlist of primitive cells (adder, bitwise_and, mux2, comparator_eq,
+   dff_en, memory_sp, ...) and user-module instances, with always blocks
+   lowered to mux trees and registers, loops unrolled and functions/tasks
+   inlined.  The cell library is ``structural_primitives.sv`` from the
+   System-Verilog-suite.  Runs at the same pipeline point as
+   :vlopt:`--json-only` (which it implies) but streams the result from the
+   in-memory AST, so no JSON tree is written unless :vlopt:`--json-only-output`
+   is also given.
+
+   Every case statement is analysed before its hardware is chosen: whether
+   every selector value matches an item (full) and whether any value matches
+   two items (parallel).  A :code:`unique`, :code:`unique0` or
+   :code:`priority` keyword whose claim the analysis disproves is an error;
+   when the analysis cannot decide (labels that are not constants, or that
+   test too many selector bits), the keyword is trusted.  A parallel case
+   becomes a balanced mux tree, any other a priority chain; a full case drops
+   its unreachable default.  :code:`full_case`/:code:`parallel_case` pragmas
+   are ignored unless :vlopt:`--struct-only-full-case` is given.
+
+   An :code:`always_comb` that does not assign a variable on every path is an
+   error, as it would need a latch.  :code:`always_latch` and :code:`always
+   @*` produce a latch enabled on the paths that assign; an
+   :code:`always_latch` that assigns on every path is emitted as
+   combinational logic.
+
+.. option:: --struct-only-report
+
+   With :vlopt:`--struct-only-output`, print a Design-Compiler-style
+   inferred-register table for every clocked block to stderr.
+
+.. option:: --struct-only-wide-packed-mem
+
+   With :vlopt:`--struct-only-output`, also treat packed vectors wider than
+   512 bits as flattened memories (depth inferred from a DATA_WIDTH
+   parameter, else 64/32/16/8).  Off by default.
+
+.. option:: --struct-only-xilinx-rtl
+
+   With :vlopt:`--struct-only-output`, relabel the primitive cells to the
+   Vivado RTL elaboration vocabulary (RTL_INV, RTL_AND, RTL_MUX, RTL_ADD,
+   RTL_REG_SYNC__BREG_<W>, ...).
 
 .. option:: --structs-packed
 

@@ -10,6 +10,7 @@
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -27,21 +28,21 @@
 
 #include "V3MapSdc.h"
 
+#include "sdcparse.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <set>
 #include <sstream>
 
-#include "sdcparse.hpp"
-
 namespace {
 
-const std::set<std::string> kSdcCommands = {
-    "create_clock",         "create_generated_clock", "set_input_delay",     "set_output_delay",
-    "set_clock_groups",     "set_false_path",         "set_max_delay",       "set_min_delay",
-    "set_multicycle_path",  "set_clock_uncertainty",  "set_clock_latency",   "set_disable_timing",
-    "set_timing_derate"};
+const std::set<std::string> kSdcCommands
+    = {"create_clock",        "create_generated_clock", "set_input_delay",   "set_output_delay",
+       "set_clock_groups",    "set_false_path",         "set_max_delay",     "set_min_delay",
+       "set_multicycle_path", "set_clock_uncertainty",  "set_clock_latency", "set_disable_timing",
+       "set_timing_derate"};
 
 std::string firstWord(const std::string& s) {
     size_t i = 0;
@@ -82,13 +83,14 @@ std::string filterSdc(std::istream& in, std::set<std::string>& skipped) {
 }
 
 class Collector final : public sdcparse::Callback {
-    V3MapSdcConstraints& m_out;
-    std::string& m_error;
-    int m_line = 0;
+    V3MapSdcConstraints& m_out;  // the constraints being collected
+    std::string& m_error;  // first parse error, if any
+    int m_line = 0;  // line of the command being parsed, for messages
 
     static std::vector<std::string> strings(const sdcparse::StringGroup& g) { return g.strings; }
     void unsupported(const std::string& what) {
-        m_out.warnings.push_back(m_out.filename + ":" + std::to_string(m_line) + ": " + what + " is not applied");
+        m_out.warnings.push_back(m_out.filename + ":" + std::to_string(m_line) + ": " + what
+                                 + " is not applied");
     }
     static std::string fromTo(const sdcparse::StringGroup& g, bool& clocks) {
         clocks = g.type == sdcparse::StringGroupType::CLOCK;
@@ -96,8 +98,8 @@ class Collector final : public sdcparse::Callback {
         for (const std::string& x : g.strings) s += (s.empty() ? "" : " ") + x;
         return s;
     }
-    void path(V3MapSdcPath::Kind kind, const sdcparse::StringGroup& from, const sdcparse::StringGroup& to,
-              double value, const char* cmd) {
+    void path(V3MapSdcPath::Kind kind, const sdcparse::StringGroup& from,
+              const sdcparse::StringGroup& to, double value, const char* cmd) {
         bool fc = false;
         bool tc = false;
         fromTo(from, fc);
@@ -177,11 +179,18 @@ public:
     void set_clock_uncertainty(const sdcparse::SetClockUncertainty&) override {
         unsupported("set_clock_uncertainty");
     }
-    void set_clock_latency(const sdcparse::SetClockLatency&) override { unsupported("set_clock_latency"); }
-    void set_disable_timing(const sdcparse::SetDisableTiming&) override { unsupported("set_disable_timing"); }
-    void set_timing_derate(const sdcparse::SetTimingDerate&) override { unsupported("set_timing_derate"); }
+    void set_clock_latency(const sdcparse::SetClockLatency&) override {
+        unsupported("set_clock_latency");
+    }
+    void set_disable_timing(const sdcparse::SetDisableTiming&) override {
+        unsupported("set_disable_timing");
+    }
+    void set_timing_derate(const sdcparse::SetTimingDerate&) override {
+        unsupported("set_timing_derate");
+    }
     void finish_parse() override {}
-    void parse_error(const int curr_lineno, const std::string& near_text, const std::string& msg) override {
+    void parse_error(const int curr_lineno, const std::string& near_text,
+                     const std::string& msg) override {
         if (!m_error.empty()) return;
         m_error = m_out.filename + ":" + std::to_string(curr_lineno) + ": " + msg
                   + (near_text.empty() ? "" : " near '" + near_text + "'");

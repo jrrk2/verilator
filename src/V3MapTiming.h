@@ -10,6 +10,7 @@
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -52,7 +53,8 @@ public:
         std::vector<std::string> bits;
     };
     struct Options final {
-        double defaultPeriod = 0;  // ns for every clock root the constraints leave unconstrained; 0 = none
+        double defaultPeriod
+            = 0;  // ns for every clock root the constraints leave unconstrained; 0 = none
         int reportPaths = 20;  // worst paths in the report
     };
     struct Domain final {
@@ -72,7 +74,8 @@ public:
     V3MapTiming(const V3MapSdcConstraints& sdc, const Options& opt);
     ~V3MapTiming();
     // Build the timing graph and run the setup analysis; false with `error` if that fails
-    bool analyse(const std::vector<Cell>& cells, const std::vector<Port>& ports, std::string& error);
+    bool analyse(const std::vector<Cell>& cells, const std::vector<Port>& ports,
+                 std::string& error);
     const Summary& summary() const;
     std::string summaryText() const;  // one line per clock
     // The latest data arrival at the driver of a net (NaN when nothing clocked reaches it), and
@@ -90,7 +93,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> m_impl;
+    std::unique_ptr<Impl> m_impl;  // the Tatum timing graph and analyser
 };
 
 #endif  // guard

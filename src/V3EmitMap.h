@@ -1,12 +1,14 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
 // DESCRIPTION: Verilator: Emit a technology-mapped (LUT/FF/BRAM) netlist
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //*************************************************************************
 #ifndef VERILATOR_V3EMITMAP_H_
 #define VERILATOR_V3EMITMAP_H_
 #include "config_build.h"
 #include "verilatedos.h"
+
 #include <string>
 class V3EmitMap final {
 public:

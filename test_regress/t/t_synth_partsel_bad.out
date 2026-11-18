@@ -1,0 +1,6 @@
+%Error: t/t_synth_partsel_bad.v:9:31: structural backend: part-select write into array element with a non-constant bit offset is not supported
+                                    : ... note: In instance 't'
+    9 |   always @(posedge clk) mem[i][j*4+:4] <= d;
+      |                               ^
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

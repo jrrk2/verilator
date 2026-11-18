@@ -27,8 +27,12 @@ for filename in files.split():
         continue
     if "test_regress/t/uvm/" in filename:  # Standard file - can't change it
         continue
+    if "third_party/" in filename:  # Vendored libraries - can't change them
+        continue
     filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):
+        continue
+    if os.path.isdir(filename):  # Submodule
         continue
     with open(filename, 'r', encoding='latin-1') as fh:
         for line in fh:

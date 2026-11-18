@@ -1,0 +1,3 @@
+%Error: Synthesis: memory 'rom' is never written and its image is too large to lower to logic; its reads would all be 0
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

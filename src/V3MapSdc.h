@@ -10,6 +10,7 @@
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -35,7 +36,8 @@ struct V3MapSdcClock final {
 
 struct V3MapSdcIoDelay final {
     bool input = true;  // set_input_delay, else set_output_delay
-    bool isMax = true;  // -max (or neither flag); a -min only delay is not used by the setup analysis
+    bool isMax
+        = true;  // -max (or neither flag); a -min only delay is not used by the setup analysis
     std::string clock;  // -clock
     double delay = 0;
     std::vector<std::string> ports;

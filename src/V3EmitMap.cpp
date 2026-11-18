@@ -39,6 +39,7 @@
 // This program is free software; you can redistribute it and/or modify it
 // under the terms of either the GNU Lesser General Public License Version 3
 // or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -52,24 +53,24 @@
 #include "V3MapAbc.h"
 #include "V3MapTiming.h"
 #include "V3Os.h"
-#include <unistd.h>
-#include <climits>
-#include <cstdlib>
 
 #include "struct_netlist.h"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <chrono>
-#include <iomanip>
+#include <climits>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <sstream>
 #include <tuple>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -135,7 +136,8 @@ public:
         } else if (vb && isPlaceholder(vb) && !hasAlias(vb) && !m_pinned.count(vb)) {
             m_alias[vb] = a ^ (b & 1);
         } else {
-            svs_netlist::warn("net driven twice (lit " + std::to_string(a) + " vs " + std::to_string(b) + ")");
+            svs_netlist::warn("net driven twice (lit " + std::to_string(a) + " vs "
+                              + std::to_string(b) + ")");
         }
     }
     int AND(int a, int b) {
@@ -179,7 +181,8 @@ public:
     }
     Vec resize(const Vec& a, int w, bool sext) const {
         Vec r(w);
-        for (int i = 0; i < w; ++i) r[i] = i < static_cast<int>(a.size()) ? a[i] : (sext && !a.empty() ? a.back() : 0);
+        for (int i = 0; i < w; ++i)
+            r[i] = i < static_cast<int>(a.size()) ? a[i] : (sext && !a.empty() ? a.back() : 0);
         return r;
     }
     Vec NOTv(const Vec& a) const {
@@ -235,14 +238,15 @@ public:
     // (mulConst).
     static constexpr size_t MIN_CARRY = 4;
     static constexpr size_t MIN_DSP = 8;
-    struct Chain {
-        Vec x, y;  // the operands it adds (with cyinit): balanceSums, Mapper::absorbDspAccumulators
+    struct Chain final {
+        Vec x,
+            y;  // the operands it adds (with cyinit): balanceSums, Mapper::absorbDspAccumulators
         Vec s, di;  // per bit
         int cyinit = 0;
         Vec o;  // sum bits (placeholders), empty for a compare
         int co = -1;  // final carry (placeholder), -1 when unused
     };
-    struct Dsp {
+    struct Dsp final {
         Vec a, b;  // 25 / 18 operand bits, two's complement
         Vec p;  // 48 product bits (placeholders)
         // P register absorbed from the flip-flops the product fed
@@ -351,7 +355,8 @@ public:
     int pruneDsps() {
         std::unordered_map<int, int> memo;
         const auto zero = [&](const Vec& v) {
-            for (const int l : v) if (constOf(l, memo) != 0) return false;
+            for (const int l : v)
+                if (constOf(l, memo) != 0) return false;
             return true;
         };
         size_t k = 0;
@@ -488,7 +493,10 @@ public:
                     const size_t j = sumOf(*opp);
                     if (j < n && isSum(k) && opp->size() >= width) {
                         ++wholeUses[j];
-                        if (!live[j]) { live[j] = 1; chains.push_back(j); }
+                        if (!live[j]) {
+                            live[j] = 1;
+                            chains.push_back(j);
+                        }
                     } else {
                         for (const int l : *opp) vars.push_back(resolve(l) >> 1);
                     }
@@ -503,7 +511,10 @@ public:
             const auto it = chainOfBit.find(v);
             if (it != chainOfBit.end()) {
                 otherUse[it->second] = 1;
-                if (!live[it->second]) { live[it->second] = 1; chains.push_back(it->second); }
+                if (!live[it->second]) {
+                    live[it->second] = 1;
+                    chains.push_back(it->second);
+                }
                 continue;
             }
             if (isPlaceholder(v)) continue;
@@ -561,10 +572,12 @@ public:
                 Term b = std::move(heap.back());
                 heap.pop_back();
                 const size_t w = std::min(width, std::max(a.first, b.first) + 1);
-                heap.emplace_back(w, add(resize(a.second, static_cast<int>(w), false), resize(b.second, static_cast<int>(w), false)));
+                heap.emplace_back(w, add(resize(a.second, static_cast<int>(w), false),
+                                         resize(b.second, static_cast<int>(w), false)));
                 std::push_heap(heap.begin(), heap.end(), wider);
             }
-            const Vec sum = resize(heap.empty() ? Vec{} : heap.front().second, static_cast<int>(width), false);
+            const Vec sum = resize(heap.empty() ? Vec{} : heap.front().second,
+                                   static_cast<int>(width), false);
             for (size_t i = 0; i < width; ++i) {
                 const int v = r[i] >> 1;  // pinnedVar(): an unaliased placeholder
                 m_pinned.erase(v);
@@ -591,7 +604,8 @@ public:
         return trees;
     }
     static bool allConst(const Vec& v) {
-        for (const int l : v) if ((l >> 1) != 0) return false;
+        for (const int l : v)
+            if ((l >> 1) != 0) return false;
         return true;
     }
     Vec add(const Vec& a, const Vec& b, int cin = 0) {
@@ -605,7 +619,8 @@ public:
                 Vec r(a.size());
                 for (size_t i = 0; i < k; ++i) r[i] = a[i] == cin ? b[i] : a[i];
                 if (k < a.size()) {
-                    const Vec hi = add(Vec(a.begin() + k, a.end()), Vec(b.begin() + k, b.end()), cin);
+                    const Vec hi
+                        = add(Vec(a.begin() + k, a.end()), Vec(b.begin() + k, b.end()), cin);
                     std::copy(hi.begin(), hi.end(), r.begin() + k);
                 }
                 return r;
@@ -693,7 +708,8 @@ public:
         const auto sum = [&](std::vector<Vec> parts) {
             while (parts.size() > 1) {  // balanced adder tree
                 std::vector<Vec> next;
-                for (size_t k = 0; k + 1 < parts.size(); k += 2) next.push_back(add(parts[k], parts[k + 1]));
+                for (size_t k = 0; k + 1 < parts.size(); k += 2)
+                    next.push_back(add(parts[k], parts[k + 1]));
                 if (parts.size() % 2) next.push_back(parts.back());
                 parts.swap(next);
             }
@@ -715,7 +731,9 @@ public:
     // net assigned further down), so neither a constant operand nor a sign
     // extension can be seen.  It is recorded with placeholder product bits
     // and built by buildMuls() once every alias is known.
-    struct PendingMul { Vec a, b, r; };
+    struct PendingMul final {
+        Vec a, b, r;
+    };
     std::vector<PendingMul> m_pendingMuls;
     bool m_buildingMuls = false;  // inside buildMuls(): the aliases are known, build at once
     Vec mulVar(const Vec& a, const Vec& b) {
@@ -743,7 +761,7 @@ public:
             Vec a, b;
             for (const int l : pm.a) a.push_back(resolve(l));
             for (const int l : pm.b) b.push_back(resolve(l));
-            const Vec r = allConst(b) && !allConst(a) ? mulConst(a, b)
+            const Vec r = allConst(b) && !allConst(a)   ? mulConst(a, b)
                           : allConst(a) && !allConst(b) ? mulConst(b, a)
                                                         : mulHard(a, b);
             for (size_t k = 0; k < pm.r.size(); ++k) {
@@ -790,7 +808,9 @@ public:
             for (int i = 0; 24 * i < w; ++i) {
                 Vec ai;
                 for (int k = 0; k < 24; ++k) ai.push_back(24 * i + k < w ? a[24 * i + k] : 0);
-                if (allConst(ai) && std::all_of(ai.begin(), ai.end(), [](int l) { return l == 0; })) continue;
+                if (allConst(ai)
+                    && std::all_of(ai.begin(), ai.end(), [](int l) { return l == 0; }))
+                    continue;
                 for (int j = 0; 24 * i + 17 * j < w; ++j) {
                     Vec bj;
                     for (int k = 0; k < 17; ++k) bj.push_back(17 * j + k < w ? b[17 * j + k] : 0);
@@ -819,7 +839,8 @@ public:
             if (parts.empty()) return constVec(0, w);
             while (parts.size() > 1) {  // balanced adder tree
                 std::vector<Vec> next;
-                for (size_t k = 0; k + 1 < parts.size(); k += 2) next.push_back(add(parts[k], parts[k + 1]));
+                for (size_t k = 0; k + 1 < parts.size(); k += 2)
+                    next.push_back(add(parts[k], parts[k + 1]));
                 if (parts.size() % 2) next.push_back(parts.back());
                 parts.swap(next);
             }
@@ -846,7 +867,8 @@ public:
             return m_chains[k].co ^ 1;
         }
         int borrow = 0;
-        for (size_t i = 0; i < a.size(); ++i) borrow = OR(AND(a[i] ^ 1, b[i]), AND(OR(a[i] ^ 1, b[i]), borrow));
+        for (size_t i = 0; i < a.size(); ++i)
+            borrow = OR(AND(a[i] ^ 1, b[i]), AND(OR(a[i] ^ 1, b[i]), borrow));
         return borrow;
     }
     int ltS(const Vec& a, const Vec& b) {
@@ -862,7 +884,8 @@ public:
             if (isFalse(amt[k])) continue;
             Vec sh(w, 0);
             const long long d = 1LL << std::min<size_t>(k, 62);
-            for (int i = 0; i < w; ++i) if (i - d >= 0) sh[i] = r[i - d];
+            for (int i = 0; i < w; ++i)
+                if (i - d >= 0) sh[i] = r[i - d];
             r = MUXv(amt[k], r, sh);
             if (d >= w) break;
         }
@@ -876,7 +899,8 @@ public:
             if (isFalse(amt[k])) continue;
             Vec sh(w, fill);
             const long long d = 1LL << std::min<size_t>(k, 62);
-            for (int i = 0; i < w; ++i) if (i + d < w) sh[i] = r[i + d];
+            for (int i = 0; i < w; ++i)
+                if (i + d < w) sh[i] = r[i + d];
             r = MUXv(amt[k], r, sh);
             if (d >= w) break;
         }
@@ -917,7 +941,8 @@ public:
             const int v = lit >> 1;
             if (!v || !isPlaceholder(v) || !hasAlias(v)) return lit;
             lit = m_alias[v] ^ (lit & 1);
-            if (++guard > 1000000) svs_netlist::die("alias cycle in netlist (combinational loop through nets?)");
+            if (++guard > 1000000)
+                svs_netlist::die("alias cycle in netlist (combinational loop through nets?)");
         }
     }
     const std::pair<int, int>& fanin(int v) const { return m_fan[v]; }
@@ -935,24 +960,26 @@ private:
 
 class Mapper final {
     using Design = svs_netlist::Design;
-    AigB m_aig;
-    Design m_d;
-    std::string m_top;
-    std::map<std::string, std::pair<int, bool>> m_portRange;  // top port -> (declared lsb, ascending)
+    AigB m_aig;  // the design's combinational logic as an AIG
+    Design m_d;  // the structural netlist being mapped
+    std::string m_top;  // name of the top module
+    std::map<std::string, std::pair<int, bool>>
+        m_portRange;  // top port -> (declared lsb, ascending)
     // AIG primary inputs: placeholder var -> PI index; and PI index -> var
     std::unordered_map<int, int> m_piOf;
-    std::vector<int> m_piVar;
+    std::vector<int> m_piVar;  // PI index -> placeholder var
     // primary outputs
     std::vector<int> m_po;  // literals
     // yosys nets
     int m_nextNet = 2;
     std::unordered_map<int, std::string> m_netOfVar;  // PI var -> net json ("12" or "\"0\"")
     std::vector<std::string> m_poNet;  // PO index -> net json
-    std::ostringstream m_cells;
-    int m_ncells = 0;
+    std::ostringstream m_cells;  // the mapped cells, as JSON text
+    int m_ncells = 0;  // number of cells emitted
     std::unordered_map<std::string, int> m_counts;
-    std::vector<std::string> m_warnings;
-    // --map-only-meminit: one JSON object per memory (see writeMemInit), collected as the memories are emitted
+    std::vector<std::string> m_warnings;  // warnings collected while mapping, printed at the end
+    // --map-only-meminit: one JSON object per memory (see writeMemInit), collected as the memories
+    // are emitted
     std::vector<std::string> m_memInit;
     // instance scopes (partitioned mapping): id -> (prefix "a.b.", module type); 0 = top
     std::vector<std::pair<std::string, std::string>> m_scopes;
@@ -963,7 +990,8 @@ class Mapper final {
     // must be driven by a cell output or a top-level input (or be a constant).
     // The first reader of each net, for the report, and every driven net.
     std::unordered_map<std::string, std::string> m_firstLoad;
-    std::unordered_set<std::string> m_drivenNets;
+    std::unordered_set<std::string>
+        m_drivenNets;  // every net a cell output or top-level input drives
     std::unordered_map<std::string, std::string> m_netName;  // first named bit of each net
 
 public:
@@ -985,16 +1013,25 @@ public:
             if (!varp || !varp->isIO() || !varp->dtypep()) continue;
             const AstNodeDType* const d = varp->dtypep()->skipRefp();
             VNumRange r;
-            if (const AstBasicDType* const bp = VN_CAST(d, BasicDType)) r = bp->declRange();
-            else if (const AstPackArrayDType* const pp = VN_CAST(d, PackArrayDType)) r = pp->declRange();
-            else continue;
-            if (r.lo() != 0 || r.ascending()) m_portRange[sanitize(varp->prettyName())] = {r.lo(), r.ascending()};
+            if (const AstBasicDType* const bp = VN_CAST(d, BasicDType))
+                r = bp->declRange();
+            else if (const AstPackArrayDType* const pp = VN_CAST(d, PackArrayDType))
+                r = pp->declRange();
+            else
+                continue;
+            if (r.lo() != 0 || r.ascending())
+                m_portRange[sanitize(varp->prettyName())] = {r.lo(), r.ascending()};
         }
         if (!mods.count(m_top)) {
             for (const auto& kv : mods) {  // top = a module nobody instantiates
                 bool used = false;
-                for (const auto& kv2 : mods) for (const auto& it : kv2.second.items) used |= it.kind == svs_netlist::Item::CELL && it.modName == kv.first;
-                if (!used) { m_top = kv.first; break; }
+                for (const auto& kv2 : mods)
+                    for (const auto& it : kv2.second.items)
+                        used |= it.kind == svs_netlist::Item::CELL && it.modName == kv.first;
+                if (!used) {
+                    m_top = kv.first;
+                    break;
+                }
             }
         }
         // full interfaces of the (* blackbox *) primitives, for the EDIF library
@@ -1003,7 +1040,8 @@ public:
             auto& ports = m_ifaces[kv.first];
             for (const std::string& pn : kv.second.ports) {
                 for (const svs_netlist::NetDecl& d : kv.second.nets) {
-                    if (d.name == pn) ports.push_back({pn, d.dir >= 2, static_cast<size_t>(d.width)});
+                    if (d.name == pn)
+                        ports.push_back({pn, d.dir >= 2, static_cast<size_t>(d.width)});
                 }
             }
         }
@@ -1027,12 +1065,13 @@ public:
         if (!v3Global.opt.mapOnlyKeepSumChains()) {
             const int trees = m_aig.balanceSums(designReads());
             if (trees && v3Global.opt.structOnlyReport())
-                std::cerr << "%Info: map-sums: " << trees << " sums of chained adds rebuilt as balanced trees\n";
+                std::cerr << "%Info: map-sums: " << trees
+                          << " sums of chained adds rebuilt as balanced trees\n";
         }
         if ((deadDsps || idleChains) && v3Global.opt.structOnlyReport())
             std::cerr << "%Info: map-prune: " << deadDsps
-                      << " DSP48E1 partial products with a constant-0 operand removed, " << idleChains
-                      << " carry chains adding 0 bypassed\n";
+                      << " DSP48E1 partial products with a constant-0 operand removed, "
+                      << idleChains << " carry chains adding 0 bypassed\n";
         {
             const int merged = v3Global.opt.mapOnlyKeepEquivRegs() ? 0 : mergeEquivRegs();
             int absorbed = absorbDspRegs();
@@ -1040,8 +1079,9 @@ public:
             absorbed += absorbDspRegs();  // a second stage behind P: M and P
             const int inputs = absorbDspInputRegs();
             if ((merged || absorbed || inputs) && v3Global.opt.structOnlyReport())
-                std::cerr << "%Info: map-regs: " << merged << " equivalent flip-flops merged, " << absorbed
-                          << " flip-flops absorbed into DSP48E1 M/P registers, " << inputs << " into A/B registers\n";
+                std::cerr << "%Info: map-regs: " << merged << " equivalent flip-flops merged, "
+                          << absorbed << " flip-flops absorbed into DSP48E1 M/P registers, "
+                          << inputs << " into A/B registers\n";
         }
         buildPOs();
         const std::string base = filename.empty() ? v3Global.opt.mapOnlyEdif() : filename;
@@ -1054,7 +1094,8 @@ public:
         if (v3Global.opt.mapOnlyTiming()) {
             if (!v3Global.opt.mapOnlySdc().empty()) {
                 std::string err;
-                if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err)) v3fatal("Synthesis: " << err);
+                if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err))
+                    v3fatal("Synthesis: " << err);
             }
             V3MapTiming::Options to;
             to.defaultPeriod = v3Global.opt.mapOnlyPeriod();
@@ -1089,7 +1130,8 @@ public:
             if (m_po.empty()) {
             } else if (v3Global.opt.mapOnlyWholeProgram()) {
                 writeAiger(aig);
-                runAbc(aig, blif, timing != nullptr, pass ? &bt.ciArrival : nullptr, pass ? &bt.coRequired : nullptr);
+                runAbc(aig, blif, timing != nullptr, pass ? &bt.ciArrival : nullptr,
+                       pass ? &bt.coRequired : nullptr);
                 readBlif(blif, luts, lutOrder);
                 if (last && !v3Global.opt.mapOnlyKeepTemps()) {
                     unlink(aig.c_str());
@@ -1101,21 +1143,25 @@ public:
             if (timing && passes > 1) last = false;  // written below, once the best pass is known
             // abc's netlist as read, before the emission reworks it (register
             // polarity, fanout copies): what a re-emission of this pass starts from
-            const std::map<std::string, Lut> lutsRead = timing ? luts : std::map<std::string, Lut>{};
-            const std::vector<std::string> orderRead = timing ? lutOrder : std::vector<std::string>{};
+            const std::map<std::string, Lut> lutsRead
+                = timing ? luts : std::map<std::string, Lut>{};
+            const std::vector<std::string> orderRead
+                = timing ? lutOrder : std::vector<std::string>{};
             emitJson(last ? filename : std::string{}, luts, lutOrder, last);
             if (timing) {
                 std::string err;
                 if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
                 std::istringstream lines{timing->summaryText()};
                 for (std::string l; std::getline(lines, l);)
-                    timingNotes.push_back((passes > 1 ? "pass " + std::to_string(pass) + ": " : "") + l);
+                    timingNotes.push_back((passes > 1 ? "pass " + std::to_string(pass) + ": " : "")
+                                          + l);
                 double wns = 0, tns = 0;
                 for (const V3MapTiming::Domain& d : timing->summary().domains) {
                     wns = std::min(wns, d.wns);
                     tns += d.tns;
                 }
-                if (bestPass < 0 || wns > bestWns + 1e-6 || (std::abs(wns - bestWns) <= 1e-6 && tns > bestTns)) {
+                if (bestPass < 0 || wns > bestWns + 1e-6
+                    || (std::abs(wns - bestWns) <= 1e-6 && tns > bestTns)) {
                     bestPass = pass;
                     bestWns = wns;
                     bestTns = tns;
@@ -1137,12 +1183,14 @@ public:
             timingNotes.push_back("written: pass " + std::to_string(bestPass));
         }
         if (timing) {
-            for (const std::string& l : timingNotes) std::cerr << "%Info: map-timing: " << l << "\n";
+            for (const std::string& l : timingNotes)
+                std::cerr << "%Info: map-timing: " << l << "\n";
             for (const std::string& w : sdc.warnings) m_warnings.push_back(w);
             for (const std::string& w : timing->summary().warnings) m_warnings.push_back(w);
             if (!v3Global.opt.mapOnlyTimingReport().empty()) {
                 std::string err;
-                if (!timing->writeReport(v3Global.opt.mapOnlyTimingReport(), err)) v3fatal("Synthesis: " << err);
+                if (!timing->writeReport(v3Global.opt.mapOnlyTimingReport(), err))
+                    v3fatal("Synthesis: " << err);
             }
         }
         for (const std::string& w : m_warnings) std::cerr << "%Warning-MAP: " << w << "\n";
@@ -1194,12 +1242,14 @@ private:
         size_t outsideNext = 0;  // outside consumers handed out so far
     };
     std::unordered_map<std::string, Spread> m_spread;  // by node
-    std::map<std::pair<size_t, size_t>, std::vector<std::string>> m_regDup;  // (register, bit) -> copies' BLIF names
+    std::map<std::pair<size_t, size_t>, std::vector<std::string>>
+        m_regDup;  // (register, bit) -> copies' BLIF names
     int m_dupLuts = 0;
     int m_dupRegs = 0;
     struct Lut;  // abc's LUT (BLIF back, below)
     static bool isBufLut(const Lut& l) { return isBufLutImpl(l); }  // (defined with Lut, below)
-    // abc's buffers (`.names a b / 1 1`) become net aliases when emitted: the node a name stands for
+    // abc's buffers (`.names a b / 1 1`) become net aliases when emitted: the node a name stands
+    // for
     static std::string resolveLut(const std::map<std::string, Lut>& luts, std::string n) {
         for (int guard = 0; guard < 64; ++guard) {
             const auto it = luts.find(n);
@@ -1226,8 +1276,10 @@ private:
             const Design::Reg& r = m_d.regs[ri];
             if (r.latch) continue;
             const RegOut& ro = m_regPo[ri];
-            if (ro.en >= 0 && static_cast<size_t>(ro.en) < poUses.size()) poUses[ro.en] += r.q.size() - 1;
-            if (ro.rst >= 0 && static_cast<size_t>(ro.rst) < poUses.size()) poUses[ro.rst] += r.q.size() - 1;
+            if (ro.en >= 0 && static_cast<size_t>(ro.en) < poUses.size())
+                poUses[ro.en] += r.q.size() - 1;
+            if (ro.rst >= 0 && static_cast<size_t>(ro.rst) < poUses.size())
+                poUses[ro.rst] += r.q.size() - 1;
             for (size_t b = 0; b < r.q.size(); ++b) {
                 const int ql = m_aig.resolve(r.q[b]);
                 if (ql < 2 || (ql & 1)) continue;
@@ -1238,48 +1290,54 @@ private:
             std::string lut;
             size_t input, weight;
         };
-        std::unordered_map<std::string, std::vector<Reader>> readers;  // node -> LUT inputs reading it
+        std::unordered_map<std::string, std::vector<Reader>>
+            readers;  // node -> LUT inputs reading it
         std::unordered_map<std::string, size_t> outside;  // node -> pins outside abc reading it
         for (const std::string& o : order) {
             const Lut& l = luts[o];
             if (isBufLut(l)) continue;  // its readers are counted on the node it aliases
             const size_t w = l.ins.size() <= 6 ? 1 : l.ins.size() == 7 ? 2 : 4;
-            for (size_t i = 0; i < l.ins.size(); ++i) readers[resolveLut(luts, l.ins[i])].push_back({o, i, w});
+            for (size_t i = 0; i < l.ins.size(); ++i)
+                readers[resolveLut(luts, l.ins[i])].push_back({o, i, w});
         }
         for (size_t i = 0; i < m_po.size(); ++i) {
             const std::string node = poNode(luts, i);
             if (!node.empty()) outside[node] += poUses[i];
         }
-        const auto spread = [&](const std::string& node, const std::function<std::string(int)>& makeCopy) {
-            size_t total = 0;
-            const auto rit = readers.find(node);
-            if (rit != readers.end()) for (const Reader& r : rit->second) total += r.weight;
-            const auto oit = outside.find(node);
-            if (oit != outside.end()) total += oit->second;
-            if (total <= F) return 0;
-            Spread sp;
-            sp.names.push_back(node);
-            const size_t copies = (total + F - 1) / F - 1;
-            for (size_t k = 1; k <= copies; ++k) sp.names.push_back(makeCopy(static_cast<int>(k)));
-            size_t g = 0, fill = 0;
-            if (rit != readers.end()) {
-                for (const Reader& r : rit->second) {
-                    if (fill + r.weight > F && g + 1 < sp.names.size()) {
-                        ++g;
-                        fill = 0;
-                    }
-                    fill += r.weight;
-                    if (g) luts[r.lut].ins[r.input] = sp.names[g];
-                }
-            }
-            sp.readerGroup = g;
-            sp.readerFill = fill;
-            m_spread[node] = sp;
-            return static_cast<int>(copies);
-        };
+        const auto spread
+            = [&](const std::string& node, const std::function<std::string(int)>& makeCopy) {
+                  size_t total = 0;
+                  const auto rit = readers.find(node);
+                  if (rit != readers.end())
+                      for (const Reader& r : rit->second) total += r.weight;
+                  const auto oit = outside.find(node);
+                  if (oit != outside.end()) total += oit->second;
+                  if (total <= F) return 0;
+                  Spread sp;
+                  sp.names.push_back(node);
+                  const size_t copies = (total + F - 1) / F - 1;
+                  for (size_t k = 1; k <= copies; ++k)
+                      sp.names.push_back(makeCopy(static_cast<int>(k)));
+                  size_t g = 0, fill = 0;
+                  if (rit != readers.end()) {
+                      for (const Reader& r : rit->second) {
+                          if (fill + r.weight > F && g + 1 < sp.names.size()) {
+                              ++g;
+                              fill = 0;
+                          }
+                          fill += r.weight;
+                          if (g) luts[r.lut].ins[r.input] = sp.names[g];
+                      }
+                  }
+                  sp.readerGroup = g;
+                  sp.readerFill = fill;
+                  m_spread[node] = sp;
+                  return static_cast<int>(copies);
+              };
         const std::vector<std::string> names = order;  // the copies are appended
         for (const std::string& o : names) {
-            if (luts[o].ins.size() < 2) continue;  // buffers and constants are aliases, inverters go into the readers
+            if (luts[o].ins.size() < 2)
+                continue;  // buffers and constants are aliases, inverters go into the readers
             m_dupLuts += spread(o, [&](int k) {
                 Lut c = luts[o];
                 c.out = o + "$dup" + std::to_string(k);
@@ -1302,7 +1360,8 @@ private:
             std::cerr << "%Info: map-fanout: " << m_dupLuts << " LUT and " << m_dupRegs
                       << " flip-flop copies for a fanout of at most " << F << "\n";
     }
-    double m_lutNetDelay = -1;  // the net a LUT level costs in abc's library (< 0: the model's default)
+    double m_lutNetDelay
+        = -1;  // the net a LUT level costs in abc's library (< 0: the model's default)
     // The analysed netlist's times at abc's boundary: when every source (a
     // register output, a hard cell's output, an input pad) delivers each
     // primary input, and when every primary output (a register's D, a hard
@@ -1310,7 +1369,7 @@ private:
     // The times the analysis of one mapping found where abc's networks begin
     // and end, for the next mapping: per primary input and output of the
     // whole netlist, and per partition boundary node by its v<var> name
-    struct BoundaryTimes {
+    struct BoundaryTimes final {
         std::vector<double> ciArrival, coRequired;
         std::unordered_map<std::string, double> cutArrival, cutRequired;
     };
@@ -1322,8 +1381,9 @@ private:
     // routing then eats
     double abcRequired(const V3MapTiming& timing, const std::string& net) const {
         if (net.empty() || net[0] == '"') return std::numeric_limits<double>::quiet_NaN();
-        const double margin = v3Global.opt.mapOnlyTimingMargin() >= 0 ? v3Global.opt.mapOnlyTimingMargin()
-                                                                       : 0.2 * timing.minPeriod();
+        const double margin = v3Global.opt.mapOnlyTimingMargin() >= 0
+                                  ? v3Global.opt.mapOnlyTimingMargin()
+                                  : 0.2 * timing.minPeriod();
         const double req = timing.required(net) - margin;
         const double arr = timing.arrival(net);
         return std::isnan(arr) ? req : std::min(req, arr);
@@ -1336,7 +1396,8 @@ private:
             const auto it = m_netOfVar.find(m_piVar[i]);
             if (it != m_netOfVar.end()) bt.ciArrival[i] = timing.arrival(it->second);
         }
-        for (size_t i = 0; i < m_po.size() && i < m_poNet.size(); ++i) bt.coRequired[i] = abcRequired(timing, m_poNet[i]);
+        for (size_t i = 0; i < m_po.size() && i < m_poNet.size(); ++i)
+            bt.coRequired[i] = abcRequired(timing, m_poNet[i]);
         bt.cutArrival.clear();
         bt.cutRequired.clear();
         for (const auto& kv : m_cutNet) {
@@ -1348,7 +1409,8 @@ private:
 private:
     static std::string sanitize(const std::string& s) {
         std::string o;
-        for (const char c : s) o += (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$') ? c : '_';
+        for (const char c : s)
+            o += (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$') ? c : '_';
         return o;
     }
     int piIndex(int var) {
@@ -1366,9 +1428,13 @@ private:
 
     // What has to come out of the LUT fabric: top outputs, register D/CE/R,
     // memory-tile and black-box input pins.
-    struct RegOut { int d0; int en, rst; };
+    struct RegOut final {
+        int d0;
+        int en, rst;
+    };
     std::vector<RegOut> m_regPo;  // per register: PO index of d[0] (d bits consecutive), en, rst
-    std::vector<std::vector<int>> m_cellInPo;  // per cell: PO index per input pin (consecutive bits)
+    std::vector<std::vector<int>>
+        m_cellInPo;  // per cell: PO index per input pin (consecutive bits)
     std::vector<int> m_topOutPo;  // per top output name (in m_d.outputs order): PO of bit 0
 
     static bool bitOf(unsigned long long v, size_t b) { return b < 64 && ((v >> b) & 1); }
@@ -1388,7 +1454,8 @@ private:
     }
     void dropEmptyRegs() {
         std::vector<Design::Reg> kept;
-        for (Design::Reg& r : m_d.regs) if (!r.q.empty()) kept.push_back(std::move(r));
+        for (Design::Reg& r : m_d.regs)
+            if (!r.q.empty()) kept.push_back(std::move(r));
         m_d.regs = std::move(kept);
     }
     // Flip-flops with the same D, clock enable, reset, clock, edge and reset /
@@ -1408,13 +1475,17 @@ private:
             for (Design::Reg& r : m_d.regs) {
                 if (r.latch) continue;
                 std::vector<bool> keep(r.q.size(), true);
-                const int en = m_aig.resolve(r.en), rst = m_aig.resolve(r.rst), clk = m_aig.resolve(r.clk);
+                const int en = m_aig.resolve(r.en), rst = m_aig.resolve(r.rst),
+                          clk = m_aig.resolve(r.clk);
                 const int flags = (r.async ? 1 : 0) | (r.negedge ? 2 : 0);
                 for (size_t b = 0; b < r.q.size(); ++b) {
                     const size_t bn = r.bitNo.empty() ? b : static_cast<size_t>(r.bitNo[b]);
                     const int qv = r.q[b] >> 1;
-                    if ((r.q[b] & 1) || !m_aig.isPlaceholder(qv) || m_aig.hasAlias(qv) || m_aig.m_pinned.count(qv)) continue;
-                    const int vals = (bitOf(r.resetVal, bn) ? 1 : 0) | (bitOf(r.initVal, bn) ? 2 : 0);
+                    if ((r.q[b] & 1) || !m_aig.isPlaceholder(qv) || m_aig.hasAlias(qv)
+                        || m_aig.m_pinned.count(qv))
+                        continue;
+                    const int vals
+                        = (bitOf(r.resetVal, bn) ? 1 : 0) | (bitOf(r.initVal, bn) ? 2 : 0);
                     const Key k{m_aig.resolve(r.d[b]), en, rst, clk, flags, vals, 0};
                     const auto it = first.find(k);
                     if (it == first.end()) {
@@ -1424,7 +1495,8 @@ private:
                     m_aig.equate(r.q[b], it->second);  // this Q now reads the kept one
                     // remembered on the kept flip-flop (MERGED_EQUIV), so the
                     // placer can split it again where its sinks ended up far apart
-                    m_mergedFrom[it->second].push_back(sanitize(r.name) + "_" + std::to_string(bn));
+                    m_mergedFrom[it->second].push_back(sanitize(r.name) + "_"
+                                                       + std::to_string(bn));
                     keep[b] = false;
                     ++now;
                 }
@@ -1445,10 +1517,14 @@ private:
         // product bit var -> (dsp, bit)
         std::unordered_map<int, std::pair<size_t, size_t>> pOf;
         for (size_t i = 0; i < m_aig.m_dsps.size(); ++i)
-            for (size_t k = 0; k < m_aig.m_dsps[i].p.size(); ++k) pOf[m_aig.m_dsps[i].p[k] >> 1] = {i, k};
+            for (size_t k = 0; k < m_aig.m_dsps[i].p.size(); ++k)
+                pOf[m_aig.m_dsps[i].p[k] >> 1] = {i, k};
         if (pOf.empty()) return 0;
         // candidate flip-flop bits: D is exactly (uncomplemented) a product bit
-        struct Cand { size_t ri, b; size_t dsp, k; };
+        struct Cand final {
+            size_t ri, b;
+            size_t dsp, k;
+        };
         std::vector<Cand> cands;
         std::set<std::pair<size_t, size_t>> isCand;  // (ri, b)
         for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
@@ -1467,13 +1543,19 @@ private:
         std::unordered_set<int> seen, usedElse;
         std::vector<int> stack;
         auto sink = [&](int lit) { stack.push_back(m_aig.resolve(lit) >> 1); };
-        for (const auto& kv : m_d.outputs) for (const int l : kv.second) sink(l);
+        for (const auto& kv : m_d.outputs)
+            for (const int l : kv.second) sink(l);
         for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
             const Design::Reg& r = m_d.regs[ri];
-            for (size_t b = 0; b < r.d.size(); ++b) if (!isCand.count({ri, b})) sink(r.d[b]);
-            sink(r.en); sink(r.rst); sink(r.clk);
+            for (size_t b = 0; b < r.d.size(); ++b)
+                if (!isCand.count({ri, b})) sink(r.d[b]);
+            sink(r.en);
+            sink(r.rst);
+            sink(r.clk);
         }
-        for (const Design::Cell& c : m_d.cells2) for (const auto& pin : c.ins) for (const int l : pin.second) sink(l);
+        for (const Design::Cell& c : m_d.cells2)
+            for (const auto& pin : c.ins)
+                for (const int l : pin.second) sink(l);
         for (const AigB::Chain& ch : m_aig.m_chains) {
             for (const int l : ch.s) sink(l);
             for (const int l : ch.di) sink(l);
@@ -1502,7 +1584,8 @@ private:
             bool ok = !dsp.mreg;  // M and P taken: no third stage in the DSP
             std::set<size_t> ks;
             const Design::Reg& r0 = m_d.regs[cands[kv.second[0]].ri];
-            if (dsp.preg || dsp.areg || dsp.breg) ok = ok && m_aig.resolve(r0.clk) == m_aig.resolve(dsp.clk);
+            if (dsp.preg || dsp.areg || dsp.breg)
+                ok = ok && m_aig.resolve(r0.clk) == m_aig.resolve(dsp.clk);
             for (const size_t c : kv.second) {
                 const Cand& cd = cands[c];
                 const Design::Reg& r = m_d.regs[cd.ri];
@@ -1510,9 +1593,10 @@ private:
                 const int qv = r.q[cd.b] >> 1;
                 ok = ok && !r.latch && !r.negedge && !(r.async && m_aig.resolve(r.rst) != 0)
                      && !bitOf(r.resetVal, bn) && !bitOf(r.initVal, bn)
-                     && m_aig.resolve(r.clk) == m_aig.resolve(r0.clk) && m_aig.resolve(r.en) == m_aig.resolve(r0.en)
-                     && m_aig.resolve(r.rst) == m_aig.resolve(r0.rst)
-                     && !(r.q[cd.b] & 1) && m_aig.isPlaceholder(qv) && !m_aig.hasAlias(qv)
+                     && m_aig.resolve(r.clk) == m_aig.resolve(r0.clk)
+                     && m_aig.resolve(r.en) == m_aig.resolve(r0.en)
+                     && m_aig.resolve(r.rst) == m_aig.resolve(r0.rst) && !(r.q[cd.b] & 1)
+                     && m_aig.isPlaceholder(qv) && !m_aig.hasAlias(qv)
                      && ks.insert(cd.k).second;  // one flip-flop per product bit
             }
             for (const int l : dsp.p) ok = ok && !usedElse.count(l >> 1);
@@ -1571,13 +1655,17 @@ private:
             for (int k = 0; k < pw; ++k) pOf[dsp.p[k] >> 1] = k;
             std::unordered_map<int, std::pair<size_t, size_t>> qOf;  // Q var -> (reg, bit)
             for (size_t ri = 0; ri < m_d.regs.size(); ++ri)
-                for (size_t b = 0; b < m_d.regs[ri].q.size(); ++b) qOf[m_d.regs[ri].q[b] >> 1] = {ri, b};
+                for (size_t b = 0; b < m_d.regs[ri].q.size(); ++b)
+                    qOf[m_d.regs[ri].q[b] >> 1] = {ri, b};
             const int sa = AigB::signedWidth(dsp.a), sb = AigB::signedWidth(dsp.b);
-            const bool nonneg = m_aig.resolve(dsp.a.back()) == 0 && m_aig.resolve(dsp.b.back()) == 0;
+            const bool nonneg
+                = m_aig.resolve(dsp.a.back()) == 0 && m_aig.resolve(dsp.b.back()) == 0;
             for (size_t ci = 0; ci < m_aig.m_chains.size(); ++ci) {
                 const AigB::Chain& ch = m_aig.m_chains[ci];
                 const size_t w = ch.x.size();
-                if (w > 48 || w < static_cast<size_t>(pw) || m_aig.resolve(ch.cyinit) != 0 || ch.o.size() != w) continue;
+                if (w > 48 || w < static_cast<size_t>(pw) || m_aig.resolve(ch.cyinit) != 0
+                    || ch.o.size() != w)
+                    continue;
                 // which operand is the extended product register
                 int side = -1;
                 for (int sd = 0; sd < 2 && side < 0; ++sd) {
@@ -1591,7 +1679,9 @@ private:
                         sext = sext && l == dsp.p[pw - 1];
                         zext = zext && l == 0;
                     }
-                    if ((sext && sa + sb - 1 <= pw) || (zext && nonneg && sa + sb - 2 <= pw) || (sext && zext)) side = sd;
+                    if ((sext && sa + sb - 1 <= pw) || (zext && nonneg && sa + sb - 2 <= pw)
+                        || (sext && zext))
+                        side = sd;
                 }
                 if (side < 0) continue;
                 const Vec& x = side ? ch.x : ch.y;  // the accumulator's Q
@@ -1604,13 +1694,18 @@ private:
                     ok = it != qOf.end();
                     if (!ok) break;
                     const Design::Reg& r = m_d.regs[it->second.first];
-                    const size_t bn = r.bitNo.empty() ? it->second.second : static_cast<size_t>(r.bitNo[it->second.second]);
-                    ok = !r.latch && !r.negedge && !(r.async && m_aig.resolve(r.rst) != 0) && !bitOf(r.resetVal, bn) && !bitOf(r.initVal, bn)
-                         && m_aig.resolve(r.d[it->second.second]) == ch.o[i] && m_aig.resolve(r.clk) == m_aig.resolve(dsp.clk)
+                    const size_t bn = r.bitNo.empty()
+                                          ? it->second.second
+                                          : static_cast<size_t>(r.bitNo[it->second.second]);
+                    ok = !r.latch && !r.negedge && !(r.async && m_aig.resolve(r.rst) != 0)
+                         && !bitOf(r.resetVal, bn) && !bitOf(r.initVal, bn)
+                         && m_aig.resolve(r.d[it->second.second]) == ch.o[i]
+                         && m_aig.resolve(r.clk) == m_aig.resolve(dsp.clk)
                          && m_aig.isPlaceholder(l >> 1) && !m_aig.hasAlias(l >> 1);
                     if (ok && i) {
                         const Design::Reg& r0 = m_d.regs[bits[0].first];
-                        ok = m_aig.resolve(r.en) == m_aig.resolve(r0.en) && m_aig.resolve(r.rst) == m_aig.resolve(r0.rst);
+                        ok = m_aig.resolve(r.en) == m_aig.resolve(r0.en)
+                             && m_aig.resolve(r.rst) == m_aig.resolve(r0.rst);
                     }
                     if (ok) bits.push_back(it->second);
                 }
@@ -1623,14 +1718,20 @@ private:
                 std::unordered_set<int> seen;
                 std::vector<int> stack;
                 auto sink = [&](int lit) { stack.push_back(m_aig.resolve(lit) >> 1); };
-                for (const auto& kv : m_d.outputs) for (const int l : kv.second) sink(l);
+                for (const auto& kv : m_d.outputs)
+                    for (const int l : kv.second) sink(l);
                 std::set<std::pair<size_t, size_t>> accBits(bits.begin(), bits.end());
                 for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
                     const Design::Reg& r = m_d.regs[ri];
-                    for (size_t b = 0; b < r.d.size(); ++b) if (!accBits.count({ri, b})) sink(r.d[b]);
-                    sink(r.en); sink(r.rst); sink(r.clk);
+                    for (size_t b = 0; b < r.d.size(); ++b)
+                        if (!accBits.count({ri, b})) sink(r.d[b]);
+                    sink(r.en);
+                    sink(r.rst);
+                    sink(r.clk);
                 }
-                for (const Design::Cell& c : m_d.cells2) for (const auto& pin : c.ins) for (const int l : pin.second) sink(l);
+                for (const Design::Cell& c : m_d.cells2)
+                    for (const auto& pin : c.ins)
+                        for (const int l : pin.second) sink(l);
                 for (size_t cj = 0; cj < m_aig.m_chains.size(); ++cj) {
                     if (cj == ci) continue;
                     for (const int l : m_aig.m_chains[cj].s) sink(l);
@@ -1640,14 +1741,19 @@ private:
                 for (const AigB::Dsp& dd : m_aig.m_dsps) {
                     for (const int l : dd.a) sink(l);
                     for (const int l : dd.b) sink(l);
-                    for (const int l : {dd.clk, dd.cep, dd.rstp, dd.cem, dd.rstm, dd.cea1, dd.cea2, dd.rsta, dd.ceb1, dd.ceb2, dd.rstb}) sink(l);
+                    for (const int l : {dd.clk, dd.cep, dd.rstp, dd.cem, dd.rstm, dd.cea1, dd.cea2,
+                                        dd.rsta, dd.ceb1, dd.ceb2, dd.rstb})
+                        sink(l);
                 }
                 bool clean = true;
                 while (!stack.empty() && clean) {
                     const int v = stack.back();
                     stack.pop_back();
                     if (!v || !seen.insert(v).second) continue;
-                    if (guarded.count(v)) { clean = false; break; }
+                    if (guarded.count(v)) {
+                        clean = false;
+                        break;
+                    }
                     if (m_aig.isPlaceholder(v)) continue;
                     stack.push_back(m_aig.resolve(m_aig.fanin(v).first) >> 1);
                     stack.push_back(m_aig.resolve(m_aig.fanin(v).second) >> 1);
@@ -1677,7 +1783,8 @@ private:
                     m_aig.m_pinned.insert(dsp.p[i] >> 1);
                 }
                 dsp.pw = w;
-                for (size_t i = 0; i < w; ++i) m_aig.aliasTo(ch.o[i], dsp.p[i]);  // the sums were the accumulator's D: now P
+                for (size_t i = 0; i < w; ++i)
+                    m_aig.aliasTo(ch.o[i], dsp.p[i]);  // the sums were the accumulator's D: now P
                 if (ch.co >= 0) m_aig.aliasTo(ch.co, 0);
                 m_aig.m_chains.erase(m_aig.m_chains.begin() + ci);
                 for (auto& kv : drop) {
@@ -1706,19 +1813,26 @@ private:
         for (int stage = 0; stage < 2; ++stage) {
             std::unordered_map<int, std::pair<size_t, size_t>> qOf;  // Q var -> (reg, bit)
             for (size_t ri = 0; ri < m_d.regs.size(); ++ri)
-                for (size_t b = 0; b < m_d.regs[ri].q.size(); ++b) qOf[m_d.regs[ri].q[b] >> 1] = {ri, b};
+                for (size_t b = 0; b < m_d.regs[ri].q.size(); ++b)
+                    qOf[m_d.regs[ri].q[b] >> 1] = {ri, b};
             // a Q var's readers: DSP operands reading it directly, and
             // everything reached from any other sink
-            std::unordered_map<int, std::set<size_t>> direct;  // Q var -> dsp * 2 + (0 for A, 1 for B)
+            std::unordered_map<int, std::set<size_t>>
+                direct;  // Q var -> dsp * 2 + (0 for A, 1 for B)
             std::unordered_set<int> seen;
             std::vector<int> stack;
             auto sink = [&](int lit) { stack.push_back(m_aig.resolve(lit) >> 1); };
-            for (const auto& kv : m_d.outputs) for (const int l : kv.second) sink(l);
+            for (const auto& kv : m_d.outputs)
+                for (const int l : kv.second) sink(l);
             for (const Design::Reg& r : m_d.regs) {
                 for (const int l : r.d) sink(l);
-                sink(r.en); sink(r.rst); sink(r.clk);
+                sink(r.en);
+                sink(r.rst);
+                sink(r.clk);
             }
-            for (const Design::Cell& c : m_d.cells2) for (const auto& pin : c.ins) for (const int l : pin.second) sink(l);
+            for (const Design::Cell& c : m_d.cells2)
+                for (const auto& pin : c.ins)
+                    for (const int l : pin.second) sink(l);
             for (const AigB::Chain& ch : m_aig.m_chains) {
                 for (const int l : ch.s) sink(l);
                 for (const int l : ch.di) sink(l);
@@ -1729,11 +1843,15 @@ private:
                 for (int op = 0; op < 2; ++op) {
                     for (const int l0 : op ? d.b : d.a) {
                         const int l = m_aig.resolve(l0);
-                        if (!(l & 1) && qOf.count(l >> 1)) direct[l >> 1].insert(di * 2 + op);
-                        else sink(l);
+                        if (!(l & 1) && qOf.count(l >> 1))
+                            direct[l >> 1].insert(di * 2 + op);
+                        else
+                            sink(l);
                     }
                 }
-                for (const int l : {d.clk, d.cep, d.rstp, d.cem, d.rstm, d.cea1, d.cea2, d.rsta, d.ceb1, d.ceb2, d.rstb}) sink(l);
+                for (const int l : {d.clk, d.cep, d.rstp, d.cem, d.rstm, d.cea1, d.cea2, d.rsta,
+                                    d.ceb1, d.ceb2, d.rstb})
+                    sink(l);
             }
             while (!stack.empty()) {
                 const int v = stack.back();
@@ -1750,30 +1868,55 @@ private:
                     int& nreg = op ? d.breg : d.areg;
                     if (nreg != stage) continue;
                     Vec& v = op ? d.b : d.a;
-                    std::vector<std::pair<size_t, size_t>> bits;  // per operand bit; SIZE_MAX = constant 0
+                    std::vector<std::pair<size_t, size_t>>
+                        bits;  // per operand bit; SIZE_MAX = constant 0
                     bool ok = true, have0 = false;
                     size_t r0i = 0;
                     for (const int l0 : v) {
                         const int l = m_aig.resolve(l0);
-                        if (l == 0) { bits.push_back({SIZE_MAX, 0}); continue; }
+                        if (l == 0) {
+                            bits.push_back({SIZE_MAX, 0});
+                            continue;
+                        }
                         const auto it = (l & 1) ? qOf.end() : qOf.find(l >> 1);
-                        if (it == qOf.end() || seen.count(l >> 1)) { ok = false; break; }
+                        if (it == qOf.end() || seen.count(l >> 1)) {
+                            ok = false;
+                            break;
+                        }
                         const auto du = direct.find(l >> 1);
-                        if (du == direct.end() || du->second.size() != 1 || *du->second.begin() != di * 2 + op) { ok = false; break; }
+                        if (du == direct.end() || du->second.size() != 1
+                            || *du->second.begin() != di * 2 + op) {
+                            ok = false;
+                            break;
+                        }
                         const Design::Reg& r = m_d.regs[it->second.first];
-                        const size_t bn = r.bitNo.empty() ? it->second.second : static_cast<size_t>(r.bitNo[it->second.second]);
-                        if (r.latch || r.negedge || (r.async && m_aig.resolve(r.rst) != 0) || bitOf(r.resetVal, bn) || bitOf(r.initVal, bn)) { ok = false; break; }
-                        if (!have0) { r0i = it->second.first; have0 = true; }
+                        const size_t bn = r.bitNo.empty()
+                                              ? it->second.second
+                                              : static_cast<size_t>(r.bitNo[it->second.second]);
+                        if (r.latch || r.negedge || (r.async && m_aig.resolve(r.rst) != 0)
+                            || bitOf(r.resetVal, bn) || bitOf(r.initVal, bn)) {
+                            ok = false;
+                            break;
+                        }
+                        if (!have0) {
+                            r0i = it->second.first;
+                            have0 = true;
+                        }
                         const Design::Reg& r0 = m_d.regs[r0i];
-                        if (m_aig.resolve(r.clk) != m_aig.resolve(r0.clk) || m_aig.resolve(r.en) != m_aig.resolve(r0.en)
-                            || m_aig.resolve(r.rst) != m_aig.resolve(r0.rst)) { ok = false; break; }
+                        if (m_aig.resolve(r.clk) != m_aig.resolve(r0.clk)
+                            || m_aig.resolve(r.en) != m_aig.resolve(r0.en)
+                            || m_aig.resolve(r.rst) != m_aig.resolve(r0.rst)) {
+                            ok = false;
+                            break;
+                        }
                         bits.push_back(it->second);
                     }
                     if (!ok || !have0) continue;
                     const Design::Reg& r0 = m_d.regs[r0i];
                     const bool clocked = d.preg || d.mreg || d.areg || d.breg;
                     if (clocked && m_aig.resolve(r0.clk) != m_aig.resolve(d.clk)) continue;
-                    if (stage == 1 && m_aig.resolve(r0.rst) != m_aig.resolve(op ? d.rstb : d.rsta)) continue;
+                    if (stage == 1 && m_aig.resolve(r0.rst) != m_aig.resolve(op ? d.rstb : d.rsta))
+                        continue;
                     std::set<std::pair<size_t, size_t>> taken;
                     for (size_t k = 0; k < v.size(); ++k) {
                         if (bits[k].first == SIZE_MAX) continue;
@@ -1877,8 +2020,13 @@ private:
             m_dspPo.push_back(dp);
         }
     }
-    struct ChainPo { int s, di, cyinit; };
-    struct DspPo { int a, b, cep = -1, rstp = -1, cem = -1, rstm = -1, cea1 = -1, cea2 = -1, rsta = -1, ceb1 = -1, ceb2 = -1, rstb = -1; };
+    struct ChainPo final {
+        int s, di, cyinit;
+    };
+    struct DspPo final {
+        int a, b, cep = -1, rstp = -1, cem = -1, rstm = -1, cea1 = -1, cea2 = -1, rsta = -1,
+                  ceb1 = -1, ceb2 = -1, rstb = -1;
+    };
     std::vector<ChainPo> m_chainPo;
     std::vector<DspPo> m_dspPo;
 
@@ -1910,7 +2058,8 @@ private:
         };
         for (const int l : m_po) dfs(l);
         // ABC's reader takes such a file for out-of-range literals and asserts
-        if (looped) v3fatal("Synthesis: the design has a combinational loop, which cannot be mapped");
+        if (looped)
+            v3fatal("Synthesis: the design has a combinational loop, which cannot be mapped");
         return order;
     }
     void writeAiger(const std::string& path) {
@@ -1926,7 +2075,8 @@ private:
             return 2 * avar.at(v) + (r & 1);
         };
         std::ofstream os{path, std::ios::binary};
-        os << "aig " << (I + order.size()) << " " << I << " 0 " << m_po.size() << " " << order.size() << "\n";
+        os << "aig " << (I + order.size()) << " " << I << " 0 " << m_po.size() << " "
+           << order.size() << "\n";
         for (const int l : m_po) os << alit(l) << "\n";
         auto leb = [&](unsigned x) {
             while (x >= 0x80) {
@@ -1946,11 +2096,12 @@ private:
         for (size_t i = 0; i < m_piVar.size(); ++i) os << "i" << i << " pi" << i << "\n";
         for (size_t i = 0; i < m_po.size(); ++i) os << "o" << i << " po" << i << "\n";
         os << "c\nverilator --map-only-output\n";
-        UINFO(1, "map: AIG " << I << " inputs, " << m_po.size() << " outputs, " << order.size() << " ANDs");
+        UINFO(1, "map: AIG " << I << " inputs, " << m_po.size() << " outputs, " << order.size()
+                             << " ANDs");
     }
 
-    void runAbc(const std::string& aig, const std::string& blif, bool timed, const std::vector<double>* ciArrival,
-                const std::vector<double>* coRequired) {
+    void runAbc(const std::string& aig, const std::string& blif, bool timed,
+                const std::vector<double>* ciArrival, const std::vector<double>* coRequired) {
         static bool started = false;
         if (!started) {
             ABC_NAMESPACE::Abc_Start();
@@ -1994,8 +2145,11 @@ private:
             os.setf(std::ios::fixed);
             os.precision(3);
             for (int k = 1; k <= kMax; ++k)
-                os << k << " " << (k <= 6 ? 1 : k == 7 ? 2 : 4) << ".00 "
-                   << (timed ? V3MapTiming::lutDelay(k, m_lutNetDelay) : 1.0) << "\n";
+                os << k << " "
+                   << (k <= 6   ? 1
+                       : k == 7 ? 2
+                                : 4)
+                   << ".00 " << (timed ? V3MapTiming::lutDelay(k, m_lutNetDelay) : 1.0) << "\n";
         }
         const std::string pre = "read_lut " + lib + "; ";
         if (script.empty()) script = kScript;
@@ -2003,10 +2157,12 @@ private:
         if (ciArrival && coRequired) {
             const std::string read = "read_aiger " + aig;
             UINFO(1, "map: abc: " << read);
-            if (ABC_NAMESPACE::Cmd_CommandExecute(pAbc, read.c_str())) v3fatal("abc failed on: " << read);
+            if (ABC_NAMESPACE::Cmd_CommandExecute(pAbc, read.c_str()))
+                v3fatalSrc("abc failed on: " << read);
             std::string err;
             double required = 0;
-            for (const double r : *coRequired) if (!std::isnan(r)) required = std::max(required, r);
+            for (const double r : *coRequired)
+                if (!std::isnan(r)) required = std::max(required, r);
             if (!V3MapAbc::setTimes(*ciArrival, *coRequired, required > 0 ? required : 1e9, err))
                 v3fatal("Synthesis: " << err);
             cmd = pre + script + "; write_blif " + blif;
@@ -2014,17 +2170,18 @@ private:
         UINFO(1, "map: abc: " << cmd);
         const int rc = ABC_NAMESPACE::Cmd_CommandExecute(pAbc, cmd.c_str());
         if (!v3Global.opt.mapOnlyKeepTemps()) unlink(lib.c_str());
-        if (rc) v3fatal("abc failed on: " << cmd);
+        if (rc) v3fatalSrc("abc failed on: " << cmd);
     }
 
     // one abc LUT: inputs, output, and the on-set cover (in-pattern, value)
-    struct Lut {
+    struct Lut final {
         std::vector<std::string> ins;
         std::string out;
         std::vector<std::pair<std::string, char>> cover;
     };
     static bool isBufLutImpl(const Lut& l) {
-        return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1" && l.cover[0].second == '1';
+        return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1"
+               && l.cover[0].second == '1';
     }
 
     // ---- partitioned mapping: abc once per instance ----
@@ -2039,8 +2196,7 @@ private:
     // the first gives abc the arrival and required times at each partition's
     // boundary that the analysis of the previous mapping found (times).
     void mapPartitioned(const std::string& base, std::map<std::string, Lut>& luts,
-                        std::vector<std::string>& order, bool timed,
-                        const BoundaryTimes* times) {
+                        std::vector<std::string>& order, bool timed, const BoundaryTimes* times) {
         const std::vector<int> topo = topoOrder();
         const int nScopes = m_scopes.size();
         std::vector<long long> ands(nScopes, 0);
@@ -2091,11 +2247,11 @@ private:
             std::cerr << "%Info: partition: " << topo.size() << " AND nodes in " << nScopes
                       << " instances, " << nParts << " partitions (min " << minAnds << " ANDs)\n";
             for (size_t i = 0; i < big.size() && i < 25 && big[i].first; ++i) {
-                std::cerr << "%Info: partition: " << big[i].second << " x" << byType[big[i].second].first
-                          << " ands=" << big[i].first << "\n";
+                std::cerr << "%Info: partition: " << big[i].second << " x"
+                          << byType[big[i].second].first << " ands=" << big[i].first << "\n";
             }
         }
-        struct Part {
+        struct Part final {
             std::vector<int> ins, ands, outs;
             std::unordered_set<int> inSet, outSet;
             std::vector<std::pair<int, std::string>> pos;  // (literal, po<i>)
@@ -2126,7 +2282,8 @@ private:
         for (size_t i = 0; i < m_po.size(); ++i) {
             const int r = m_aig.resolve(m_po[i]);
             const int v = r >> 1;
-            if (!v || m_aig.isPlaceholder(v)) continue;  // constant / input: passed through by emitJson
+            if (!v || m_aig.isPlaceholder(v))
+                continue;  // constant / input: passed through by emitJson
             parts[partOf(v)].pos.emplace_back(r, "po" + std::to_string(i));
         }
         int k = 0;
@@ -2169,8 +2326,10 @@ private:
                     leb(lhs - r0);
                     leb(r0 - r1);
                 }
-                for (size_t i = 0; i < P.ins.size(); ++i) os << "i" << i << " v" << P.ins[i] << "\n";
-                for (size_t i = 0; i < outs.size(); ++i) os << "o" << i << " " << outs[i].second << "\n";
+                for (size_t i = 0; i < P.ins.size(); ++i)
+                    os << "i" << i << " v" << P.ins[i] << "\n";
+                for (size_t i = 0; i < outs.size(); ++i)
+                    os << "o" << i << " " << outs[i].second << "\n";
                 os << "c\nverilator --map-only-output " << tag << "\n";
             }
             const auto t0 = std::chrono::steady_clock::now();
@@ -2185,7 +2344,8 @@ private:
                     const int v = P.ins[i];
                     if (m_aig.isPlaceholder(v)) {
                         const auto it = m_piOf.find(v);
-                        if (it != m_piOf.end() && static_cast<size_t>(it->second) < times->ciArrival.size())
+                        if (it != m_piOf.end()
+                            && static_cast<size_t>(it->second) < times->ciArrival.size())
                             ci[i] = times->ciArrival[it->second];
                     } else {
                         const auto it = times->cutArrival.find("v" + std::to_string(v));
@@ -2217,10 +2377,11 @@ private:
                 const double secs
                     = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 std::cerr << "%Info: partition: " << tag << " " << sc.second << " "
-                          << (sc.first.empty() ? std::string("<top>") : sc.first) << " ands="
-                          << P.ands.size() << " ins=" << P.ins.size() << " outs=" << outs.size()
-                          << " luts=" << po.size() << " abc=" << std::fixed << std::setprecision(1)
-                          << secs << "s" << std::endl;
+                          << (sc.first.empty() ? std::string("<top>") : sc.first)
+                          << " ands=" << P.ands.size() << " ins=" << P.ins.size()
+                          << " outs=" << outs.size() << " luts=" << po.size()
+                          << " abc=" << std::fixed << std::setprecision(1) << secs << "s"
+                          << std::endl;
             }
             std::unordered_set<std::string> boundary;
             for (const int v : P.ins) boundary.insert("v" + std::to_string(v));
@@ -2238,9 +2399,10 @@ private:
     }
 
     // ---- BLIF back ----
-    void readBlif(const std::string& path, std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
+    void readBlif(const std::string& path, std::map<std::string, Lut>& luts,
+                  std::vector<std::string>& order) {
         std::ifstream in{path};
-        if (!in) v3fatal("abc produced no BLIF: " << path);
+        if (!in) v3fatalSrc("abc produced no BLIF: " << path);
         std::string line, cur;
         Lut* curLut = nullptr;
         auto flush = [&]() { curLut = nullptr; };
@@ -2294,8 +2456,8 @@ private:
                     const int p0 = pol & 1, p1 = pol >> 1;
                     bool isMux = true;
                     for (int idx = 0; idx < 8 && isMux; ++idx) {
-                        const int want = ((idx >> sel) & 1) ? ((idx >> d1) & 1) ^ p1
-                                                            : ((idx >> d0) & 1) ^ p0;
+                        const int want
+                            = ((idx >> sel) & 1) ? ((idx >> d1) & 1) ^ p1 : ((idx >> d0) & 1) ^ p0;
                         isMux = (init[7 - idx] == '1') == (want == 1);
                     }
                     if (isMux) return {sel, d0, d1, p0, p1};
@@ -2310,7 +2472,8 @@ private:
         std::string init(n, '0');
         if (k == 0) {
             bool one = false;
-            for (const auto& c : l.cover) if (c.second == '1') one = true;
+            for (const auto& c : l.cover)
+                if (c.second == '1') one = true;
             return one ? "1" : "0";
         }
         for (int idx = 0; idx < n; ++idx) {
@@ -2326,10 +2489,13 @@ private:
                 }
                 if (match) (c.second == '1' ? on : off) = true;
             }
-            // BLIF: the listed cubes give the output value (normally all '1'); unlisted -> other value
+            // BLIF: the listed cubes give the output value (normally all '1'); unlisted -> other
+            // value
             bool val;
-            if (!l.cover.empty() && l.cover[0].second == '0') val = !off;  // off-set listed
-            else val = on;
+            if (!l.cover.empty() && l.cover[0].second == '0')
+                val = !off;  // off-set listed
+            else
+                val = on;
             init[n - 1 - idx] = val ? '1' : '0';  // MSB first string, bit idx at position n-1-idx
         }
         return init;
@@ -2348,25 +2514,29 @@ private:
         if (r & 1) {
             // inverted source: LUT1 inverter
             const std::string o = newNet();
-            cell("LUT1", "inv_" + std::to_string(m_ncells), {{"INIT", "\"01\""}}, {{"I0", "[" + it->second + "]"}}, {{"O", "[" + o + "]"}});
+            cell("LUT1", "inv_" + std::to_string(m_ncells), {{"INIT", "\"01\""}},
+                 {{"I0", "[" + it->second + "]"}}, {{"O", "[" + o + "]"}});
             return o;
         }
         return it->second;
     }
     static std::string binParam(long long v, int w = 32) {
         std::string s(w, '0');
-        for (int i = 0; i < w; ++i) if ((v >> i) & 1) s[w - 1 - i] = '1';
+        for (int i = 0; i < w; ++i)
+            if ((v >> i) & 1) s[w - 1 - i] = '1';
         return "\"" + s + "\"";
     }
     // The netlist as records, for the EDIF writer (filled alongside the JSON)
     using Conn = V3MapTiming::Conn;
-    std::vector<std::pair<std::string, std::string>> m_regQ;  // (Q net, register cell) for every flip-flop
+    std::vector<std::pair<std::string, std::string>>
+        m_regQ;  // (Q net, register cell) for every flip-flop
     using CellRec = V3MapTiming::Cell;
     std::vector<CellRec> m_recs;
     bool m_record = false;  // keep the records: EDIF, Verilog or timing analysis wants them
     std::string m_curPath;  // path given to cells recorded now
     std::string m_curLeaf;  // leaf name for the next recorded cell
-    std::map<std::pair<std::string, std::string>, std::string> m_netNames;  // (module path, net id) -> name
+    std::map<std::pair<std::string, std::string>, std::string>
+        m_netNames;  // (module path, net id) -> name
     // "core.sd.sdclk_div.SD_CLK_O" -> "SD_CLK_O"; "x[7:4]" -> ("x", 4)
     static std::string leafOf(const std::string& hname, int& lo) {
         lo = 0;
@@ -2374,9 +2544,12 @@ private:
         const size_t br = h.find('[');
         if (br != std::string::npos) {
             int a = 0, b = 0;
-            if (std::sscanf(h.c_str() + br + 1, "%d +: %d", &a, &b) == 2) lo = a;
-            else if (std::sscanf(h.c_str() + br + 1, "%d:%d", &a, &b) == 2) lo = std::min(a, b);
-            else if (std::sscanf(h.c_str() + br + 1, "%d", &a) == 1) lo = a;
+            if (std::sscanf(h.c_str() + br + 1, "%d +: %d", &a, &b) == 2)
+                lo = a;
+            else if (std::sscanf(h.c_str() + br + 1, "%d:%d", &a, &b) == 2)
+                lo = std::min(a, b);
+            else if (std::sscanf(h.c_str() + br + 1, "%d", &a) == 1)
+                lo = a;
             h = h.substr(0, br);
         }
         const size_t dot = h.rfind('.');
@@ -2394,10 +2567,13 @@ private:
         size_t i = 0, lastDot = 0;
         bool any = false;
         while (i < a.size() && i < b.size() && a[i] == b[i]) {
-            if (a[i] == '.') { lastDot = i; any = true; }
+            if (a[i] == '.') {
+                lastDot = i;
+                any = true;
+            }
             ++i;
         }
-        if ((i == a.size() && (i == b.size() || b[i] == '.')) ) return a;
+        if ((i == a.size() && (i == b.size() || b[i] == '.'))) return a;
         if ((i == b.size() && a[i] == '.')) return b;
         return any ? a.substr(0, lastDot) : std::string();
     }
@@ -2409,7 +2585,11 @@ private:
         std::string cur;
         for (const char ch : j) {
             if (ch == '[' || ch == ']' || ch == ' ') continue;
-            if (ch == ',') { out.push_back(cur); cur.clear(); continue; }
+            if (ch == ',') {
+                out.push_back(cur);
+                cur.clear();
+                continue;
+            }
             cur += ch;
         }
         if (!cur.empty()) out.push_back(cur);
@@ -2431,35 +2611,54 @@ private:
             const std::vector<std::string> bits = splitBits(p.second);
             for (size_t b = 0; b < bits.size(); ++b) {
                 if (bits[b].empty() || bits[b][0] == '"') continue;
-                m_firstLoad.emplace(bits[b], name + "." + p.first + (bits.size() > 1 ? "[" + std::to_string(b) + "]" : ""));
+                m_firstLoad.emplace(bits[b],
+                                    name + "." + p.first
+                                        + (bits.size() > 1 ? "[" + std::to_string(b) + "]" : ""));
             }
         }
         for (const auto& p : outs) {
-            for (const std::string& n : splitBits(p.second)) if (!n.empty() && n[0] != '"') m_drivenNets.insert(n);
+            for (const std::string& n : splitBits(p.second))
+                if (!n.empty() && n[0] != '"') m_drivenNets.insert(n);
         }
         // a register's output, for naming it if no signal does (see emitJson)
         if (type.rfind("FD", 0) == 0) {
             for (const auto& p : outs) {
                 if (p.first != "Q") continue;
                 const std::vector<std::string> bits = splitBits(p.second);
-                if (bits.size() == 1 && !bits[0].empty() && bits[0][0] != '"') m_regQ.emplace_back(bits[0], name);
+                if (bits.size() == 1 && !bits[0].empty() && bits[0][0] != '"')
+                    m_regQ.emplace_back(bits[0], name);
             }
         }
         if (m_ncells) m_cells << ",\n";
         ++m_ncells;
         ++m_counts[type];
-        m_cells << "    \"" << name << "\": {\"hide_name\": 0, \"type\": \"" << type << "\", \"parameters\": {";
-        for (size_t i = 0; i < params.size(); ++i) m_cells << (i ? ", " : "") << "\"" << params[i].first << "\": " << params[i].second;
+        m_cells << "    \"" << name << "\": {\"hide_name\": 0, \"type\": \"" << type
+                << "\", \"parameters\": {";
+        for (size_t i = 0; i < params.size(); ++i)
+            m_cells << (i ? ", " : "") << "\"" << params[i].first << "\": " << params[i].second;
         m_cells << "}, \"attributes\": {";
-        for (size_t i = 0; i < attrs.size(); ++i) m_cells << (i ? ", " : "") << "\"" << attrs[i].first << "\": " << attrs[i].second;
+        for (size_t i = 0; i < attrs.size(); ++i)
+            m_cells << (i ? ", " : "") << "\"" << attrs[i].first << "\": " << attrs[i].second;
         m_cells << "}, \"port_directions\": {";
         bool first = true;
-        for (const auto& p : ins) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"input\""; first = false; }
-        for (const auto& p : outs) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"output\""; first = false; }
+        for (const auto& p : ins) {
+            m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"input\"";
+            first = false;
+        }
+        for (const auto& p : outs) {
+            m_cells << (first ? "" : ", ") << "\"" << p.first << "\": \"output\"";
+            first = false;
+        }
         m_cells << "}, \"connections\": {";
         first = true;
-        for (const auto& p : ins) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": " << p.second; first = false; }
-        for (const auto& p : outs) { m_cells << (first ? "" : ", ") << "\"" << p.first << "\": " << p.second; first = false; }
+        for (const auto& p : ins) {
+            m_cells << (first ? "" : ", ") << "\"" << p.first << "\": " << p.second;
+            first = false;
+        }
+        for (const auto& p : outs) {
+            m_cells << (first ? "" : ", ") << "\"" << p.first << "\": " << p.second;
+            first = false;
+        }
         m_cells << "}}";
     }
     static std::string bitsJson(const std::vector<std::string>& nets) {
@@ -2485,11 +2684,13 @@ private:
         std::unordered_set<int> direct;  // vars read as clocks: not through abc, not flippable
         for (const Design::Reg& r : m_d.regs) direct.insert(m_aig.resolve(r.clk) >> 1);
         for (const AigB::Dsp& d : m_aig.m_dsps) direct.insert(m_aig.resolve(d.clk) >> 1);
-        std::unordered_map<std::string, std::vector<std::string>> readers;  // blif name -> LUTs reading it
+        std::unordered_map<std::string, std::vector<std::string>>
+            readers;  // blif name -> LUTs reading it
         for (const auto& kv : luts)
             for (const std::string& i : kv.second.ins) readers[i].push_back(kv.first);
         const auto isBuf = [](const Lut& l) {
-            return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1" && l.cover[0].second == '1';
+            return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1"
+                   && l.cover[0].second == '1';
         };
         const auto isInv = [](const Lut& l) {
             return l.ins.size() == 1 && l.cover.size() == 1
@@ -2500,7 +2701,8 @@ private:
         // inverter) is rewritten in on-set form, the form the alias and
         // inverter tests above recognise
         const auto canon = [](Lut& l) {
-            if (l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].second == '0' && l.cover[0].first != "-")
+            if (l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].second == '0'
+                && l.cover[0].first != "-")
                 l.cover[0] = {l.cover[0].first == "0" ? "1" : "0", '1'};
         };
         const auto flipIn = [&canon](Lut& l, size_t p) {  // complement input p
@@ -2511,12 +2713,15 @@ private:
             canon(l);
         };
         const auto flipOut = [&canon](Lut& l) {  // complement the function
-            if (l.cover.empty()) l.cover.emplace_back(std::string(l.ins.size(), '-'), '1');  // constant 0 -> 1
-            else for (auto& c : l.cover) c.second = c.second == '1' ? '0' : '1';
+            if (l.cover.empty())
+                l.cover.emplace_back(std::string(l.ins.size(), '-'), '1');  // constant 0 -> 1
+            else
+                for (auto& c : l.cover) c.second = c.second == '1' ? '0' : '1';
             canon(l);
         };
         int flipped = 0;
-        for (int pass = 0; pass < 2; ++pass) {  // a second pass catches a D made a plain inverter by a flip
+        for (int pass = 0; pass < 2;
+             ++pass) {  // a second pass catches a D made a plain inverter by a flip
             for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
                 const Design::Reg& r = m_d.regs[ri];
                 if (r.latch) continue;
@@ -2546,22 +2751,30 @@ private:
                     Lut* privp = nullptr;  // src LUT read only by D
                     if (isBuf(D)) {
                         const auto sit = luts.find(src);
-                        if (sit != luts.end() && !sit->second.ins.empty() && readers[src].size() == 1) privp = &sit->second;
-                        if (privp && privp->ins.size() == 1 && privp->ins[0] == pi) continue;  // toggle
+                        if (sit != luts.end() && !sit->second.ins.empty()
+                            && readers[src].size() == 1)
+                            privp = &sit->second;
+                        if (privp && privp->ins.size() == 1 && privp->ins[0] == pi)
+                            continue;  // toggle
                     }
                     int gain = 0;
                     const auto rit = readers.find(pi);
                     if (rit != readers.end()) {
                         for (const std::string& n : rit->second) {
                             const Lut& l = luts[n];
-                            if (isInv(l)) ++gain;  // becomes a buffer
-                            else if (isBuf(l)) --gain;  // becomes an inverter
+                            if (isInv(l))
+                                ++gain;  // becomes a buffer
+                            else if (isBuf(l))
+                                --gain;  // becomes an inverter
                         }
                     }
-                    if (isInv(D)) ++gain;
+                    if (isInv(D))
+                        ++gain;
                     else if (isBuf(D)) {
-                        if (!privp) --gain;
-                        else if (isInv(*privp)) ++gain;
+                        if (!privp)
+                            --gain;
+                        else if (isInv(*privp))
+                            ++gain;
                     }
                     // abc names a node by one of the outputs it drives, so
                     // other LUTs may read the D node itself: they absorb its
@@ -2570,8 +2783,10 @@ private:
                     if (rdD != readers.end()) {
                         for (const std::string& n : rdD->second) {
                             const Lut& l = luts[n];
-                            if (isInv(l)) ++gain;
-                            else if (isBuf(l)) --gain;
+                            if (isInv(l))
+                                ++gain;
+                            else if (isBuf(l))
+                                --gain;
                         }
                     }
                     if (gain < 1) continue;
@@ -2579,18 +2794,24 @@ private:
                     if (rit != readers.end()) {
                         for (const std::string& n : rit->second) {
                             Lut& l = luts[n];
-                            for (size_t p = 0; p < l.ins.size(); ++p) if (l.ins[p] == pi) flipIn(l, p);
+                            for (size_t p = 0; p < l.ins.size(); ++p)
+                                if (l.ins[p] == pi) flipIn(l, p);
                         }
                     }
-                    if (privp) flipOut(*privp);
-                    else flipOut(D);
+                    if (privp)
+                        flipOut(*privp);
+                    else
+                        flipOut(D);
                     if (rdD != readers.end()) {
                         for (const std::string& n : rdD->second) {
                             Lut& l = luts[n];
-                            for (size_t p = 0; p < l.ins.size(); ++p) if (l.ins[p] == dpn) flipIn(l, p);
+                            for (size_t p = 0; p < l.ins.size(); ++p)
+                                if (l.ins[p] == dpn) flipIn(l, p);
                         }
                     }
-                    for (int& po : m_po) if ((po >> 1) == v) po ^= 1;  // the fallback path, when a PO is not in the BLIF
+                    for (int& po : m_po)
+                        if ((po >> 1) == v)
+                            po ^= 1;  // the fallback path, when a PO is not in the BLIF
                     m_flippedDpo.insert(dpo);
                     m_flippedVar.insert(v);
                     m_flipGain += gain;
@@ -2601,13 +2822,13 @@ private:
         return flipped;
     }
 
-    void emitJson(const std::string& filename, std::map<std::string, Lut>& luts, std::vector<std::string>& order,
-                  bool write) {
+    void emitJson(const std::string& filename, std::map<std::string, Lut>& luts,
+                  std::vector<std::string>& order, bool write) {
         {
             const int n = flipRegisterPolarity(luts);
             if (n && v3Global.opt.structOnlyReport())
-                std::cerr << "%Info: map-regs: " << n << " register bits stored inverted, " << m_flipGain
-                          << " inverter LUTs removed\n";
+                std::cerr << "%Info: map-regs: " << n << " register bits stored inverted, "
+                          << m_flipGain << " inverter LUTs removed\n";
         }
         limitFanout(luts, order);
         // 1. nets for PIs (sources) and for every LUT output; resolve BLIF names
@@ -2637,7 +2858,8 @@ private:
         };
         auto netOf = [&](const std::string& n) -> std::string {
             const auto it = netOfName.find(n);
-            if (it == netOfName.end()) v3fatal("internal: abc BLIF name '" << n << "' has no driver");
+            if (it == netOfName.end())
+                v3fatal("internal: abc BLIF name '" << n << "' has no driver");
             return it->second;
         };
         // Identity buffers (abc writes `.names piN poM / 1 1` for an output that
@@ -2652,7 +2874,8 @@ private:
             if (l.ins.empty()) {
                 netOfName[o] = lutInit(l) == "1" ? "\"1\"" : "\"0\"";
                 skip.insert(o);
-            } else if (l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1" && l.cover[0].second == '1') {
+            } else if (l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1"
+                       && l.cover[0].second == '1') {
                 aliases.push_back(o);
                 skip.insert(o);
             } else if (!netOfName.count(o)) {
@@ -2663,15 +2886,20 @@ private:
             std::vector<std::string> left;
             for (const std::string& o : aliases) {
                 const auto it = netOfName.find(luts[o].ins[0]);
-                if (it != netOfName.end()) netOfName[o] = it->second;
-                else left.push_back(o);
+                if (it != netOfName.end())
+                    netOfName[o] = it->second;
+                else
+                    left.push_back(o);
             }
-            if (left.size() == aliases.size()) v3fatal("internal: abc BLIF alias '" << left[0] << "' of undefined '" << luts[left[0]].ins[0] << "'");
+            if (left.size() == aliases.size())
+                v3fatal("internal: abc BLIF alias '" << left[0] << "' of undefined '"
+                                                     << luts[left[0]].ins[0] << "'");
             aliases.swap(left);
         }
         m_cutNet.clear();
         for (const std::string& o : order) {
-            if (o.size() > 1 && o[0] == 'v' && std::isdigit(static_cast<unsigned char>(o[1]))) m_cutNet[o] = netOfName[o];
+            if (o.size() > 1 && o[0] == 'v' && std::isdigit(static_cast<unsigned char>(o[1])))
+                m_cutNet[o] = netOfName[o];
         }
         for (size_t i = 0; i < m_piVar.size(); ++i) {
             const std::string n = "v" + std::to_string(m_piVar[i]);
@@ -2687,9 +2915,12 @@ private:
                 m_poNet[i] = it->second;
             } else {
                 const int r = m_po[i];
-                if (r == 0) m_poNet[i] = "\"0\"";
-                else if (r == 1) m_poNet[i] = "\"1\"";
-                else m_poNet[i] = netOfLit(r);  // PI (possibly inverted) passed straight through
+                if (r == 0)
+                    m_poNet[i] = "\"0\"";
+                else if (r == 1)
+                    m_poNet[i] = "\"1\"";
+                else
+                    m_poNet[i] = netOfLit(r);  // PI (possibly inverted) passed straight through
             }
         }
         // LUT owners for the hierarchical EDIF: a primary output belongs to the
@@ -2714,7 +2945,8 @@ private:
             for (size_t ci = 0; ci < m_d.cells2.size(); ++ci) {
                 const std::string p = pathOf(m_d.cells2[ci].name);
                 for (size_t pi = 0; pi < m_d.cells2[ci].ins.size(); ++pi)
-                    for (size_t b = 0; b < m_d.cells2[ci].ins[pi].second.size(); ++b) setPo(m_cellInPo[ci][pi] + b, p);
+                    for (size_t b = 0; b < m_d.cells2[ci].ins[pi].second.size(); ++b)
+                        setPo(m_cellInPo[ci][pi] + b, p);
             }
             for (size_t oi = 0; oi < m_topOutPo.size(); ++oi) {
                 auto it = m_d.outputs.begin();
@@ -2723,12 +2955,16 @@ private:
             }
             // readers of each BLIF name
             std::unordered_map<std::string, std::vector<std::string>> readers;
-            for (const std::string& o : order) for (const std::string& in : luts[o].ins) readers[in].push_back(o);
+            for (const std::string& o : order)
+                for (const std::string& in : luts[o].ins) readers[in].push_back(o);
             std::unordered_map<std::string, bool> known;
             for (const std::string& o : order) {
                 if (o.rfind("po", 0) == 0) {
                     const size_t i = std::strtoul(o.c_str() + 2, nullptr, 10);
-                    if (i < m_po.size() && poSet[i]) { owner[o] = poOwner[i]; known[o] = true; }
+                    if (i < m_po.size() && poSet[i]) {
+                        owner[o] = poOwner[i];
+                        known[o] = true;
+                    }
                 }
             }
             // propagate backwards to a fixpoint (owners only get shallower)
@@ -2740,8 +2976,13 @@ private:
                     if (rit == readers.end()) continue;
                     for (const std::string& r : rit->second) {
                         if (!known[r]) continue;
-                        const std::string np = known[o] ? commonPath(owner[o], owner[r]) : owner[r];
-                        if (!known[o] || np != owner[o]) { owner[o] = np; known[o] = true; changed = true; }
+                        const std::string np
+                            = known[o] ? commonPath(owner[o], owner[r]) : owner[r];
+                        if (!known[o] || np != owner[o]) {
+                            owner[o] = np;
+                            known[o] = true;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -2822,7 +3063,8 @@ private:
             }
             const int k = l.ins.size();
             std::vector<std::pair<std::string, std::string>> ins;
-            for (int i = 0; i < std::min(k, 6); ++i) ins.emplace_back("I" + std::to_string(i), "[" + netOf(l.ins[i]) + "]");
+            for (int i = 0; i < std::min(k, 6); ++i)
+                ins.emplace_back("I" + std::to_string(i), "[" + netOf(l.ins[i]) + "]");
             std::string init = lutInit(l);
             if (complemented.count(o)) {
                 for (char& c : init) c = c == '1' ? '0' : '1';
@@ -2837,26 +3079,34 @@ private:
                 std::vector<std::string> leaf(leaves);
                 for (int q = 0; q < leaves; ++q) {
                     leaf[q] = newNet();
-                    cell("LUT6", "lut_" + tag + "_" + std::to_string(q) + "_" + std::to_string(m_ncells),
-                         {{"INIT", "\"" + init.substr(init.size() - (q + 1) * 64, 64) + "\""}}, ins,
-                         {{"O", "[" + leaf[q] + "]"}});
+                    cell("LUT6",
+                         "lut_" + tag + "_" + std::to_string(q) + "_" + std::to_string(m_ncells),
+                         {{"INIT", "\"" + init.substr(init.size() - (q + 1) * 64, 64) + "\""}},
+                         ins, {{"O", "[" + leaf[q] + "]"}});
                 }
                 const std::string s6 = "[" + netOf(l.ins[6]) + "]";
                 std::vector<std::string> f7(leaves / 2);
                 for (int h = 0; h < leaves / 2; ++h) {
                     f7[h] = k == 7 ? netOfName[o] : newNet();
-                    cell("MUXF7", "muxf7_" + tag + "_" + std::to_string(h) + "_" + std::to_string(m_ncells), {},
-                         {{"I0", "[" + leaf[2 * h] + "]"}, {"I1", "[" + leaf[2 * h + 1] + "]"}, {"S", s6}},
+                    cell("MUXF7",
+                         "muxf7_" + tag + "_" + std::to_string(h) + "_" + std::to_string(m_ncells),
+                         {},
+                         {{"I0", "[" + leaf[2 * h] + "]"},
+                          {"I1", "[" + leaf[2 * h + 1] + "]"},
+                          {"S", s6}},
                          {{"O", "[" + f7[h] + "]"}});
                 }
                 if (k == 8) {
                     cell("MUXF8", "muxf8_" + tag + "_" + std::to_string(m_ncells), {},
-                         {{"I0", "[" + f7[0] + "]"}, {"I1", "[" + f7[1] + "]"}, {"S", "[" + netOf(l.ins[7]) + "]"}},
+                         {{"I0", "[" + f7[0] + "]"},
+                          {"I1", "[" + f7[1] + "]"},
+                          {"S", "[" + netOf(l.ins[7]) + "]"}},
                          {{"O", "[" + netOfName[o] + "]"}});
                 }
                 continue;
             }
-            cell("LUT" + std::to_string(k), "lut_" + sanitize(o) + "_" + std::to_string(m_ncells), {{"INIT", "\"" + init + "\""}}, ins, {{"O", "[" + netOfName[o] + "]"}});
+            cell("LUT" + std::to_string(k), "lut_" + sanitize(o) + "_" + std::to_string(m_ncells),
+                 {{"INIT", "\"" + init + "\""}}, ins, {{"O", "[" + netOfName[o] + "]"}});
         }
         // 2b. carry chains: blocks of four bits, the first with CI = 0 and the
         // initial carry on CYINIT, each later one's CI from the previous CO[3];
@@ -2875,11 +3125,15 @@ private:
                     sv.push_back(i < w ? m_poNet[cp.s + i] : "\"1\"");
                     dv.push_back(i < w ? m_poNet[cp.di + i] : "\"0\"");
                     ov.push_back(i < w && !ch.o.empty() ? netOfLit(ch.o[i]) : newNet());
-                    cov.push_back(blk + 1 == nb && k == 3 && ch.co >= 0 ? netOfLit(ch.co) : newNet());
+                    cov.push_back(blk + 1 == nb && k == 3 && ch.co >= 0 ? netOfLit(ch.co)
+                                                                        : newNet());
                 }
                 cell("CARRY4", "carry" + std::to_string(ci) + "_" + std::to_string(blk), {},
-                     {{"CI", "[" + carry + "]"}, {"CYINIT", "[" + (blk == 0 ? m_poNet[cp.cyinit] : std::string("\"0\"")) + "]"},
-                      {"DI", bitsJson(dv)}, {"S", bitsJson(sv)}},
+                     {{"CI", "[" + carry + "]"},
+                      {"CYINIT",
+                       "[" + (blk == 0 ? m_poNet[cp.cyinit] : std::string("\"0\"")) + "]"},
+                      {"DI", bitsJson(dv)},
+                      {"S", bitsJson(sv)}},
                      {{"CO", bitsJson(cov)}, {"O", bitsJson(ov)}});
                 carry = cov[3];
             }
@@ -2893,42 +3147,79 @@ private:
             for (size_t k = 0; k < d.a.size(); ++k) a[k] = m_poNet[dp.a + k];
             for (size_t k = 0; k < d.b.size(); ++k) b[k] = m_poNet[dp.b + k];
             for (const int l : d.p) p.push_back(netOfLit(l));
-            auto freshN = [&](size_t n) { std::vector<std::string> v; for (size_t k = 0; k < n; ++k) v.push_back(newNet()); return v; };
+            auto freshN = [&](size_t n) {
+                std::vector<std::string> v;
+                for (size_t k = 0; k < n; ++k) v.push_back(newNet());
+                return v;
+            };
             const std::string z = "[\"0\"]";
-            std::vector<std::pair<std::string, std::string>> params = {
-                {"A_INPUT", "\"DIRECT\""}, {"B_INPUT", "\"DIRECT\""}, {"USE_DPORT", "\"FALSE\""}, {"USE_MULT", "\"MULTIPLY\""},
-                {"USE_SIMD", "\"ONE48\""}};
-            for (const char* r : {"ACASCREG", "ADREG", "ALUMODEREG", "AREG", "BCASCREG", "BREG", "CARRYINREG", "CARRYINSELREG",
-                                  "CREG", "DREG", "INMODEREG", "MREG", "OPMODEREG", "PREG"}) {
+            std::vector<std::pair<std::string, std::string>> params
+                = {{"A_INPUT", "\"DIRECT\""},
+                   {"B_INPUT", "\"DIRECT\""},
+                   {"USE_DPORT", "\"FALSE\""},
+                   {"USE_MULT", "\"MULTIPLY\""},
+                   {"USE_SIMD", "\"ONE48\""}};
+            for (const char* r :
+                 {"ACASCREG", "ADREG", "ALUMODEREG", "AREG", "BCASCREG", "BREG", "CARRYINREG",
+                  "CARRYINSELREG", "CREG", "DREG", "INMODEREG", "MREG", "OPMODEREG", "PREG"}) {
                 const std::string rn = r;
-                const int n = rn == "PREG" ? (d.preg ? 1 : 0) : rn == "MREG" ? (d.mreg ? 1 : 0)
-                              : (rn == "AREG" || rn == "ACASCREG") ? d.areg : (rn == "BREG" || rn == "BCASCREG") ? d.breg : 0;
+                const int n = rn == "PREG"                         ? (d.preg ? 1 : 0)
+                              : rn == "MREG"                       ? (d.mreg ? 1 : 0)
+                              : (rn == "AREG" || rn == "ACASCREG") ? d.areg
+                              : (rn == "BREG" || rn == "BCASCREG") ? d.breg
+                                                                   : 0;
                 params.emplace_back(r, binParam(n));
             }
             const bool clocked = d.preg || d.mreg || d.areg || d.breg;
-            std::vector<std::pair<std::string, std::string>> ins = {
-                {"A", bitsJson(a)}, {"B", bitsJson(b)}, {"C", bitsJson(zeros(48))}, {"D", bitsJson(zeros(25))},
-                {"ACIN", bitsJson(zeros(30))}, {"BCIN", bitsJson(zeros(18))}, {"PCIN", bitsJson(zeros(48))},
-                {"ALUMODE", bitsJson(zeros(4))}, {"INMODE", bitsJson(zeros(5))}, {"CARRYINSEL", bitsJson(zeros(3))},
-                {"OPMODE", bitsJson({"\"1\"", "\"0\"", "\"1\"", "\"0\"", "\"0\"", d.acc ? "\"1\"" : "\"0\"", "\"0\""})},  // X = Y = M, Z = P when accumulating
-                {"CARRYIN", z}, {"CARRYCASCIN", z}, {"MULTSIGNIN", z},
-                {"CLK", clocked ? "[" + netOfLit(d.clk) + "]" : z}};
+            std::vector<std::pair<std::string, std::string>> ins
+                = {{"A", bitsJson(a)},
+                   {"B", bitsJson(b)},
+                   {"C", bitsJson(zeros(48))},
+                   {"D", bitsJson(zeros(25))},
+                   {"ACIN", bitsJson(zeros(30))},
+                   {"BCIN", bitsJson(zeros(18))},
+                   {"PCIN", bitsJson(zeros(48))},
+                   {"ALUMODE", bitsJson(zeros(4))},
+                   {"INMODE", bitsJson(zeros(5))},
+                   {"CARRYINSEL", bitsJson(zeros(3))},
+                   {"OPMODE", bitsJson({"\"1\"", "\"0\"", "\"1\"", "\"0\"", "\"0\"",
+                                        d.acc ? "\"1\"" : "\"0\"",
+                                        "\"0\""})},  // X = Y = M, Z = P when accumulating
+                   {"CARRYIN", z},
+                   {"CARRYCASCIN", z},
+                   {"MULTSIGNIN", z},
+                   {"CLK", clocked ? "[" + netOfLit(d.clk) + "]" : z}};
             auto po = [&](int idx) { return idx < 0 ? z : "[" + m_poNet[idx] + "]"; };
-            for (const char* ce : {"CEA1", "CEA2", "CEAD", "CEALUMODE", "CEB1", "CEB2", "CEC", "CECARRYIN", "CECTRL", "CED",
-                                   "CEINMODE", "CEM", "CEP", "RSTA", "RSTALLCARRYIN", "RSTALUMODE", "RSTB", "RSTC", "RSTCTRL",
-                                   "RSTD", "RSTINMODE", "RSTM", "RSTP"}) {
+            for (const char* ce :
+                 {"CEA1",    "CEA2",      "CEAD",          "CEALUMODE",  "CEB1",     "CEB2",
+                  "CEC",     "CECARRYIN", "CECTRL",        "CED",        "CEINMODE", "CEM",
+                  "CEP",     "RSTA",      "RSTALLCARRYIN", "RSTALUMODE", "RSTB",     "RSTC",
+                  "RSTCTRL", "RSTD",      "RSTINMODE",     "RSTM",       "RSTP"}) {
                 const std::string cn = ce;
-                ins.emplace_back(ce, cn == "CEP" ? po(dp.cep) : cn == "RSTP" ? po(dp.rstp)
-                                   : cn == "CEM" ? po(dp.cem) : cn == "RSTM" ? po(dp.rstm)
-                                   : cn == "CEA1" ? po(dp.cea1) : cn == "CEA2" ? po(dp.cea2) : cn == "RSTA" ? po(dp.rsta)
-                                   : cn == "CEB1" ? po(dp.ceb1) : cn == "CEB2" ? po(dp.ceb2) : cn == "RSTB" ? po(dp.rstb)
-                                   : z);
+                ins.emplace_back(ce, cn == "CEP"    ? po(dp.cep)
+                                     : cn == "RSTP" ? po(dp.rstp)
+                                     : cn == "CEM"  ? po(dp.cem)
+                                     : cn == "RSTM" ? po(dp.rstm)
+                                     : cn == "CEA1" ? po(dp.cea1)
+                                     : cn == "CEA2" ? po(dp.cea2)
+                                     : cn == "RSTA" ? po(dp.rsta)
+                                     : cn == "CEB1" ? po(dp.ceb1)
+                                     : cn == "CEB2" ? po(dp.ceb2)
+                                     : cn == "RSTB" ? po(dp.rstb)
+                                                    : z);
             }
-            std::vector<std::pair<std::string, std::string>> outs = {
-                {"P", bitsJson(p)}, {"ACOUT", bitsJson(freshN(30))}, {"BCOUT", bitsJson(freshN(18))}, {"PCOUT", bitsJson(freshN(48))},
-                {"CARRYCASCOUT", "[" + newNet() + "]"}, {"CARRYOUT", bitsJson(freshN(4))}, {"MULTSIGNOUT", "[" + newNet() + "]"},
-                {"OVERFLOW", "[" + newNet() + "]"}, {"UNDERFLOW", "[" + newNet() + "]"}, {"PATTERNDETECT", "[" + newNet() + "]"},
-                {"PATTERNBDETECT", "[" + newNet() + "]"}};
+            std::vector<std::pair<std::string, std::string>> outs
+                = {{"P", bitsJson(p)},
+                   {"ACOUT", bitsJson(freshN(30))},
+                   {"BCOUT", bitsJson(freshN(18))},
+                   {"PCOUT", bitsJson(freshN(48))},
+                   {"CARRYCASCOUT", "[" + newNet() + "]"},
+                   {"CARRYOUT", bitsJson(freshN(4))},
+                   {"MULTSIGNOUT", "[" + newNet() + "]"},
+                   {"OVERFLOW", "[" + newNet() + "]"},
+                   {"UNDERFLOW", "[" + newNet() + "]"},
+                   {"PATTERNDETECT", "[" + newNet() + "]"},
+                   {"PATTERNBDETECT", "[" + newNet() + "]"}};
             cell("DSP48E1", "dsp" + std::to_string(di), params, ins, outs);
         }
         // 3. registers
@@ -2957,7 +3248,8 @@ private:
                     // is the gate G (GE held high), its reset the async clear
                     ins = {{"D", "[" + d + "]"}, {"G", "[" + en + "]"}, {"GE", "[\"1\"]"}};
                     type = hasRst && setv ? "LDPE" : "LDCE";
-                    ins.emplace_back(type == "LDPE" ? "PRE" : "CLR", "[" + (hasRst ? rst : std::string{"\"0\""}) + "]");
+                    ins.emplace_back(type == "LDPE" ? "PRE" : "CLR",
+                                     "[" + (hasRst ? rst : std::string{"\"0\""}) + "]");
                 } else {
                     ins = {{"C", "[" + clk + "]"}, {"CE", "[" + en + "]"}, {"D", "[" + d + "]"}};
                     if (!hasRst) {
@@ -2976,8 +3268,11 @@ private:
                 {
                     int lo = 0;
                     const std::string base = leafOf(r.name, lo);
-                    const bool vec = r.q.size() > 1 || !r.bitNo.empty() || r.name.find('[') != std::string::npos;
-                    m_curLeaf = base + "_reg" + (vec ? "[" + std::to_string(lo + static_cast<int>(bn)) + "]" : "");
+                    const bool vec = r.q.size() > 1 || !r.bitNo.empty()
+                                     || r.name.find('[') != std::string::npos;
+                    m_curLeaf
+                        = base + "_reg"
+                          + (vec ? "[" + std::to_string(lo + static_cast<int>(bn)) + "]" : "");
                 }
                 std::vector<std::pair<std::string, std::string>> attrs;
                 if (flip) attrs.emplace_back("INVERTED_Q", "\"1\"");
@@ -2985,18 +3280,23 @@ private:
                     const auto mf = m_mergedFrom.find(r.q[b]);
                     if (mf != m_mergedFrom.end()) {
                         std::string names;
-                        for (const std::string& n : mf->second) names += (names.empty() ? "" : ";") + n;
+                        for (const std::string& n : mf->second)
+                            names += (names.empty() ? "" : ";") + n;
                         attrs.emplace_back("MERGED_EQUIV", "\"" + names + "\"");
                     }
                 }
-                cell(type, sanitize(r.name) + "_" + std::to_string(bn), {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}}, attrs);
+                cell(type, sanitize(r.name) + "_" + std::to_string(bn),
+                     {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}}, attrs);
                 // its copies for fanout (limitFanout): the same register again
                 const auto dit = m_regDup.find({ri, b});
                 if (dit != m_regDup.end()) {
                     for (size_t k = 0; k < dit->second.size(); ++k) {
                         m_curLeaf.clear();
-                        cell(type, sanitize(r.name) + "_" + std::to_string(bn) + "_dup" + std::to_string(k + 1),
-                             {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + netOfName.at(dit->second[k]) + "]"}}, attrs);
+                        cell(type,
+                             sanitize(r.name) + "_" + std::to_string(bn) + "_dup"
+                                 + std::to_string(k + 1),
+                             {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins,
+                             {{"Q", "[" + netOfName.at(dit->second[k]) + "]"}}, attrs);
                     }
                 }
             }
@@ -3025,16 +3325,20 @@ private:
                 if (!v.empty() && v[0] == '"') {
                     params.emplace_back(p.first, v);  // string (or real) literal
                 } else if (v.rfind("bits:", 0) == 0) {
-                    params.emplace_back(p.first, "\"" + v.substr(5) + "\"");  // sized literal, its width
+                    params.emplace_back(p.first,
+                                        "\"" + v.substr(5) + "\"");  // sized literal, its width
                 } else {
                     bool num = !v.empty();
-                    for (const char ch : v) num &= std::isdigit(static_cast<unsigned char>(ch)) != 0;
-                    params.emplace_back(p.first, num ? binParam(std::atoll(v.c_str())) : "\"" + v + "\"");
+                    for (const char ch : v)
+                        num &= std::isdigit(static_cast<unsigned char>(ch)) != 0;
+                    params.emplace_back(p.first,
+                                        num ? binParam(std::atoll(v.c_str())) : "\"" + v + "\"");
                 }
             }
             for (size_t pi = 0; pi < c.ins.size(); ++pi) {
                 std::vector<std::string> nets;
-                for (size_t b = 0; b < c.ins[pi].second.size(); ++b) nets.push_back(m_poNet[m_cellInPo[ci][pi] + b]);
+                for (size_t b = 0; b < c.ins[pi].second.size(); ++b)
+                    nets.push_back(m_poNet[m_cellInPo[ci][pi] + b]);
                 ins.emplace_back(c.ins[pi].first, bitsJson(nets));
             }
             for (const auto& o : c.outs) {
@@ -3051,9 +3355,11 @@ private:
         // 5. ports
         std::ostringstream ports, netnames;
         bool first = true;
-        auto port = [&](const std::string& name, const char* dir, const std::vector<std::string>& nets) {
+        auto port = [&](const std::string& name, const char* dir,
+                        const std::vector<std::string>& nets) {
             m_portRecs.push_back({name, dir, nets});
-            if (std::string(dir) != "output") for (const std::string& n : nets) m_drivenNets.insert(n);
+            if (std::string(dir) != "output")
+                for (const std::string& n : nets) m_drivenNets.insert(n);
             // A port declared [5:1] has bit 0 at index 1: yosys writes that as
             // "offset", and so does this, or every reader that names bits by
             // index (an equivalence check against another synthesis, a pin
@@ -3062,12 +3368,15 @@ private:
             {
                 const auto rit = m_portRange.find(name);
                 if (rit != m_portRange.end()) {
-                    if (rit->second.first != 0) offset += ", \"offset\": " + std::to_string(rit->second.first);
+                    if (rit->second.first != 0)
+                        offset += ", \"offset\": " + std::to_string(rit->second.first);
                     if (rit->second.second) offset += ", \"upto\": 1";
                 }
             }
-            ports << (first ? "" : ",\n") << "    \"" << name << "\": {\"direction\": \"" << dir << "\"" << offset << ", \"bits\": " << bitsJson(nets) << "}";
-            netnames << (first ? "" : ",\n") << "    \"" << name << "\": {\"hide_name\": 0" << offset << ", \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
+            ports << (first ? "" : ",\n") << "    \"" << name << "\": {\"direction\": \"" << dir
+                  << "\"" << offset << ", \"bits\": " << bitsJson(nets) << "}";
+            netnames << (first ? "" : ",\n") << "    \"" << name << "\": {\"hide_name\": 0"
+                     << offset << ", \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             first = false;
         };
         // Every pad needs an IO buffer (yosys's iopadmap): a port bit that no
@@ -3079,15 +3388,17 @@ private:
         // and instantiated (spliced into another netlist) many times -- its
         // ports are nets, not pads, and get no buffers.
         const bool noIobuf = v3Global.opt.mapOnlyNoIobuf();
-        static const std::set<std::string> ioTypes = {
-            "IBUF", "IBUFG", "IBUFDS", "IBUFGDS", "IBUFDS_GTE2", "IBUFDS_DIFF_OUT", "OBUF", "OBUFT",
-            "OBUFDS", "OBUFTDS", "IOBUF", "IOBUFDS"};
+        static const std::set<std::string> ioTypes
+            = {"IBUF", "IBUFG", "IBUFDS", "IBUFGDS", "IBUFDS_GTE2", "IBUFDS_DIFF_OUT",
+               "OBUF", "OBUFT", "OBUFDS", "OBUFTDS", "IOBUF",       "IOBUFDS"};
         m_curPath.clear();  // inserted IO buffers sit at the top
         std::set<int> bufferedVars;  // AIG vars (resolved) touching an IO buffer pin
         for (const Design::Cell& c : m_d.cells2) {
             if (!ioTypes.count(c.type)) continue;
-            for (const auto& pin : c.ins) for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
-            for (const auto& pin : c.outs) for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
+            for (const auto& pin : c.ins)
+                for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
+            for (const auto& pin : c.outs)
+                for (const int l : pin.second) bufferedVars.insert(m_aig.resolve(l) >> 1);
         }
         // A clock input also gets a BUFG behind its IBUF (yosys's clkbufmap):
         // the clock pins of the registers, DSPs and memories it feeds are then
@@ -3099,7 +3410,8 @@ private:
         for (const Design::Cell& c : m_d.cells2) {
             if (c.type.rfind("memory_", 0) != 0) continue;
             for (const auto& pin : c.ins)
-                if (pin.first == "clk") for (const int l : pin.second) clockVars.insert(m_aig.resolve(l) >> 1);
+                if (pin.first == "clk")
+                    for (const int l : pin.second) clockVars.insert(m_aig.resolve(l) >> 1);
         }
         clockVars.erase(0);  // the constant
         for (const auto& kv : m_d.inputs) {
@@ -3112,12 +3424,15 @@ private:
                     nets.push_back(n);
                 } else if (clockVars.count(v)) {
                     const std::string pad = newNet(), ib = newNet();
-                    cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + pad + "]"}}, {{"O", "[" + ib + "]"}});
-                    cell("BUFG", "bufg_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + ib + "]"}}, {{"O", "[" + n + "]"}});
+                    cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {},
+                         {{"I", "[" + pad + "]"}}, {{"O", "[" + ib + "]"}});
+                    cell("BUFG", "bufg_" + sanitize(kv.first) + "_" + std::to_string(b), {},
+                         {{"I", "[" + ib + "]"}}, {{"O", "[" + n + "]"}});
                     nets.push_back(pad);
                 } else {
                     const std::string pad = newNet();
-                    cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + pad + "]"}}, {{"O", "[" + n + "]"}});
+                    cell("IBUF", "ibuf_" + sanitize(kv.first) + "_" + std::to_string(b), {},
+                         {{"I", "[" + pad + "]"}}, {{"O", "[" + n + "]"}});
                     nets.push_back(pad);
                 }
                 ++b;
@@ -3137,7 +3452,8 @@ private:
                     nets.push_back(n);
                 } else {
                     const std::string pad = newNet();
-                    cell("OBUF", "obuf_" + sanitize(kv.first) + "_" + std::to_string(b), {}, {{"I", "[" + n + "]"}}, {{"O", "[" + pad + "]"}});
+                    cell("OBUF", "obuf_" + sanitize(kv.first) + "_" + std::to_string(b), {},
+                         {{"I", "[" + n + "]"}}, {{"O", "[" + pad + "]"}});
                     nets.push_back(pad);
                 }
             }
@@ -3158,8 +3474,10 @@ private:
                     nets.push_back(r ? "\"1\"" : "\"0\"");
                 } else if (m_aig.isPlaceholder(r >> 1) && !(r & 1)) {
                     const auto it = m_netOfVar.find(r >> 1);
-                    if (it == m_netOfVar.end()) ok = false;
-                    else nets.push_back(it->second);
+                    if (it == m_netOfVar.end())
+                        ok = false;
+                    else
+                        nets.push_back(it->second);
                     if (b < kv.second.drivers.size() && kv.second.drivers[b] == 0) undriven = true;
                 } else {
                     ok = false;
@@ -3177,20 +3495,25 @@ private:
                 if (r > 1 && m_flippedVar.count(r >> 1)) inv[b] = anyInv = true;
             }
             const auto bitName = [&](const std::string& base, size_t b) {
-                return (nets.size() == 1 && !anyInv ? base : base + "[" + std::to_string(b + kv.second.lsb) + "]")
+                return (nets.size() == 1 && !anyInv
+                            ? base
+                            : base + "[" + std::to_string(b + kv.second.lsb) + "]")
                        + (inv[b] ? "_n" : "");
             };
             for (size_t b = 0; b < nets.size(); ++b) {
-                if (!nets[b].empty() && nets[b][0] != '"') m_netName.emplace(nets[b], bitName(kv.first, b));
+                if (!nets[b].empty() && nets[b][0] != '"')
+                    m_netName.emplace(nets[b], bitName(kv.first, b));
             }
             if (!anyInv) {
                 netnames << ",\n    \"" << kv.first << "\": {\"hide_name\": 0"
-                         << (kv.second.lsb != 0 ? ", \"offset\": " + std::to_string(kv.second.lsb) : std::string())
+                         << (kv.second.lsb != 0 ? ", \"offset\": " + std::to_string(kv.second.lsb)
+                                                : std::string())
                          << ", \"bits\": " << bitsJson(nets) << ", \"attributes\": {}}";
             } else {
                 for (size_t b = 0; b < nets.size(); ++b) {
                     if (nets[b].empty() || nets[b][0] == '"') continue;
-                    netnames << ",\n    \"" << bitName(kv.first, b) << "\": {\"hide_name\": 0, \"bits\": [" << nets[b]
+                    netnames << ",\n    \"" << bitName(kv.first, b)
+                             << "\": {\"hide_name\": 0, \"bits\": [" << nets[b]
                              << "], \"attributes\": {}}";
                 }
             }
@@ -3225,14 +3548,18 @@ private:
             for (const auto& kv : m_firstLoad) {
                 if (!m_drivenNets.count(kv.first)) floating.push_back(kv);
             }
-            std::sort(floating.begin(), floating.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+            std::sort(floating.begin(), floating.end(),
+                      [](const auto& a, const auto& b) { return a.second < b.second; });
             for (size_t i = 0; i < floating.size() && i < 20; ++i) {
                 const auto nit = m_netName.find(floating[i].first);
-                m_warnings.push_back("floating input " + floating[i].second + ": net "
-                                     + (nit != m_netName.end() ? nit->second : "#" + floating[i].first) + " has no driver");
+                m_warnings.push_back(
+                    "floating input " + floating[i].second + ": net "
+                    + (nit != m_netName.end() ? nit->second : "#" + floating[i].first)
+                    + " has no driver");
             }
             if (floating.size() > 20)
-                m_warnings.push_back(std::to_string(floating.size() - 20) + " more floating inputs");
+                m_warnings.push_back(std::to_string(floating.size() - 20)
+                                     + " more floating inputs");
         }
         if (!write) return;  // a pass the timing analysis looks at, not the one written out
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
@@ -3240,11 +3567,15 @@ private:
         if (!v3Global.opt.mapOnlyMemInit().empty()) writeMemInit(v3Global.opt.mapOnlyMemInit());
         if (filename.empty()) return;  // --map-only-edif / --map-only-verilog alone
         std::ofstream os{filename};
-        os << "{\n  \"creator\": \"verilator --map-only-output\",\n  \"modules\": {\n    \"" << m_top << "\": {\n"
+        os << "{\n  \"creator\": \"verilator --map-only-output\",\n  \"modules\": {\n    \""
+           << m_top << "\": {\n"
            << "      \"attributes\": {\"top\": \"00000000000000000000000000000001\"},\n"
-           << "      \"ports\": {\n" << ports.str() << "\n      },\n"
-           << "      \"cells\": {\n" << m_cells.str() << "\n      },\n"
-           << "      \"netnames\": {\n" << netnames.str() << "\n      }\n    }\n  }\n}\n";
+           << "      \"ports\": {\n"
+           << ports.str() << "\n      },\n"
+           << "      \"cells\": {\n"
+           << m_cells.str() << "\n      },\n"
+           << "      \"netnames\": {\n"
+           << netnames.str() << "\n      }\n    }\n  }\n}\n";
         std::ostringstream summary;
         for (const auto& kv : m_counts) summary << " " << kv.first << "=" << kv.second;
         UINFO(1, "map: wrote " << filename << ":" << summary.str());
@@ -3261,7 +3592,8 @@ private:
     // a bit string is an integer up to 32 bits and a "W'hHEX" string above.
     static bool edifIdOk(const std::string& n) {
         if (n.empty() || !std::isalpha(static_cast<unsigned char>(n[0]))) return false;
-        for (const char c : n) if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
+        for (const char c : n)
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
         return n.size() < 250;
     }
     static std::string edifQuote(const std::string& s) {
@@ -3305,7 +3637,11 @@ private:
         }
         return "(string \"" + std::to_string(w) + "'h" + hex + "\")";
     }
-    struct LibPort { std::string name; bool out; size_t width; };
+    struct LibPort final {
+        std::string name;
+        bool out;
+        size_t width;
+    };
     std::map<std::string, std::vector<LibPort>> m_ifaces;  // (* blackbox *) declarations
     // Complete interfaces of the primitives the mapper itself creates, so
     // Vivado's own cell views replace them without "additional ports" notes
@@ -3318,44 +3654,146 @@ private:
             for (int i = 0; i < t[3] - '0'; ++i) in("I" + std::to_string(i));
         } else if (t.rfind("FD", 0) == 0) {
             out("Q");
-            in("C"); in("CE"); in("D");
+            in("C");
+            in("CE");
+            in("D");
             const std::string b = t.substr(0, 4);
             in(b == "FDRE" ? "R" : b == "FDSE" ? "S" : b == "FDCE" ? "CLR" : "PRE");
         } else if (t == "LDCE" || t == "LDPE") {
             out("Q");
-            in("D"); in("G"); in("GE"); in(t == "LDCE" ? "CLR" : "PRE");
+            in("D");
+            in("G");
+            in("GE");
+            in(t == "LDCE" ? "CLR" : "PRE");
         } else if (t == "RAMB36E1") {
-            out("CASCADEOUTA"); out("CASCADEOUTB"); out("DBITERR"); out("DOADO", 32); out("DOBDO", 32);
-            out("DOPADOP", 4); out("DOPBDOP", 4); out("ECCPARITY", 8); out("RDADDRECC", 9); out("SBITERR");
-            in("ADDRARDADDR", 16); in("ADDRBWRADDR", 16); in("CASCADEINA"); in("CASCADEINB"); in("CLKARDCLK");
-            in("CLKBWRCLK"); in("DIADI", 32); in("DIBDI", 32); in("DIPADIP", 4); in("DIPBDIP", 4); in("ENARDEN");
-            in("ENBWREN"); in("INJECTDBITERR"); in("INJECTSBITERR"); in("REGCEAREGCE"); in("REGCEB");
-            in("RSTRAMARSTRAM"); in("RSTRAMB"); in("RSTREGARSTREG"); in("RSTREGB"); in("WEA", 4); in("WEBWE", 8);
+            out("CASCADEOUTA");
+            out("CASCADEOUTB");
+            out("DBITERR");
+            out("DOADO", 32);
+            out("DOBDO", 32);
+            out("DOPADOP", 4);
+            out("DOPBDOP", 4);
+            out("ECCPARITY", 8);
+            out("RDADDRECC", 9);
+            out("SBITERR");
+            in("ADDRARDADDR", 16);
+            in("ADDRBWRADDR", 16);
+            in("CASCADEINA");
+            in("CASCADEINB");
+            in("CLKARDCLK");
+            in("CLKBWRCLK");
+            in("DIADI", 32);
+            in("DIBDI", 32);
+            in("DIPADIP", 4);
+            in("DIPBDIP", 4);
+            in("ENARDEN");
+            in("ENBWREN");
+            in("INJECTDBITERR");
+            in("INJECTSBITERR");
+            in("REGCEAREGCE");
+            in("REGCEB");
+            in("RSTRAMARSTRAM");
+            in("RSTRAMB");
+            in("RSTREGARSTREG");
+            in("RSTREGB");
+            in("WEA", 4);
+            in("WEBWE", 8);
         } else if (t == "RAMB18E1") {
-            out("DOADO", 16); out("DOBDO", 16); out("DOPADOP", 2); out("DOPBDOP", 2);
-            in("ADDRARDADDR", 14); in("ADDRBWRADDR", 14); in("CLKARDCLK"); in("CLKBWRCLK"); in("DIADI", 16);
-            in("DIBDI", 16); in("DIPADIP", 2); in("DIPBDIP", 2); in("ENARDEN"); in("ENBWREN"); in("REGCEAREGCE");
-            in("REGCEB"); in("RSTRAMARSTRAM"); in("RSTRAMB"); in("RSTREGARSTREG"); in("RSTREGB"); in("WEA", 2); in("WEBWE", 4);
+            out("DOADO", 16);
+            out("DOBDO", 16);
+            out("DOPADOP", 2);
+            out("DOPBDOP", 2);
+            in("ADDRARDADDR", 14);
+            in("ADDRBWRADDR", 14);
+            in("CLKARDCLK");
+            in("CLKBWRCLK");
+            in("DIADI", 16);
+            in("DIBDI", 16);
+            in("DIPADIP", 2);
+            in("DIPBDIP", 2);
+            in("ENARDEN");
+            in("ENBWREN");
+            in("REGCEAREGCE");
+            in("REGCEB");
+            in("RSTRAMARSTRAM");
+            in("RSTRAMB");
+            in("RSTREGARSTREG");
+            in("RSTREGB");
+            in("WEA", 2);
+            in("WEBWE", 4);
         } else if (t == "RAM64X1D") {
-            out("DPO"); out("SPO");
+            out("DPO");
+            out("SPO");
             for (int i = 0; i < 6; ++i) in("A" + std::to_string(i));
             in("D");
             for (int i = 0; i < 6; ++i) in("DPRA" + std::to_string(i));
-            in("WCLK"); in("WE");
+            in("WCLK");
+            in("WE");
         } else if (t == "CARRY4") {
-            out("CO", 4); out("O", 4); in("CI"); in("CYINIT"); in("DI", 4); in("S", 4);
+            out("CO", 4);
+            out("O", 4);
+            in("CI");
+            in("CYINIT");
+            in("DI", 4);
+            in("S", 4);
         } else if (t == "MUXF7" || t == "MUXF8") {
-            out("O"); in("I0"); in("I1"); in("S");
+            out("O");
+            in("I0");
+            in("I1");
+            in("S");
         } else if (t == "DSP48E1") {
-            out("ACOUT", 30); out("BCOUT", 18); out("CARRYCASCOUT"); out("CARRYOUT", 4); out("MULTSIGNOUT"); out("OVERFLOW");
-            out("P", 48); out("PATTERNBDETECT"); out("PATTERNDETECT"); out("PCOUT", 48); out("UNDERFLOW");
-            in("A", 30); in("ACIN", 30); in("ALUMODE", 4); in("B", 18); in("BCIN", 18); in("C", 48); in("CARRYCASCIN");
-            in("CARRYIN"); in("CARRYINSEL", 3); in("CEA1"); in("CEA2"); in("CEAD"); in("CEALUMODE"); in("CEB1"); in("CEB2");
-            in("CEC"); in("CECARRYIN"); in("CECTRL"); in("CED"); in("CEINMODE"); in("CEM"); in("CEP"); in("CLK"); in("D", 25);
-            in("INMODE", 5); in("MULTSIGNIN"); in("OPMODE", 7); in("PCIN", 48); in("RSTA"); in("RSTALLCARRYIN");
-            in("RSTALUMODE"); in("RSTB"); in("RSTC"); in("RSTCTRL"); in("RSTD"); in("RSTINMODE"); in("RSTM"); in("RSTP");
+            out("ACOUT", 30);
+            out("BCOUT", 18);
+            out("CARRYCASCOUT");
+            out("CARRYOUT", 4);
+            out("MULTSIGNOUT");
+            out("OVERFLOW");
+            out("P", 48);
+            out("PATTERNBDETECT");
+            out("PATTERNDETECT");
+            out("PCOUT", 48);
+            out("UNDERFLOW");
+            in("A", 30);
+            in("ACIN", 30);
+            in("ALUMODE", 4);
+            in("B", 18);
+            in("BCIN", 18);
+            in("C", 48);
+            in("CARRYCASCIN");
+            in("CARRYIN");
+            in("CARRYINSEL", 3);
+            in("CEA1");
+            in("CEA2");
+            in("CEAD");
+            in("CEALUMODE");
+            in("CEB1");
+            in("CEB2");
+            in("CEC");
+            in("CECARRYIN");
+            in("CECTRL");
+            in("CED");
+            in("CEINMODE");
+            in("CEM");
+            in("CEP");
+            in("CLK");
+            in("D", 25);
+            in("INMODE", 5);
+            in("MULTSIGNIN");
+            in("OPMODE", 7);
+            in("PCIN", 48);
+            in("RSTA");
+            in("RSTALLCARRYIN");
+            in("RSTALUMODE");
+            in("RSTB");
+            in("RSTC");
+            in("RSTCTRL");
+            in("RSTD");
+            in("RSTINMODE");
+            in("RSTM");
+            in("RSTP");
         } else if (t == "IBUF" || t == "OBUF" || t == "BUFG") {
-            out("O"); in("I");
+            out("O");
+            in("I");
         }
         return v;
     }
@@ -3369,7 +3807,8 @@ private:
     static std::string verilogId(const std::string& n) {
         bool plain = !n.empty() && (std::isalpha(static_cast<unsigned char>(n[0])) || n[0] == '_');
         for (const char c : n)
-            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '$') plain = false;
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '$')
+                plain = false;
         return plain ? n : "\\" + n + " ";
     }
     static std::string verilogParam(const std::string& json) {
@@ -3397,16 +3836,21 @@ private:
             taken.insert(pr.name);
             for (size_t i = 0; i < pr.bits.size(); ++i) {
                 const std::string& b = pr.bits[i];
-                const std::string here = pr.bits.size() == 1 ? verilogId(pr.name) : verilogId(pr.name) + "[" + std::to_string(i) + "]";
+                const std::string here = pr.bits.size() == 1
+                                             ? verilogId(pr.name)
+                                             : verilogId(pr.name) + "[" + std::to_string(i) + "]";
                 if (b.empty()) continue;
                 if (b[0] == '"') {  // a constant output
-                    assigns.push_back("  assign " + here + " = 1'b" + (b.size() > 1 ? b.substr(1, 1) : "x") + ";");
+                    assigns.push_back("  assign " + here + " = 1'b"
+                                      + (b.size() > 1 ? b.substr(1, 1) : "x") + ";");
                     continue;
                 }
                 const auto it = ref.emplace(b, here);
                 if (!it.second) {  // the same net on two ports: the later one follows the first
-                    if (pr.dir == "input") assigns.push_back("  assign " + it.first->second + " = " + here + ";");
-                    else assigns.push_back("  assign " + here + " = " + it.first->second + ";");
+                    if (pr.dir == "input")
+                        assigns.push_back("  assign " + it.first->second + " = " + here + ";");
+                    else
+                        assigns.push_back("  assign " + here + " = " + it.first->second + ";");
                 }
             }
         }
@@ -3432,7 +3876,8 @@ private:
             if (!r.params.empty()) {
                 body << " #(";
                 for (size_t i = 0; i < r.params.size(); ++i)
-                    body << (i ? ", " : "") << "." << r.params[i].first << "(" << verilogParam(r.params[i].second) << ")";
+                    body << (i ? ", " : "") << "." << r.params[i].first << "("
+                         << verilogParam(r.params[i].second) << ")";
                 body << ")";
             }
             body << " " << verilogId(r.name) << " (";
@@ -3443,7 +3888,8 @@ private:
                     body << bitRef(c.bits[0]);
                 } else {
                     body << "{";
-                    for (size_t k = c.bits.size(); k-- > 0;) body << bitRef(c.bits[k]) << (k ? ", " : "");
+                    for (size_t k = c.bits.size(); k-- > 0;)
+                        body << bitRef(c.bits[k]) << (k ? ", " : "");
                     body << "}";
                 }
                 body << ")";
@@ -3453,7 +3899,8 @@ private:
         std::ofstream os{path};
         os << "// The mapped netlist of " << m_top << " (Verilator --map-only-verilog)\n";
         os << "module " << verilogId(m_top) << " (";
-        for (size_t i = 0; i < m_portRecs.size(); ++i) os << (i ? ", " : "") << verilogId(m_portRecs[i].name);
+        for (size_t i = 0; i < m_portRecs.size(); ++i)
+            os << (i ? ", " : "") << verilogId(m_portRecs[i].name);
         os << ");\n";
         for (const PortRec& pr : m_portRecs) {
             os << "  " << pr.dir;
@@ -3478,7 +3925,11 @@ private:
             auto& ports = lib[r.type];
             for (const Conn& c : r.conns) {
                 bool have = false;
-                for (LibPort& lp : ports) if (lp.name == c.port) { have = true; lp.width = std::max(lp.width, c.bits.size()); }
+                for (LibPort& lp : ports)
+                    if (lp.name == c.port) {
+                        have = true;
+                        lp.width = std::max(lp.width, c.bits.size());
+                    }
                 if (!have) ports.push_back({c.port, c.out, c.bits.size()});
             }
         }
@@ -3486,9 +3937,12 @@ private:
         std::map<std::string, std::vector<std::string>> nets;
         auto ref = [&](const std::string& bit, const std::string& portRef) {
             std::string id = bit;
-            if (bit == "\"0\"") id = "GND";
-            else if (bit == "\"1\"") id = "VCC";
-            else if (!bit.empty() && bit[0] == '"') return;  // x/z: unconnected
+            if (bit == "\"0\"")
+                id = "GND";
+            else if (bit == "\"1\"")
+                id = "VCC";
+            else if (!bit.empty() && bit[0] == '"')
+                return;  // x/z: unconnected
             nets[id].push_back(portRef);
         };
         auto member = [&](const std::string& port, size_t width, size_t bit) {
@@ -3509,9 +3963,11 @@ private:
             const CellRec& r = m_recs[i];
             for (const Conn& c : r.conns) {
                 size_t width = 1;
-                for (const LibPort& lp : lib[r.type]) if (lp.name == c.port) width = lp.width;
+                for (const LibPort& lp : lib[r.type])
+                    if (lp.name == c.port) width = lp.width;
                 for (size_t b = 0; b < c.bits.size(); ++b) {
-                    ref(c.bits[b], "(portRef " + member(c.port, width, b) + " (instanceRef " + instRefOf(i) + "))");
+                    ref(c.bits[b], "(portRef " + member(c.port, width, b) + " (instanceRef "
+                                       + instRefOf(i) + "))");
                 }
             }
         }
@@ -3522,21 +3978,30 @@ private:
             }
         }
         std::ofstream os{path};
-        os << "(edif " << edifName(m_top) << "\n  (edifVersion 2 0 0)\n  (edifLevel 0)\n  (keywordMap (keywordLevel 0))\n"
+        os << "(edif " << edifName(m_top)
+           << "\n  (edifVersion 2 0 0)\n  (edifLevel 0)\n  (keywordMap (keywordLevel 0))\n"
            << "  (comment \"verilator --map-only-edif\")\n";
         os << "  (external LIB\n    (edifLevel 0)\n    (technology (numberDefinition))\n";
         auto libCell = [&](const std::string& type, const std::vector<LibPort>& ports) {
-            os << "    (cell " << edifName(type) << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType NETLIST)\n        (interface\n";
+            os << "    (cell " << edifName(type)
+               << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType "
+                  "NETLIST)\n        (interface\n";
             for (const LibPort& lp : ports) {
                 const char* dir = lp.out ? "OUTPUT" : "INPUT";
-                if (lp.width == 1) os << "          (port " << edifName(lp.name) << " (direction " << dir << "))\n";
-                else os << "          (port (array (rename " << lp.name << " \"" << lp.name << "[" << (lp.width - 1) << ":0]\") " << lp.width << ") (direction " << dir << "))\n";
+                if (lp.width == 1)
+                    os << "          (port " << edifName(lp.name) << " (direction " << dir
+                       << "))\n";
+                else
+                    os << "          (port (array (rename " << lp.name << " \"" << lp.name << "["
+                       << (lp.width - 1) << ":0]\") " << lp.width << ") (direction " << dir
+                       << "))\n";
             }
             os << "        )\n      )\n    )\n";
         };
         if (nets.count("GND")) libCell("GND", {{"G", true, 1}});
         if (nets.count("VCC")) libCell("VCC", {{"P", true, 1}});
-        for (const auto& kv : lib) if (kv.first != "GND" && kv.first != "VCC") libCell(kv.first, kv.second);
+        for (const auto& kv : lib)
+            if (kv.first != "GND" && kv.first != "VCC") libCell(kv.first, kv.second);
         os << "  )\n";
         os << "  (library DESIGN\n    (edifLevel 0)\n    (technology (numberDefinition))\n";
         if (v3Global.opt.mapOnlyEdifFlat()) {
@@ -3545,29 +4010,49 @@ private:
             writeEdifHier(os, lib, instNames);
         }
         os << "  )\n";
-        os << "  (design " << edifName(m_top) << "\n    (cellRef " << edifName(m_top) << " (libraryRef DESIGN))\n  )\n)\n";
-        UINFO(1, "map: wrote " << path << ": " << m_recs.size() << " instances, " << nets.size() << " nets");
+        os << "  (design " << edifName(m_top) << "\n    (cellRef " << edifName(m_top)
+           << " (libraryRef DESIGN))\n  )\n)\n";
+        UINFO(1, "map: wrote " << path << ": " << m_recs.size() << " instances, " << nets.size()
+                               << " nets");
     }
 
     void writeEdifFlatTop(std::ofstream& os, std::map<std::string, std::vector<std::string>>& nets,
                           const std::vector<std::string>& instNames) {
-        os << "    (cell " << edifName(m_top) << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType NETLIST)\n        (interface\n";
+        os << "    (cell " << edifName(m_top)
+           << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType NETLIST)\n "
+              "       (interface\n";
         for (const PortRec& p : m_portRecs) {
-            const std::string dir = p.dir == "input" ? "INPUT" : p.dir == "output" ? "OUTPUT" : "INOUT";
-            if (p.bits.size() == 1) os << "          (port " << edifName(p.name) << " (direction " << dir << "))\n";
-            else os << "          (port (array (rename " << p.name << " \"" << p.name << "[" << (p.bits.size() - 1) << ":0]\") " << p.bits.size() << ") (direction " << dir << "))\n";
+            const std::string dir = p.dir == "input"    ? "INPUT"
+                                    : p.dir == "output" ? "OUTPUT"
+                                                        : "INOUT";
+            if (p.bits.size() == 1)
+                os << "          (port " << edifName(p.name) << " (direction " << dir << "))\n";
+            else
+                os << "          (port (array (rename " << p.name << " \"" << p.name << "["
+                   << (p.bits.size() - 1) << ":0]\") " << p.bits.size() << ") (direction " << dir
+                   << "))\n";
         }
         os << "        )\n        (contents\n";
-        if (nets.count("GND")) os << "          (instance GND (viewRef VIEW_NETLIST (cellRef GND (libraryRef LIB))))\n";
-        if (nets.count("VCC")) os << "          (instance VCC (viewRef VIEW_NETLIST (cellRef VCC (libraryRef LIB))))\n";
+        if (nets.count("GND"))
+            os << "          (instance GND (viewRef VIEW_NETLIST (cellRef GND (libraryRef "
+                  "LIB))))\n";
+        if (nets.count("VCC"))
+            os << "          (instance VCC (viewRef VIEW_NETLIST (cellRef VCC (libraryRef "
+                  "LIB))))\n";
         for (size_t i = 0; i < m_recs.size(); ++i) {
             const CellRec& r = m_recs[i];
-            os << "          (instance " << instNames[i] << "\n            (viewRef VIEW_NETLIST (cellRef " << edifName(r.type) << " (libraryRef LIB)))";
-            for (const auto& pp : r.params) os << "\n            (property " << edifName(pp.first) << " " << edifValue(pp.second) << ")";
+            os << "          (instance " << instNames[i]
+               << "\n            (viewRef VIEW_NETLIST (cellRef " << edifName(r.type)
+               << " (libraryRef LIB)))";
+            for (const auto& pp : r.params)
+                os << "\n            (property " << edifName(pp.first) << " "
+                   << edifValue(pp.second) << ")";
             os << ")\n";
         }
         for (const auto& kv : nets) {
-            const std::string name = kv.first == "GND" ? "GND_NET" : kv.first == "VCC" ? "VCC_NET" : "n" + kv.first;
+            const std::string name = kv.first == "GND"   ? "GND_NET"
+                                     : kv.first == "VCC" ? "VCC_NET"
+                                                         : "n" + kv.first;
             os << "          (net " << name << " (joined\n";
             if (kv.first == "GND") os << "              (portRef G (instanceRef GND))\n";
             if (kv.first == "VCC") os << "              (portRef P (instanceRef VCC))\n";
@@ -3581,7 +4066,11 @@ private:
     // its endpoints; every module between an endpoint and there gets a port.
     void writeEdifHier(std::ofstream& os, std::map<std::string, std::vector<LibPort>>& lib,
                        const std::vector<std::string>& instNames) {
-        struct Ep { std::string path; std::string ref; bool driver; };
+        struct Ep final {
+            std::string path;
+            std::string ref;
+            bool driver;
+        };
         std::map<std::string, std::vector<Ep>> nets;  // net id -> endpoints
         auto instRefOf = [&](size_t i) {
             const std::string& n = instNames[i];
@@ -3598,13 +4087,20 @@ private:
             for (std::string p = r.path; !p.empty(); p = pathOf(p)) paths.insert(p);
             for (const Conn& c : r.conns) {
                 size_t width = 1;
-                for (const LibPort& lp : lib[r.type]) if (lp.name == c.port) width = lp.width;
+                for (const LibPort& lp : lib[r.type])
+                    if (lp.name == c.port) width = lp.width;
                 for (size_t b = 0; b < c.bits.size(); ++b) {
                     const std::string& bit = c.bits[b];
-                    if (bit.empty() || (bit[0] == '"' && bit != "\"0\"" && bit != "\"1\"")) continue;
+                    if (bit.empty() || (bit[0] == '"' && bit != "\"0\"" && bit != "\"1\""))
+                        continue;
                     // constants are local: each module gets its own GND/VCC
-                    const std::string id = bit == "\"0\"" ? "GND@" + r.path : bit == "\"1\"" ? "VCC@" + r.path : bit;
-                    nets[id].push_back({r.path, "(portRef " + member(c.port, width, b) + " (instanceRef @" + std::to_string(i) + "@))", c.out});
+                    const std::string id = bit == "\"0\""   ? "GND@" + r.path
+                                           : bit == "\"1\"" ? "VCC@" + r.path
+                                                            : bit;
+                    nets[id].push_back({r.path,
+                                        "(portRef " + member(c.port, width, b) + " (instanceRef @"
+                                            + std::to_string(i) + "@))",
+                                        c.out});
                 }
             }
         }
@@ -3613,12 +4109,14 @@ private:
                 const std::string& bit = p.bits[b];
                 const std::string id = bit == "\"0\"" ? "GND@" : bit == "\"1\"" ? "VCC@" : bit;
                 if (bit[0] == '"' && bit != "\"0\"" && bit != "\"1\"") continue;
-                nets[id].push_back({"", "(portRef " + member(p.name, p.bits.size(), b) + ")", p.dir == "input"});
+                nets[id].push_back(
+                    {"", "(portRef " + member(p.name, p.bits.size(), b) + ")", p.dir == "input"});
             }
         }
         // per module: its ports (net id -> output?) and its local nets
         std::map<std::string, std::map<std::string, bool>> ports;
-        std::map<std::string, std::map<std::string, std::vector<std::string>>> local;  // path -> net id -> refs
+        std::map<std::string, std::map<std::string, std::vector<std::string>>>
+            local;  // path -> net id -> refs
         std::map<std::string, std::set<std::string>> consts;  // path -> {GND, VCC}
         for (auto& kv : nets) {
             const std::string& id = kv.first;
@@ -3627,7 +4125,11 @@ private:
             for (const Ep& e : kv.second) lca = commonPath(lca, e.path);
             std::string drvPath;
             bool haveDrv = false;
-            for (const Ep& e : kv.second) if (e.driver) { drvPath = e.path; haveDrv = true; }
+            for (const Ep& e : kv.second)
+                if (e.driver) {
+                    drvPath = e.path;
+                    haveDrv = true;
+                }
             if (isConst) {
                 const std::string where = id.substr(4);
                 consts[where].insert(id.substr(0, 3));
@@ -3638,13 +4140,20 @@ private:
                 local[e.path][id].push_back(e.ref);
                 // ports from the endpoint up to (not including) the LCA
                 for (std::string p = e.path; p != lca && !p.empty(); p = pathOf(p)) {
-                    const bool driverInside = haveDrv && (drvPath == p || drvPath.compare(0, p.size() + 1, p + ".") == 0);
+                    const bool driverInside
+                        = haveDrv
+                          && (drvPath == p || drvPath.compare(0, p.size() + 1, p + ".") == 0);
                     ports[p][id] = driverInside;
                 }
             }
         }
-        auto cellName = [&](const std::string& p) { return p.empty() ? edifName(m_top) : edifName("h_" + sanitize(p)); };
-        auto lastName = [&](const std::string& p) { const size_t d = p.rfind('.'); return sanitize(d == std::string::npos ? p : p.substr(d + 1)); };
+        auto cellName = [&](const std::string& p) {
+            return p.empty() ? edifName(m_top) : edifName("h_" + sanitize(p));
+        };
+        auto lastName = [&](const std::string& p) {
+            const size_t d = p.rfind('.');
+            return sanitize(d == std::string::npos ? p : p.substr(d + 1));
+        };
         std::vector<std::string> order(paths.begin(), paths.end());
         std::sort(order.begin(), order.end(), [](const std::string& a, const std::string& b) {
             const auto da = std::count(a.begin(), a.end(), '.') + (a.empty() ? -1 : 0);
@@ -3652,7 +4161,8 @@ private:
             return da != db ? da > db : a < b;
         });
         std::map<std::string, std::vector<std::string>> children;
-        for (const std::string& p : paths) if (!p.empty()) children[pathOf(p)].push_back(p);
+        for (const std::string& p : paths)
+            if (!p.empty()) children[pathOf(p)].push_back(p);
         std::map<std::string, std::vector<size_t>> prims;
         for (size_t i = 0; i < m_recs.size(); ++i) prims[m_recs[i].path].push_back(i);
         // instance names inside each module: the Vivado-style leaf when there
@@ -3670,35 +4180,59 @@ private:
             }
         }
         for (const std::string& p : order) {
-            os << "    (cell " << cellName(p) << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType NETLIST)\n        (interface\n";
+            os << "    (cell " << cellName(p)
+               << "\n      (cellType GENERIC)\n      (view VIEW_NETLIST\n        (viewType "
+                  "NETLIST)\n        (interface\n";
             if (p.empty()) {
                 for (const PortRec& pr : m_portRecs) {
-                    const std::string dir = pr.dir == "input" ? "INPUT" : pr.dir == "output" ? "OUTPUT" : "INOUT";
-                    if (pr.bits.size() == 1) os << "          (port " << edifName(pr.name) << " (direction " << dir << "))\n";
-                    else os << "          (port (array (rename " << pr.name << " \"" << pr.name << "[" << (pr.bits.size() - 1) << ":0]\") " << pr.bits.size() << ") (direction " << dir << "))\n";
+                    const std::string dir = pr.dir == "input"    ? "INPUT"
+                                            : pr.dir == "output" ? "OUTPUT"
+                                                                 : "INOUT";
+                    if (pr.bits.size() == 1)
+                        os << "          (port " << edifName(pr.name) << " (direction " << dir
+                           << "))\n";
+                    else
+                        os << "          (port (array (rename " << pr.name << " \"" << pr.name
+                           << "[" << (pr.bits.size() - 1) << ":0]\") " << pr.bits.size()
+                           << ") (direction " << dir << "))\n";
                 }
             } else {
-                for (const auto& pp : ports[p]) os << "          (port p" << pp.first << " (direction " << (pp.second ? "OUTPUT" : "INPUT") << "))\n";
+                for (const auto& pp : ports[p])
+                    os << "          (port p" << pp.first << " (direction "
+                       << (pp.second ? "OUTPUT" : "INPUT") << "))\n";
             }
             os << "        )\n        (contents\n";
-            for (const std::string& k : consts[p]) os << "          (instance " << k << " (viewRef VIEW_NETLIST (cellRef " << k << " (libraryRef LIB))))\n";
+            for (const std::string& k : consts[p])
+                os << "          (instance " << k << " (viewRef VIEW_NETLIST (cellRef " << k
+                   << " (libraryRef LIB))))\n";
             for (const std::string& ch : children[p]) {
-                os << "          (instance " << edifName(lastName(ch)) << " (viewRef VIEW_NETLIST (cellRef " << cellName(ch) << " (libraryRef DESIGN))))\n";
+                os << "          (instance " << edifName(lastName(ch))
+                   << " (viewRef VIEW_NETLIST (cellRef " << cellName(ch)
+                   << " (libraryRef DESIGN))))\n";
             }
             for (const size_t i : prims[p]) {
                 const CellRec& r = m_recs[i];
-                os << "          (instance " << hInst[i] << "\n            (viewRef VIEW_NETLIST (cellRef " << edifName(r.type) << " (libraryRef LIB)))";
-                for (const auto& pp : r.params) os << "\n            (property " << edifName(pp.first) << " " << edifValue(pp.second) << ")";
+                os << "          (instance " << hInst[i]
+                   << "\n            (viewRef VIEW_NETLIST (cellRef " << edifName(r.type)
+                   << " (libraryRef LIB)))";
+                for (const auto& pp : r.params)
+                    os << "\n            (property " << edifName(pp.first) << " "
+                       << edifValue(pp.second) << ")";
                 os << ")\n";
             }
             // nets in this module: local endpoints, child ports carrying the net, our own port
             std::map<std::string, std::vector<std::string>> here = local[p];
             for (const std::string& ch : children[p]) {
                 const std::string chInst = edifName(lastName(ch));
-                const std::string chRef = chInst[0] == '(' ? chInst.substr(8, chInst.find(' ', 8) - 8) : chInst;
-                for (const auto& pp : ports[ch]) here[pp.first].push_back("(portRef p" + pp.first + " (instanceRef " + chRef + "))");
+                const std::string chRef
+                    = chInst[0] == '(' ? chInst.substr(8, chInst.find(' ', 8) - 8) : chInst;
+                for (const auto& pp : ports[ch])
+                    here[pp.first].push_back("(portRef p" + pp.first + " (instanceRef " + chRef
+                                             + "))");
             }
-            if (!p.empty()) for (const auto& pp : ports[p]) here[pp.first].push_back("(portRef p" + pp.first + ")");
+            if (!p.empty())
+                for (const auto& pp : ports[p])
+                    here[pp.first].push_back("(portRef p" + pp.first + ")");
             std::set<std::string> usedNets;
             for (const auto& kv : here) {
                 const std::string& id = kv.first;
@@ -3711,8 +4245,14 @@ private:
                     }
                 }
                 std::string src;
-                if (id.rfind("GND@", 0) == 0) { name = "GND_NET"; src = "(portRef G (instanceRef GND))"; }
-                if (id.rfind("VCC@", 0) == 0) { name = "VCC_NET"; src = "(portRef P (instanceRef VCC))"; }
+                if (id.rfind("GND@", 0) == 0) {
+                    name = "GND_NET";
+                    src = "(portRef G (instanceRef GND))";
+                }
+                if (id.rfind("VCC@", 0) == 0) {
+                    name = "VCC_NET";
+                    src = "(portRef P (instanceRef VCC))";
+                }
                 os << "          (net " << name << " (joined\n";
                 if (!src.empty()) os << "              " << src << "\n";
                 for (std::string r : kv.second) {
@@ -3747,11 +4287,16 @@ private:
             if (cp != std::string::npos) line.resize(cp);
             std::istringstream ls{line};
             while (ls >> tok) {
-                if (tok[0] == '@') { addr = std::stoul(tok.substr(1), nullptr, 16); continue; }
+                if (tok[0] == '@') {
+                    addr = std::stoul(tok.substr(1), nullptr, 16);
+                    continue;
+                }
                 uint64_t v = 0;
                 for (const char ch : tok) {
                     if (ch == '_') continue;
-                    const int x = std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0' : std::tolower(ch) - 'a' + 10;
+                    const int x = std::isdigit(static_cast<unsigned char>(ch))
+                                      ? ch - '0'
+                                      : std::tolower(ch) - 'a' + 10;
                     v = (v << 4) | static_cast<uint64_t>(x & 15);
                 }
                 if (words.size() <= addr) words.resize(addr + 1, 0);
@@ -3761,16 +4306,18 @@ private:
         return true;
     }
     static std::string paramStr(const Design::Cell& c, const char* name) {
-        for (const auto& p : c.params) if (p.first == name) return p.second;
+        for (const auto& p : c.params)
+            if (p.first == name) return p.second;
         return "";
     }
     static int paramOf(const Design::Cell& c, const char* name, int dflt) {
-        for (const auto& p : c.params) if (p.first == name) return std::atoi(p.second.c_str());
+        for (const auto& p : c.params)
+            if (p.first == name) return std::atoi(p.second.c_str());
         return dflt;
     }
     // A memory cell's pins as nets: input pins through the AIG's primary
     // outputs, output pins as the nets of their free literals
-    struct MemPins {
+    struct MemPins final {
         std::map<std::string, std::vector<std::string>> ins, outs;
         std::vector<std::string> weBytes;  // per data byte: its write enable (byte-lane memories)
         std::vector<uint64_t> image;  // initial contents, when not the cell's INIT_FILE
@@ -3780,7 +4327,8 @@ private:
         MemPins p;
         for (size_t i = 0; i < c.ins.size(); ++i) {
             std::vector<std::string> nets;
-            for (size_t b = 0; b < c.ins[i].second.size(); ++b) nets.push_back(m_poNet[inPo[i] + b]);
+            for (size_t b = 0; b < c.ins[i].second.size(); ++b)
+                nets.push_back(m_poNet[inPo[i] + b]);
             p.ins[c.ins[i].first] = nets;
         }
         for (const auto& o : c.outs) {
@@ -3809,7 +4357,9 @@ private:
         }
         const size_t at = stem.rfind("_lane");
         if (at == std::string::npos || stem.substr(at) != "_lane0") return {};
-        if (c0.type != "memory_1w1r_sync" && c0.type != "memory_1w2r_sync" && c0.type != "memory_sp_sync") return {};
+        if (c0.type != "memory_1w1r_sync" && c0.type != "memory_1w2r_sync"
+            && c0.type != "memory_sp_sync")
+            return {};
         const std::string base = stem.substr(0, at);
         std::vector<size_t> lanes;
         for (size_t k = 0;; ++k) {
@@ -3823,17 +4373,21 @@ private:
         if (lanes.size() < 2) return {};
         const int aw = paramOf(c0, "ADDR_WIDTH", 1);
         const int depth = paramOf(c0, "DEPTH", 1 << aw);
-        if (depth > 1024) return {};  // x36 tiles hold 1K words; deeper lanes need a tile each anyway
+        if (depth > 1024)
+            return {};  // x36 tiles hold 1K words; deeper lanes need a tile each anyway
         std::vector<MemPins> lp;
         int total = 0;
         bool anyImage = false;
         for (const size_t cj : lanes) {
             const Design::Cell& c = m_d.cells2[cj];
-            if (c.type != c0.type || paramOf(c, "ADDR_WIDTH", 1) != aw || paramOf(c, "DEPTH", 1 << aw) != depth) return {};
+            if (c.type != c0.type || paramOf(c, "ADDR_WIDTH", 1) != aw
+                || paramOf(c, "DEPTH", 1 << aw) != depth)
+                return {};
             const int w = paramOf(c, "DATA_WIDTH", 1);
             if (total % 8 != 0) return {};  // every lane but the last starts a byte
             total += w;
-            for (const auto& prm : c.params) if (prm.first == "INIT_FILE" && prm.second.size() > 2) anyImage = true;
+            for (const auto& prm : c.params)
+                if (prm.first == "INIT_FILE" && prm.second.size() > 2) anyImage = true;
             lp.push_back(memPins(c, m_cellInPo[cj]));
         }
         if (total > 32) return {};
@@ -3864,73 +4418,91 @@ private:
             for (int b = lo; b < lo + w; b += 8) pins.weBytes.push_back(we);
             weAny = orNet(weAny, we);
             const std::vector<std::string>& wd = lp[k].ins["wdata"];
-            for (int b = 0; b < w; ++b) pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b] : "\"0\"");
+            for (int b = 0; b < w; ++b)
+                pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b] : "\"0\"");
             for (auto& kv : pins.outs) {
                 const std::vector<std::string>& rd = lp[k].outs[kv.first];
-                for (int b = 0; b < w; ++b) kv.second.push_back(b < static_cast<int>(rd.size()) ? rd[b] : newNet());
+                for (int b = 0; b < w; ++b)
+                    kv.second.push_back(b < static_cast<int>(rd.size()) ? rd[b] : newNet());
             }
             if (anyImage) {
                 std::vector<uint64_t> words;
                 for (const auto& prm : c.params) {
                     if (prm.first != "INIT_FILE" || prm.second.size() <= 2) continue;
                     const std::string f = prm.second.substr(1, prm.second.size() - 2);
-                    if (!readHex(f, words)) v3error("Synthesis: memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
+                    if (!readHex(f, words))
+                        v3error("Synthesis: memory " + c.name + ": INIT_FILE " + f
+                                + " not readable; contents left 0");
                 }
                 if (pins.image.size() < words.size()) pins.image.resize(words.size(), 0);
-                for (size_t i = 0; i < words.size(); ++i) pins.image[i] |= (words[i] & ((w >= 64 ? 0ULL : (1ULL << w)) - 1)) << lo;
+                for (size_t i = 0; i < words.size(); ++i)
+                    pins.image[i] |= (words[i] & ((w >= 64 ? 0ULL : (1ULL << w)) - 1)) << lo;
                 pins.hasImage = true;
             }
             lo += w;
         }
         pins.ins["we"] = {weAny};
         if (v3Global.opt.structOnlyReport())
-            std::cerr << "%Info: map-mem: " << lanes.size() << " byte lanes of " << base << " merged into one block RAM\n";
+            std::cerr << "%Info: map-mem: " << lanes.size() << " byte lanes of " << base
+                      << " merged into one block RAM\n";
         return lanes;
     }
-    void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) { emitMemory(c, memPins(c, inPo)); }
+    void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) {
+        emitMemory(c, memPins(c, inPo));
+    }
     static std::string jsonStr(const std::string& v) {
         std::string o = "\"";
         for (const char ch : v) {
-            if (ch == '"' || ch == '\\') { o += '\\'; o += ch; }
-            else if (static_cast<unsigned char>(ch) < 0x20) o += ' ';
-            else o += ch;
+            if (ch == '"' || ch == '\\') {
+                o += '\\';
+                o += ch;
+            } else if (static_cast<unsigned char>(ch) < 0x20)
+                o += ' ';
+            else
+                o += ch;
         }
         return o + "\"";
     }
-    // The file $readmemh named, as readHex finds it: as given, else under $MEM_INIT_DIR; made absolute so that a tool
-    // run from another directory finds the same file
+    // The file $readmemh named, as readHex finds it: as given, else under $MEM_INIT_DIR; made
+    // absolute so that a tool run from another directory finds the same file
     static std::string resolveInitFile(const std::string& f) {
         if (f.empty()) return f;
         std::vector<std::string> cands{f};
         if (const char* d = std::getenv("MEM_INIT_DIR")) cands.push_back(std::string(d) + "/" + f);
         for (const std::string& cand : cands) {
             if (!std::ifstream{cand}) continue;
-            return V3Os::filenameRealPath(cand);   // realpath, or _fullpath on Windows
+            return V3Os::filenameRealPath(cand);  // realpath, or _fullpath on Windows
         }
         return f;
     }
-    // One memory of the manifest.  The cells of the memory are named <cell>_t<lane tile>[_d<depth block>]: lane tile t holds
-    // data bits [t*tw, t*tw+tw) of every word (the last one fewer: width), depth block d the words [d*words_per_tile,
-    // (d+1)*words_per_tile).  Word k of a block is in bits [k*tw, k*tw+tw) of the block RAM's INIT_xx lines (the data layout
-    // of UG473 for a port of tw data bits), which is what a tool needs to place a new image into a placed design.
-    void recordMemInit(const Design::Cell& c, const std::string& initFile, const char* prim, int dw, int depth, int tw,
-                       int ntiles, int nblocks, int wordsPerTile, bool cascade) {
+    // One memory of the manifest.  The cells of the memory are named <cell>_t<lane tile>[_d<depth
+    // block>]: lane tile t holds data bits [t*tw, t*tw+tw) of every word (the last one fewer:
+    // width), depth block d the words [d*words_per_tile, (d+1)*words_per_tile).  Word k of a block
+    // is in bits [k*tw, k*tw+tw) of the block RAM's INIT_xx lines (the data layout of UG473 for a
+    // port of tw data bits), which is what a tool needs to place a new image into a placed design.
+    void recordMemInit(const Design::Cell& c, const std::string& initFile, const char* prim,
+                       int dw, int depth, int tw, int ntiles, int nblocks, int wordsPerTile,
+                       bool cascade) {
         std::ostringstream o;
         const std::string cellBase = sanitize(c.name);
-        o << "    {\"name\": " << jsonStr(c.name) << ", \"type\": " << jsonStr(c.type) << ", \"kind\": \"bram\""
+        o << "    {\"name\": " << jsonStr(c.name) << ", \"type\": " << jsonStr(c.type)
+          << ", \"kind\": \"bram\""
           << ", \"primitive\": " << jsonStr(prim) << ", \"init_file\": " << jsonStr(initFile)
-          << ", \"init_path\": " << jsonStr(resolveInitFile(initFile)) << ", \"width\": " << dw << ", \"depth\": " << depth
-          << ", \"lane_bits\": " << tw << ", \"lanes\": " << ntiles << ", \"blocks\": " << nblocks
-          << ", \"words_per_block\": " << wordsPerTile << ", \"cascade\": " << (cascade ? "true" : "false") << ",\n"
+          << ", \"init_path\": " << jsonStr(resolveInitFile(initFile)) << ", \"width\": " << dw
+          << ", \"depth\": " << depth << ", \"lane_bits\": " << tw << ", \"lanes\": " << ntiles
+          << ", \"blocks\": " << nblocks << ", \"words_per_block\": " << wordsPerTile
+          << ", \"cascade\": " << (cascade ? "true" : "false") << ",\n"
           << "     \"cells\": [";
         bool first = true;
         for (int t = 0; t < ntiles; ++t) {
             for (int d = 0; d < nblocks; ++d) {
                 const int lo = t * tw;
                 o << (first ? "\n" : ",\n") << "       {\"cell\": "
-                  << jsonStr(cellBase + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : ""))
+                  << jsonStr(cellBase + "_t" + std::to_string(t)
+                             + (nblocks > 1 ? "_d" + std::to_string(d) : ""))
                   << ", \"lane\": " << t << ", \"block\": " << d << ", \"bit_lo\": " << lo
-                  << ", \"bits\": " << std::min(tw, dw - lo) << ", \"word_lo\": " << d * wordsPerTile << "}";
+                  << ", \"bits\": " << std::min(tw, dw - lo)
+                  << ", \"word_lo\": " << d * wordsPerTile << "}";
                 first = false;
             }
         }
@@ -3939,8 +4511,10 @@ private:
     }
     void writeMemInit(const std::string& filename) {
         std::ofstream os{filename};
-        os << "{\n  \"creator\": \"verilator --map-only-meminit\",\n  \"top\": " << jsonStr(m_top) << ",\n  \"memories\": [\n";
-        for (size_t i = 0; i < m_memInit.size(); ++i) os << m_memInit[i] << (i + 1 < m_memInit.size() ? ",\n" : "\n");
+        os << "{\n  \"creator\": \"verilator --map-only-meminit\",\n  \"top\": " << jsonStr(m_top)
+           << ",\n  \"memories\": [\n";
+        for (size_t i = 0; i < m_memInit.size(); ++i)
+            os << m_memInit[i] << (i + 1 < m_memInit.size() ? ",\n" : "\n");
         os << "  ]\n}\n";
     }
     void emitMemory(const Design::Cell& c, const MemPins& pins) {
@@ -3966,11 +4540,15 @@ private:
             const auto it = pins.outs.find(name);
             return it == pins.outs.end() ? std::vector<std::string>{} : it->second;
         };
-        auto bit0 = [](const std::vector<std::string>& v, const char* dflt) { return v.empty() ? std::string(dflt) : v[0]; };
+        auto bit0 = [](const std::vector<std::string>& v, const char* dflt) {
+            return v.empty() ? std::string(dflt) : v[0];
+        };
         const bool sync = c.type.find("_sync") != std::string::npos;
         const bool tdp = c.type == "memory_tdp_sync";
         if (c.type == "memory_2w2r_rf" || c.type == "memory_2w2r") {
-            v3error("Synthesis: " << "memory " + c.name + ": two write ports with independent read addresses are not a block RAM; dropped");
+            v3error("Synthesis: " << "memory " + c.name
+                                         + ": two write ports with independent read addresses are "
+                                           "not a block RAM; dropped");
             return;
         }
         if (!sync) {
@@ -3979,13 +4557,14 @@ private:
         }
         // A small synchronous-read memory (up to 64 words, 512 bits) is
         // distributed RAM with its read registers outside, not a block RAM
-        if (!tdp && depth <= 64 && depth * dw <= 512 && !pins.hasImage && paramStr(c, "INIT_FILE").size() <= 2) {
+        if (!tdp && depth <= 64 && depth * dw <= 512 && !pins.hasImage
+            && paramStr(c, "INIT_FILE").size() <= 2) {
             emitLutram(c, pins, true);
             return;
         }
         // The two tile ports.  A: write (+ read 1 with NO_CHANGE when two reads);
         // B: read (2, or 1 for a 1w1r); a TDP memory maps port for port.
-        struct Port {
+        struct Port final {
             std::vector<std::string> addr, din, dout;
             std::string clk, en, we;
             const char* mode = "READ_FIRST";
@@ -4000,17 +4579,21 @@ private:
                 P[k].addr = pinNets(("addr" + sfx).c_str());
                 P[k].din = pinNets(("wdata" + sfx).c_str());
                 P[k].dout = outNets(("rdata" + sfx).c_str());
-                P[k].mode = paramOf(c, ("READ_FIRST" + sfx).c_str(), 0) ? "READ_FIRST" : "NO_CHANGE";
+                P[k].mode
+                    = paramOf(c, ("READ_FIRST" + sfx).c_str(), 0) ? "READ_FIRST" : "NO_CHANGE";
             }
         } else {
             const std::string clk = bit0(pinNets("clk"), "\"0\"");
-            std::vector<std::string> we = pinNets("we"), waddr = pinNets("waddr"), wdata = pinNets("wdata");
+            std::vector<std::string> we = pinNets("we"), waddr = pinNets("waddr"),
+                                     wdata = pinNets("wdata");
             if (c.type == "memory_sp") waddr = pinNets("addr");
             const bool is1w1r = c.type == "memory_1w1r_sync";
             std::vector<std::string> re1 = pinNets(is1w1r ? "re" : "re1");
-            std::vector<std::string> ra1 = pinNets(is1w1r ? "raddr" : (c.type == "memory_sp" ? "addr" : "raddr1"));
+            std::vector<std::string> ra1
+                = pinNets(is1w1r ? "raddr" : (c.type == "memory_sp" ? "addr" : "raddr1"));
             std::vector<std::string> re2 = pinNets("re2"), ra2 = pinNets("raddr2");
-            std::vector<std::string> rd1 = outNets(is1w1r || c.type == "memory_sp" ? "rdata" : "rdata1");
+            std::vector<std::string> rd1
+                = outNets(is1w1r || c.type == "memory_sp" ? "rdata" : "rdata1");
             std::vector<std::string> rd2 = outNets("rdata2");
             const bool twoReads = !rd2.empty();
             const std::string weBit = bit0(we, "\"0\"");
@@ -4031,8 +4614,11 @@ private:
                 const bool firstShares = share1;
                 // HELDn: V3EmitStruct holds that read's output outside the block RAM after a
                 // write-only cycle, so the port may load in every write
-                if ((firstShares ? re1Bit : re2Bit) != "\"1\"" && !paramOf(c, firstShares ? "HELD1" : "HELD2", 0)) {
-                    v3error("Synthesis: memory " + c.name + ": a read sharing the write's port must have no enable; its output would change in every write");
+                if ((firstShares ? re1Bit : re2Bit) != "\"1\""
+                    && !paramOf(c, firstShares ? "HELD1" : "HELD2", 0)) {
+                    v3error("Synthesis: memory " + c.name
+                            + ": a read sharing the write's port must have no enable; its output "
+                              "would change in every write");
                     return;
                 }
                 P[0].en = orNet(weBit, firstShares ? re1Bit : re2Bit);
@@ -4045,7 +4631,10 @@ private:
             } else if (twoReads) {
                 // Two reads at their own addresses and a write need three ports: a read would
                 // be lost in every write cycle.  V3EmitStruct replicates these into 1w1r copies.
-                v3error("Synthesis: memory " + c.name + ": a write and two reads at independent addresses do not fit one block RAM");
+                // so reaching here is an internal inconsistency between the two passes.
+                v3fatalSrc("Synthesis: memory " + c.name
+                           + ": a write and two reads at independent addresses do not fit one"
+                             " block RAM");
                 return;
             } else {
                 P[0].en = weBit;
@@ -4064,7 +4653,10 @@ private:
         int tw = 1;
         const char* prim = "RAMB36E1";
         for (const int cand : {32, 8, 1}) {
-            if (32768 / cand >= depth) { tw = cand; break; }
+            if (32768 / cand >= depth) {
+                tw = cand;
+                break;
+            }
         }
         int nblocks = 1;
         if (depth > 32768) {
@@ -4078,11 +4670,13 @@ private:
         // address bit 15 to both picks the half, only the UPPER's DO is read,
         // and the select logic and output mux work on pairs, halving the mux
         const bool cascade = v3Global.opt.mapOnlyBramCascade() && nblocks > 1;
-        if (cascade && (nblocks & 1)) ++nblocks;  // the last pair's UPPER is unused, its contents 0
+        if (cascade && (nblocks & 1))
+            ++nblocks;  // the last pair's UPPER is unused, its contents 0
         const int units = cascade ? nblocks / 2 : nblocks;  // what the output mux chooses between
         const int sel0 = cascade ? 1 : 0;  // the first address bit above a unit
         const bool b36 = std::string(prim) == "RAMB36E1";
-        const int addrTotal = b36 ? 16 : 14, diW = b36 ? 32 : 16, dipW = b36 ? 4 : 2, weaW = b36 ? 4 : 2, webweW = b36 ? 8 : 4;
+        const int addrTotal = b36 ? 16 : 14, diW = b36 ? 32 : 16, dipW = b36 ? 4 : 2,
+                  weaW = b36 ? 4 : 2, webweW = b36 ? 8 : 4;
         int shift = 0;
         while ((1 << shift) < tw) ++shift;
         const int mw = tw == 8 ? 9 : tw == 16 ? 18 : tw == 32 ? 36 : tw;
@@ -4092,18 +4686,28 @@ private:
         auto addrVec = [&](const std::vector<std::string>& a) {
             std::vector<std::string> v;
             for (int i = 0; i < shift; ++i) v.push_back("\"0\"");
-            for (int i = 0; i < wordAddrW; ++i) v.push_back(i < static_cast<int>(a.size()) ? a[i] : "\"0\"");
-            // bit 15: unused (tied high) on a RAMB36 of its own, the half select of a cascaded pair
-            if (b36) v.push_back(!cascade ? "\"1\"" : wordAddrW < static_cast<int>(a.size()) ? a[wordAddrW] : "\"0\"");
+            for (int i = 0; i < wordAddrW; ++i)
+                v.push_back(i < static_cast<int>(a.size()) ? a[i] : "\"0\"");
+            // bit 15: unused (tied high) on a RAMB36 of its own, the half select of a cascaded
+            // pair
+            if (b36)
+                v.push_back(!cascade                                 ? "\"1\""
+                            : wordAddrW < static_cast<int>(a.size()) ? a[wordAddrW]
+                                                                     : "\"0\"");
             return v;
         };
         auto rep = [&](const std::string& bit, int n) { return std::vector<std::string>(n, bit); };
         auto zeros = [&](int n) { return rep("\"0\"", n); };
         // Per port: block enables (en & hi == d) and the registered block select
-        struct Sel { std::vector<std::string> blockEn, regHi; };
+        struct Sel final {
+            std::vector<std::string> blockEn, regHi;
+        };
         Sel S[2];
         for (int k = 0; k < 2; ++k) {
-            if (units == 1) { S[k].blockEn = {P[k].en}; continue; }
+            if (units == 1) {
+                S[k].blockEn = {P[k].en};
+                continue;
+            }
             std::vector<std::string> hi;
             for (int i = 0; i < hiW; ++i) {
                 const size_t idx = wordAddrW + i;
@@ -4111,13 +4715,17 @@ private:
             }
             for (int u = 0; u < units; ++u) {
                 std::string en = P[k].en;
-                for (int i = sel0; i < hiW; ++i) en = andNet(en, (u >> (i - sel0)) & 1 ? hi[i] : notNet(hi[i]));
+                for (int i = sel0; i < hiW; ++i)
+                    en = andNet(en, (u >> (i - sel0)) & 1 ? hi[i] : notNet(hi[i]));
                 S[k].blockEn.push_back(en);
             }
             for (int i = sel0; i < hiW; ++i) {
                 const std::string q = newNet();
                 cell("FDRE", "bsel_" + std::to_string(m_ncells), {{"INIT", "\"0\""}},
-                     {{"C", "[" + P[k].clk + "]"}, {"CE", "[" + P[k].en + "]"}, {"D", "[" + hi[i] + "]"}, {"R", "[\"0\"]"}},
+                     {{"C", "[" + P[k].clk + "]"},
+                      {"CE", "[" + P[k].en + "]"},
+                      {"D", "[" + hi[i] + "]"},
+                      {"R", "[\"0\"]"}},
                      {{"Q", "[" + q + "]"}});
                 S[k].regHi.push_back(q);
             }
@@ -4134,11 +4742,16 @@ private:
             if (f.size() >= 2 && f.front() == '"') f = f.substr(1, f.size() - 2);
             if (f.empty()) continue;
             initFile = f;
-            if (!readHex(f, image)) v3error("Synthesis: " << "memory " + c.name + ": INIT_FILE " + f + " not readable; contents left 0");
+            if (!readHex(f, image))
+                v3error("Synthesis: " << "memory " + c.name + ": INIT_FILE " + f
+                                             + " not readable; contents left 0");
         }
         const int wordsPerTile = 32768 / tw;
-        if (!v3Global.opt.mapOnlyMemInit().empty()) recordMemInit(c, initFile, prim, dw, depth, tw, ntiles, nblocks, wordsPerTile, cascade);
-        auto initParams = [&](int lo, int sw, int d, std::vector<std::pair<std::string, std::string>>& params) {
+        if (!v3Global.opt.mapOnlyMemInit().empty())
+            recordMemInit(c, initFile, prim, dw, depth, tw, ntiles, nblocks, wordsPerTile,
+                          cascade);
+        auto initParams = [&](int lo, int sw, int d,
+                              std::vector<std::pair<std::string, std::string>>& params) {
             if (image.empty()) return;
             for (int line = 0; line < 128; ++line) {
                 std::string bits(256, '0');  // MSB first
@@ -4150,16 +4763,20 @@ private:
                     if (i >= sw) continue;
                     const size_t w = static_cast<size_t>(d) * wordsPerTile + k;
                     if (w >= image.size()) continue;
-                    if ((image[w] >> (lo + i)) & 1) { bits[255 - j] = '1'; any = true; }
+                    if ((image[w] >> (lo + i)) & 1) {
+                        bits[255 - j] = '1';
+                        any = true;
+                    }
                 }
                 if (!any) continue;
                 char name[16];
-                std::snprintf(name, sizeof name, "INIT_%02X", line);
+                VL_SNPRINTF(name, sizeof name, "INIT_%02X", line);
                 params.emplace_back(name, "\"" + bits + "\"");
             }
         };
         // block outputs per port per data bit, muxed afterwards when banked
-        std::vector<std::vector<std::vector<std::string>>> blkOut(2, std::vector<std::vector<std::string>>(dw));
+        std::vector<std::vector<std::vector<std::string>>> blkOut(
+            2, std::vector<std::vector<std::string>>(dw));
         for (int t = 0; t < ntiles; ++t) {
             const int lo = t * tw;
             const int sw = std::min(tw, dw - lo);
@@ -4170,7 +4787,9 @@ private:
                 std::vector<std::string> di[2], dout[2], dop[2];
                 for (int k = 0; k < 2; ++k) {
                     di[k] = zeros(diW);
-                    for (int b = 0; b < sw; ++b) di[k][b] = lo + b < static_cast<int>(P[k].din.size()) ? P[k].din[lo + b] : "\"0\"";
+                    for (int b = 0; b < sw; ++b)
+                        di[k][b] = lo + b < static_cast<int>(P[k].din.size()) ? P[k].din[lo + b]
+                                                                              : "\"0\"";
                     for (int b = 0; b < diW; ++b) {
                         std::string n;
                         if (b < sw && lo + b < static_cast<int>(P[k].dout.size()) && !lower) {
@@ -4183,28 +4802,46 @@ private:
                     }
                     for (int b = 0; b < dipW; ++b) dop[k].push_back(newNet());
                 }
-                std::vector<std::pair<std::string, std::string>> params = {
-                    {"RAM_MODE", "\"TDP\""}, {"WRITE_MODE_A", std::string("\"") + P[0].mode + "\""}, {"WRITE_MODE_B", std::string("\"") + P[1].mode + "\""},
-                    {"READ_WIDTH_A", binParam(mw)}, {"WRITE_WIDTH_A", binParam(mw)},
-                    {"READ_WIDTH_B", binParam(mw)}, {"WRITE_WIDTH_B", binParam(tdp || cascade ? mw : 0)},  // a cascaded pair is x1 on every port
-                    {"DOA_REG", binParam(0)}, {"DOB_REG", binParam(0)}};
+                std::vector<std::pair<std::string, std::string>> params
+                    = {{"RAM_MODE", "\"TDP\""},
+                       {"WRITE_MODE_A", std::string("\"") + P[0].mode + "\""},
+                       {"WRITE_MODE_B", std::string("\"") + P[1].mode + "\""},
+                       {"READ_WIDTH_A", binParam(mw)},
+                       {"WRITE_WIDTH_A", binParam(mw)},
+                       {"READ_WIDTH_B", binParam(mw)},
+                       {"WRITE_WIDTH_B",
+                        binParam(tdp || cascade ? mw : 0)},  // a cascaded pair is x1 on every port
+                       {"DOA_REG", binParam(0)},
+                       {"DOB_REG", binParam(0)}};
                 initParams(lo, sw, d, params);
                 if (cascade) {
                     params.emplace_back("RAM_EXTENSION_A", lower ? "\"LOWER\"" : "\"UPPER\"");
                     params.emplace_back("RAM_EXTENSION_B", lower ? "\"LOWER\"" : "\"UPPER\"");
                 }
-                std::vector<std::pair<std::string, std::string>> ins = {
-                    {"CLKARDCLK", "[" + P[0].clk + "]"}, {"CLKBWRCLK", "[" + P[1].clk + "]"},
-                    {"ENARDEN", "[" + S[0].blockEn[u] + "]"}, {"ENBWREN", "[" + S[1].blockEn[u] + "]"},
-                    {"REGCEAREGCE", "[\"0\"]"}, {"REGCEB", "[\"0\"]"},
-                    {"RSTRAMARSTRAM", "[\"0\"]"}, {"RSTRAMB", "[\"0\"]"}, {"RSTREGARSTREG", "[\"0\"]"}, {"RSTREGB", "[\"0\"]"},
-                    {"WEA", bitsJson(weaBits(P[0].we, pins.weBytes, lo, sw, tw, weaW))}, {"WEBWE", bitsJson(rep(P[1].we, webweW))},
-                    {"ADDRARDADDR", bitsJson(addrVec(P[0].addr))},
-                    {"ADDRBWRADDR", bitsJson(addrVec(P[1].addr))},
-                    {"DIADI", bitsJson(di[0])}, {"DIPADIP", bitsJson(zeros(dipW))},
-                    {"DIBDI", bitsJson(di[1])}, {"DIPBDIP", bitsJson(zeros(dipW))}};
-                std::vector<std::pair<std::string, std::string>> outs = {
-                    {"DOADO", bitsJson(dout[0])}, {"DOPADOP", bitsJson(dop[0])}, {"DOBDO", bitsJson(dout[1])}, {"DOPBDOP", bitsJson(dop[1])}};
+                std::vector<std::pair<std::string, std::string>> ins
+                    = {{"CLKARDCLK", "[" + P[0].clk + "]"},
+                       {"CLKBWRCLK", "[" + P[1].clk + "]"},
+                       {"ENARDEN", "[" + S[0].blockEn[u] + "]"},
+                       {"ENBWREN", "[" + S[1].blockEn[u] + "]"},
+                       {"REGCEAREGCE", "[\"0\"]"},
+                       {"REGCEB", "[\"0\"]"},
+                       {"RSTRAMARSTRAM", "[\"0\"]"},
+                       {"RSTRAMB", "[\"0\"]"},
+                       {"RSTREGARSTREG", "[\"0\"]"},
+                       {"RSTREGB", "[\"0\"]"},
+                       {"WEA", bitsJson(weaBits(P[0].we, pins.weBytes, lo, sw, tw, weaW))},
+                       {"WEBWE", bitsJson(rep(P[1].we, webweW))},
+                       {"ADDRARDADDR", bitsJson(addrVec(P[0].addr))},
+                       {"ADDRBWRADDR", bitsJson(addrVec(P[1].addr))},
+                       {"DIADI", bitsJson(di[0])},
+                       {"DIPADIP", bitsJson(zeros(dipW))},
+                       {"DIBDI", bitsJson(di[1])},
+                       {"DIPBDIP", bitsJson(zeros(dipW))}};
+                std::vector<std::pair<std::string, std::string>> outs
+                    = {{"DOADO", bitsJson(dout[0])},
+                       {"DOPADOP", bitsJson(dop[0])},
+                       {"DOBDO", bitsJson(dout[1])},
+                       {"DOPBDOP", bitsJson(dop[1])}};
                 if (lower) {
                     casOut[0] = newNet();
                     casOut[1] = newNet();
@@ -4218,9 +4855,13 @@ private:
                 }
                 {
                     int lo = 0;
-                    m_curLeaf = leafOf(c.name, lo) + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : "");
+                    m_curLeaf = leafOf(c.name, lo) + "_t" + std::to_string(t)
+                                + (nblocks > 1 ? "_d" + std::to_string(d) : "");
                 }
-                cell(prim, sanitize(c.name) + "_t" + std::to_string(t) + (nblocks > 1 ? "_d" + std::to_string(d) : ""), params, ins, outs);
+                cell(prim,
+                     sanitize(c.name) + "_t" + std::to_string(t)
+                         + (nblocks > 1 ? "_d" + std::to_string(d) : ""),
+                     params, ins, outs);
             }
         }
         if (units > 1) {
@@ -4235,13 +4876,17 @@ private:
     // we for the whole port, or, for a byte-lane memory, the lane's we on each
     // byte.  In x36 mode WEA[j] enables byte j of the tile; narrower tiles
     // hold one byte or less and use WEA[0] (all four tied alike, UG473).
-    static std::vector<std::string> weaBits(const std::string& we, const std::vector<std::string>& weBytes, int lo, int sw, int tw, int weaW) {
+    static std::vector<std::string> weaBits(const std::string& we,
+                                            const std::vector<std::string>& weBytes, int lo,
+                                            int sw, int tw, int weaW) {
         std::vector<std::string> v(weaW, we);
         if (weBytes.empty()) return v;
         for (int j = 0; j < weaW; ++j) {
             const size_t byte = tw >= 32 ? lo / 8 + j : lo / 8;
-            if (tw >= 32 && 8 * j >= sw) v[j] = "\"0\"";
-            else v[j] = weBytes[std::min(byte, weBytes.size() - 1)];
+            if (tw >= 32 && 8 * j >= sw)
+                v[j] = "\"0\"";
+            else
+                v[j] = weBytes[std::min(byte, weBytes.size() - 1)];
         }
         return v;
     }
@@ -4270,9 +4915,13 @@ private:
         const std::string weBit = we.empty() ? "\"0\"" : we[0];
         const std::vector<std::string> waddr = pinNets(sp ? "addr" : "waddr");
         const std::vector<std::string> wdata = pinNets("wdata");
-        std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>> reads;  // (raddr, rdata)
+        std::vector<std::pair<std::vector<std::string>, std::vector<std::string>>>
+            reads;  // (raddr, rdata)
         std::vector<std::string> readEn;  // per read: its enable (registered reads)
-        const auto re = [&](const char* pin) { const auto v = pinNets(pin); return v.empty() ? std::string("\"1\"") : v[0]; };
+        const auto re = [&](const char* pin) {
+            const auto v = pinNets(pin);
+            return v.empty() ? std::string("\"1\"") : v[0];
+        };
         if (sp) {
             reads.emplace_back(waddr, outNets("rdata"));
             readEn.push_back(re("re"));
@@ -4280,8 +4929,14 @@ private:
             reads.emplace_back(pinNets("raddr"), outNets("rdata"));
             readEn.push_back(re("re"));
         } else {
-            if (!outNets("rdata1").empty()) { reads.emplace_back(pinNets("raddr1"), outNets("rdata1")); readEn.push_back(re("re1")); }
-            if (!outNets("rdata2").empty()) { reads.emplace_back(pinNets("raddr2"), outNets("rdata2")); readEn.push_back(re("re2")); }
+            if (!outNets("rdata1").empty()) {
+                reads.emplace_back(pinNets("raddr1"), outNets("rdata1"));
+                readEn.push_back(re("re1"));
+            }
+            if (!outNets("rdata2").empty()) {
+                reads.emplace_back(pinNets("raddr2"), outNets("rdata2"));
+                readEn.push_back(re("re2"));
+            }
         }
         if (registered) {
             // the LUTRAM's outputs go to fresh nets, then through FDREs to the ports
@@ -4290,8 +4945,13 @@ private:
                 for (size_t b = 0; b < reads[r].second.size(); ++b) {
                     const std::string n = newNet();
                     raw.push_back(n);
-                    cell("FDRE", sanitize(c.name) + "_r" + std::to_string(r) + "_q" + std::to_string(b), {{"INIT", "\"0\""}},
-                         {{"C", "[" + clk + "]"}, {"CE", "[" + readEn[r] + "]"}, {"D", "[" + n + "]"}, {"R", "[\"0\"]"}},
+                    cell("FDRE",
+                         sanitize(c.name) + "_r" + std::to_string(r) + "_q" + std::to_string(b),
+                         {{"INIT", "\"0\""}},
+                         {{"C", "[" + clk + "]"},
+                          {"CE", "[" + readEn[r] + "]"},
+                          {"D", "[" + n + "]"},
+                          {"R", "[\"0\"]"}},
                          {{"Q", "[" + reads[r].second[b] + "]"}});
                 }
                 reads[r].second = raw;
@@ -4300,11 +4960,15 @@ private:
         const int nblk = (depth + 63) / 64;
         int hiW = 0;
         while ((1 << hiW) < nblk) ++hiW;
-        auto bitOr0 = [](const std::vector<std::string>& v, size_t i) { return i < v.size() ? v[i] : std::string("\"0\""); };
+        auto bitOr0 = [](const std::vector<std::string>& v, size_t i) {
+            return i < v.size() ? v[i] : std::string("\"0\"");
+        };
         std::vector<std::string> blockWe;
         for (int d = 0; d < nblk; ++d) {
             std::string en = weBit;
-            for (int i = 0; i < hiW; ++i) en = andNet(en, (d >> i) & 1 ? bitOr0(waddr, 6 + i) : notNet(bitOr0(waddr, 6 + i)));
+            for (int i = 0; i < hiW; ++i)
+                en = andNet(en,
+                            (d >> i) & 1 ? bitOr0(waddr, 6 + i) : notNet(bitOr0(waddr, 6 + i)));
             blockWe.push_back(en);
         }
         for (size_t r = 0; r < reads.size(); ++r) {
@@ -4317,18 +4981,27 @@ private:
                 for (int d = 0; d < nblk; ++d) {
                     const std::string dpo = nblk == 1 ? rdata[b] : newNet();
                     blk.push_back(dpo);
-                    std::vector<std::pair<std::string, std::string>> ins = {{"WCLK", "[" + clk + "]"}, {"WE", "[" + blockWe[d] + "]"}, {"D", "[" + bitOr0(wdata, b) + "]"}};
-                    for (int i = 0; i < 6; ++i) ins.emplace_back("A" + std::to_string(i), "[" + bitOr0(waddr, i) + "]");
-                    for (int i = 0; i < 6; ++i) ins.emplace_back("DPRA" + std::to_string(i), "[" + bitOr0(raddr, i) + "]");
-                    cell("RAM64X1D", sanitize(c.name) + "_r" + std::to_string(r) + "_b" + std::to_string(b) + "_d" + std::to_string(d),
-                         {{"INIT", "\"" + std::string(64, '0') + "\""}}, ins, {{"SPO", "[" + newNet() + "]"}, {"DPO", "[" + dpo + "]"}});
+                    std::vector<std::pair<std::string, std::string>> ins
+                        = {{"WCLK", "[" + clk + "]"},
+                           {"WE", "[" + blockWe[d] + "]"},
+                           {"D", "[" + bitOr0(wdata, b) + "]"}};
+                    for (int i = 0; i < 6; ++i)
+                        ins.emplace_back("A" + std::to_string(i), "[" + bitOr0(waddr, i) + "]");
+                    for (int i = 0; i < 6; ++i)
+                        ins.emplace_back("DPRA" + std::to_string(i), "[" + bitOr0(raddr, i) + "]");
+                    cell("RAM64X1D",
+                         sanitize(c.name) + "_r" + std::to_string(r) + "_b" + std::to_string(b)
+                             + "_d" + std::to_string(d),
+                         {{"INIT", "\"" + std::string(64, '0') + "\""}}, ins,
+                         {{"SPO", "[" + newNet() + "]"}, {"DPO", "[" + dpo + "]"}});
                 }
                 if (nblk > 1) muxTree(blk, rhi, rdata[b]);
             }
         }
     }
     // out = ins[sel] through a tree of 2:1 LUT3 muxes; the root drives `out`
-    void muxTree(const std::vector<std::string>& ins, const std::vector<std::string>& sel, const std::string& out) {
+    void muxTree(const std::vector<std::string>& ins, const std::vector<std::string>& sel,
+                 const std::string& out) {
         std::vector<std::string> level = ins;
         for (size_t s = 0; s < sel.size(); ++s) {
             std::vector<std::string> next;
@@ -4338,7 +5011,8 @@ private:
                 const bool last = s + 1 == sel.size() && level.size() <= 2;
                 const std::string o = last ? out : newNet();
                 cell("LUT3", "bmux_" + std::to_string(m_ncells), {{"INIT", "\"11001010\""}},
-                     {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}, {"I2", "[" + sel[s] + "]"}}, {{"O", "[" + o + "]"}});
+                     {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}, {"I2", "[" + sel[s] + "]"}},
+                     {{"O", "[" + o + "]"}});
                 next.push_back(o);
             }
             level = next;
@@ -4349,14 +5023,16 @@ private:
         if (a == "\"1\"") return b;
         if (b == "\"1\"") return a;
         const std::string o = newNet();
-        cell("LUT2", "and_" + std::to_string(m_ncells), {{"INIT", "\"1000\""}}, {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}}, {{"O", "[" + o + "]"}});
+        cell("LUT2", "and_" + std::to_string(m_ncells), {{"INIT", "\"1000\""}},
+             {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}}, {{"O", "[" + o + "]"}});
         return o;
     }
     std::string notNet(const std::string& a) {
         if (a == "\"0\"") return "\"1\"";
         if (a == "\"1\"") return "\"0\"";
         const std::string o = newNet();
-        cell("LUT1", "not_" + std::to_string(m_ncells), {{"INIT", "\"01\""}}, {{"I0", "[" + a + "]"}}, {{"O", "[" + o + "]"}});
+        cell("LUT1", "not_" + std::to_string(m_ncells), {{"INIT", "\"01\""}},
+             {{"I0", "[" + a + "]"}}, {{"O", "[" + o + "]"}});
         return o;
     }
     // a | b of two 1-bit nets (LUT2)
@@ -4365,20 +5041,27 @@ private:
         if (b == "\"0\"") return a;
         if (a == "\"1\"" || b == "\"1\"") return "\"1\"";
         const std::string o = newNet();
-        cell("LUT2", "or_" + std::to_string(m_ncells), {{"INIT", "\"1110\""}}, {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}}, {{"O", "[" + o + "]"}});
+        cell("LUT2", "or_" + std::to_string(m_ncells), {{"INIT", "\"1110\""}},
+             {{"I0", "[" + a + "]"}, {"I1", "[" + b + "]"}}, {{"O", "[" + o + "]"}});
         return o;
     }
     // we ? waddr : raddr per bit (LUT3 mux)
-    std::vector<std::string> muxAddr(const std::string& we, const std::vector<std::string>& wa, const std::vector<std::string>& ra) {
+    std::vector<std::string> muxAddr(const std::string& we, const std::vector<std::string>& wa,
+                                     const std::vector<std::string>& ra) {
         std::vector<std::string> out;
         const size_t n = std::max(wa.size(), ra.size());
         for (size_t i = 0; i < n; ++i) {
             const std::string a = i < wa.size() ? wa[i] : "\"0\"";
             const std::string b = i < ra.size() ? ra[i] : "\"0\"";
-            if (a == b) { out.push_back(a); continue; }
+            if (a == b) {
+                out.push_back(a);
+                continue;
+            }
             const std::string o = newNet();
             // I2=we, I1=a (waddr), I0=b (raddr): out = we ? a : b   INIT index = I2 I1 I0
-            cell("LUT3", "amux_" + std::to_string(m_ncells), {{"INIT", "\"11001010\""}}, {{"I0", "[" + b + "]"}, {"I1", "[" + a + "]"}, {"I2", "[" + we + "]"}}, {{"O", "[" + o + "]"}});
+            cell("LUT3", "amux_" + std::to_string(m_ncells), {{"INIT", "\"11001010\""}},
+                 {{"I0", "[" + b + "]"}, {"I1", "[" + a + "]"}, {"I2", "[" + we + "]"}},
+                 {{"O", "[" + o + "]"}});
             out.push_back(o);
         }
         return out;

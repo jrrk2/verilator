@@ -510,10 +510,30 @@ detailed descriptions of these arguments.
     --map-only-output <filename>        Emit an abc-mapped LUT/FF/BRAM yosys-JSON netlist
     --map-only-edif <filename>          Emit the same mapped netlist as hierarchical EDIF (Vivado read_edif)
     --map-only-edif-flat        --map-only-edif writes one flat cell instead
+    --map-only-verilog <filename>       Emit the mapped netlist as unisim-cell Verilog
+    --map-only-abc-script <script>      ABC commands for the mapping (replaces the built-in script)
+    --map-only-bram-cascade     Build deep memories as cascaded RAMB36E1 pairs
+    --map-only-keep-equivalent-registers  Do not merge registers with identical logic
+    --map-only-keep-sum-chains  Keep chained additions as chains, not balanced trees
+    --map-only-keep-temps       Keep the AIGER/BLIF files exchanged with ABC
+    --map-only-max-fanout <value>       Loads a LUT output may drive before duplication
+    --map-only-meminit <filename>       Write a manifest of the block RAM initial contents
+    --map-only-no-iobuf         No IBUF/OBUF/BUFG on the top module ports
+    --map-only-no-wide-lut      Map to LUT6 and smaller only (no MUXF7/MUXF8 covers)
+    --map-only-partition-min <value>    Smallest instance mapped on its own, in AIG nodes
+    --map-only-period <ns>      Clock period for timing-driven mapping
+    --map-only-sdc <filename>   SDC/XDC clocks and I/O delays for timing-driven mapping
+    --map-only-timing-iterations <value>  Remappings steered by the previous timing analysis
+    --map-only-timing-margin <ns>       Slack kept back from ABC's required times
+    --map-only-timing-paths <value>     Worst paths listed per clock in the timing report
+    --map-only-timing-report <filename> Write the timing analysis of the mapped netlist
+    --map-only-whole-program    Flatten and map the design as one ABC network
     --struct-only-output <filename>     Emit structural (primitive netlist) Verilog
     --struct-only-xilinx-rtl    Structural output uses Vivado RTL_* cell names
     --struct-only-wide-packed-mem  Infer memories from wide packed vectors
     --struct-only-report        Print inferred-register report to stderr
+    --struct-only-full-case     Honor full_case/parallel_case pragmas
+    --struct-only-blackbox <module>     Keep <module> as an empty cell in the netlist
     --l2-name <value>           Verilog scope name of the top module
     --language <lang>           Default language standard to parse
      -LDFLAGS <flags>           Linker pre-object arguments for makefile

@@ -67,6 +67,7 @@ jobs:
         with:
           path: repo
           ref: ${{ inputs.sha }}
+          submodules: true  # third_party/abc, for the synthesis backend
           # Coverage needs full history; install needs it for the 'git describe'
           # behind 'verilator --version'
           fetch-depth: ${{ (inputs.install || inputs.dev-gcov) && '0' || '1' }}

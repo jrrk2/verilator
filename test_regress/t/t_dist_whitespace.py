@@ -14,7 +14,7 @@ test.scenarios('dist')
 
 Binary_Exempt_Re = r'(docs/.*\.png|test_regress/t/t_lint_bsspace_bad.v|test_regress/t/t_sys_file_basic_uz.dat)'
 
-Tabs_Exempt_Re = r'(\.out$)|(/fstcpp)|(Makefile)|(\.mk$)|(\.mk\.in$)|test_regress/t/t_preproc\.v|install-sh'
+Tabs_Exempt_Re = r'(\.gitmodules$)|(\.out$)|(/fstcpp)|(Makefile)|(\.mk$)|(\.mk\.in$)|test_regress/t/t_preproc\.v|install-sh'
 
 Unicode_Exempt_Re = r'(Changes$|CONTRIBUTORS$|LICENSES?|contributors.rst$|spelling.txt$|ci-rtlmeter-report.py)'
 
@@ -75,6 +75,8 @@ for filename in sorted(files.keys()):
     filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):  # git file might be deleted but not yet staged
         continue
+    if os.path.isdir(filename):  # Submodule
+        continue
     contents = test.file_contents(filename)
     # We ignore ^A and ^B so coverage files escape the binary test
     if re.search(r'[\000\003\004\005\006\377]', contents):
@@ -97,7 +99,8 @@ for filename in sorted(files.keys()):
 
     if (re.search(r'[ \t]\n', contents)
             or re.search(r'\n\n+$', contents)):  # Regexp repeated below
-        eol_ws_exempt = ('spelling.txt' in filename or '/gtkwave/' in filename)
+        eol_ws_exempt = ('spelling.txt' in filename or '/gtkwave/' in filename
+                         or 'third_party/' in filename)
         if eol_ws_exempt:
             continue
         if 'HARNESS_UPDATE_GOLDEN' in os.environ:

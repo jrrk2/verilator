@@ -1,0 +1,5 @@
+struct_netlist: warning: design: two registers drive q
+%Info: partition: 0 AND nodes in 1 instances, 0 partitions (min 1000 ANDs)
+%Error: Synthesis: more than one register drives 'q'
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

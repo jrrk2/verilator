@@ -1,0 +1,6 @@
+%Error: t/t_synth_stmt_bad.v:9:5: Synthesis would drop this statement: unsupported WAIT
+                                : ... note: In instance 't'
+    9 |     wait (a);
+      |     ^~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: Exiting due to

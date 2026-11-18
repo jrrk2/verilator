@@ -1670,19 +1670,21 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-keep-equivalent-registers", OnOff, &m_mapOnlyKeepEquivRegs);
     DECL_OPTION("-map-only-sdc", Set, &m_mapOnlySdc);
     DECL_OPTION("-map-only-timing-report", Set, &m_mapOnlyTimingReport);
-    DECL_OPTION("-map-only-timing-iterations", CbVal, [this](const char* valp) {
-        m_mapOnlyTimingIterations = std::atoi(valp);
-    });
-    DECL_OPTION("-map-only-timing-paths", CbVal, [this](const char* valp) { m_mapOnlyTimingPaths = std::atoi(valp); });
-    DECL_OPTION("-map-only-period", CbVal, [this](const char* valp) { m_mapOnlyPeriod = std::atof(valp); });
-    DECL_OPTION("-map-only-max-fanout", CbVal, [this](const char* valp) { m_mapOnlyMaxFanout = std::atoi(valp); });
-    DECL_OPTION("-map-only-timing-margin", CbVal, [this](const char* valp) { m_mapOnlyTimingMargin = std::atof(valp); });
+    DECL_OPTION("-map-only-timing-iterations", CbVal,
+                [this](const char* valp) { m_mapOnlyTimingIterations = std::atoi(valp); });
+    DECL_OPTION("-map-only-timing-paths", CbVal,
+                [this](const char* valp) { m_mapOnlyTimingPaths = std::atoi(valp); });
+    DECL_OPTION("-map-only-period", CbVal,
+                [this](const char* valp) { m_mapOnlyPeriod = std::atof(valp); });
+    DECL_OPTION("-map-only-max-fanout", CbVal,
+                [this](const char* valp) { m_mapOnlyMaxFanout = std::atoi(valp); });
+    DECL_OPTION("-map-only-timing-margin", CbVal,
+                [this](const char* valp) { m_mapOnlyTimingMargin = std::atof(valp); });
     DECL_OPTION("-map-only-keep-sum-chains", OnOff, &m_mapOnlyKeepSumChains);
     DECL_OPTION("-map-only-whole-program", OnOff, &m_mapOnlyWholeProgram);
     DECL_OPTION("-map-only-partition-min", Set, &m_mapOnlyPartitionMin);
-    DECL_OPTION("-struct-only-blackbox", CbVal, [this](const char* valp) {
-        m_structOnlyBlackbox.insert(valp);
-    });
+    DECL_OPTION("-struct-only-blackbox", CbVal,
+                [this](const char* valp) { m_structOnlyBlackbox.insert(valp); });
     DECL_OPTION("-struct-only-xilinx-rtl", OnOff, &m_structOnlyXilinxRtl);
     DECL_OPTION("-struct-only-wide-packed-mem", OnOff, &m_structOnlyWidePackedMem);
     DECL_OPTION("-struct-only-report", OnOff, &m_structOnlyReport);

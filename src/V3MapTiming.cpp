@@ -10,6 +10,7 @@
 // can redistribute it and/or modify it under the terms of either the GNU
 // Lesser General Public License Version 3 or the Perl Artistic License
 // Version 2.0.
+// SPDX-FileCopyrightText: 2026 Jonathan Kimmitt
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -27,16 +28,6 @@
 
 #include "V3MapTiming.h"
 
-#include <algorithm>
-#include <cmath>
-#include <cstring>
-#include <fstream>
-#include <limits>
-#include <map>
-#include <set>
-#include <sstream>
-#include <unordered_map>
-
 #include "tatum/SetupAnalysis.hpp"
 #include "tatum/TimingConstraints.hpp"
 #include "tatum/TimingGraph.hpp"
@@ -46,6 +37,16 @@
 #include "tatum/delay_calc/FixedDelayCalculator.hpp"
 #include "tatum/error.hpp"
 #include "tatum/tags/TimingTags.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <set>
+#include <sstream>
+#include <unordered_map>
 
 namespace {
 
@@ -95,7 +96,9 @@ double netDelay(size_t fanout) {
     return std::min(1.2, 0.30 + 0.012 * static_cast<double>(fanout));
 }
 
-bool startsWith(const std::string& s, const char* p) { return s.compare(0, std::strlen(p), p) == 0; }
+bool startsWith(const std::string& s, const char* p) {
+    return s.compare(0, std::strlen(p), p) == 0;
+}
 bool isConst(const std::string& net) { return net.empty() || net[0] == '"'; }
 
 // A cell parameter as an integer: JSON "\"0101\"" binary strings, numbers
@@ -148,8 +151,8 @@ PinClass pin(Kind k, const char* clk = "", double t = 0) {
 }
 
 bool isBufferType(const std::string& t) {
-    return startsWith(t, "IBUF") || startsWith(t, "BUFG") || startsWith(t, "BUFH") || t == "BUFR" || t == "BUFMR"
-           || t == "BUFIO";
+    return startsWith(t, "IBUF") || startsWith(t, "BUFG") || startsWith(t, "BUFH") || t == "BUFR"
+           || t == "BUFMR" || t == "BUFIO";
 }
 
 PinClass classify(const V3MapTiming::Cell& c, const std::string& p, bool out) {
@@ -172,18 +175,25 @@ PinClass classify(const V3MapTiming::Cell& c, const std::string& p, bool out) {
         if (p == "CLKARDCLK" || p == "CLKBWRCLK") return pin(Kind::Clk);
         if (out) {
             if (startsWith(p, "DOADO") || startsWith(p, "DOPADOP"))
-                return pin(Kind::SeqOut, "CLKARDCLK", paramInt(c, "DOA_REG", 0) ? kBramRegClkQ : kBramClkQ);
+                return pin(Kind::SeqOut, "CLKARDCLK",
+                           paramInt(c, "DOA_REG", 0) ? kBramRegClkQ : kBramClkQ);
             if (startsWith(p, "DOBDO") || startsWith(p, "DOPBDOP"))
-                return pin(Kind::SeqOut, "CLKBWRCLK", paramInt(c, "DOB_REG", 0) ? kBramRegClkQ : kBramClkQ);
+                return pin(Kind::SeqOut, "CLKBWRCLK",
+                           paramInt(c, "DOB_REG", 0) ? kBramRegClkQ : kBramClkQ);
             return pin(Kind::Ignore);
         }
         static const char* const aPins[]
-            = {"ADDRARDADDR", "DIADI", "DIPADIP", "WEA", "ENARDEN", "RSTRAMARSTRAM", "RSTREGARSTREG", "REGCEAREGCE"};
-        static const char* const bPins[]
-            = {"ADDRBWRADDR", "DIBDI", "DIPBDIP", "WEBWE", "ENBWREN", "RSTRAMB", "RSTREGB", "REGCEB"};
-        const double setup = startsWith(p, "ADDR") ? kBramAddrSetup : startsWith(p, "DI") ? kBramDataSetup : kBramCtlSetup;
-        for (const char* a : aPins) if (p == a) return pin(Kind::SeqIn, "CLKARDCLK", setup);
-        for (const char* b : bPins) if (p == b) return pin(Kind::SeqIn, "CLKBWRCLK", setup);
+            = {"ADDRARDADDR", "DIADI",         "DIPADIP",       "WEA",
+               "ENARDEN",     "RSTRAMARSTRAM", "RSTREGARSTREG", "REGCEAREGCE"};
+        static const char* const bPins[] = {"ADDRBWRADDR", "DIBDI",   "DIPBDIP", "WEBWE",
+                                            "ENBWREN",     "RSTRAMB", "RSTREGB", "REGCEB"};
+        const double setup = startsWith(p, "ADDR") ? kBramAddrSetup
+                             : startsWith(p, "DI") ? kBramDataSetup
+                                                   : kBramCtlSetup;
+        for (const char* a : aPins)
+            if (p == a) return pin(Kind::SeqIn, "CLKARDCLK", setup);
+        for (const char* b : bPins)
+            if (p == b) return pin(Kind::SeqIn, "CLKBWRCLK", setup);
         return pin(Kind::Ignore);
     }
     if (t == "DSP48E1") {
@@ -205,12 +215,15 @@ PinClass classify(const V3MapTiming::Cell& c, const std::string& p, bool out) {
             return pin(Kind::CombIn);
         }
         if (p == "C") return preg ? pin(Kind::SeqIn, "CLK", kDspCSetup) : pin(Kind::CombIn);
-        if (startsWith(p, "CE") || startsWith(p, "RST")) return pin(clocked ? Kind::SeqIn : Kind::Ignore, "CLK", kDspCtlSetup);
-        if (p == "OPMODE" || p == "ALUMODE" || p == "INMODE" || p == "CARRYINSEL" || p == "CARRYIN")
+        if (startsWith(p, "CE") || startsWith(p, "RST"))
+            return pin(clocked ? Kind::SeqIn : Kind::Ignore, "CLK", kDspCtlSetup);
+        if (p == "OPMODE" || p == "ALUMODE" || p == "INMODE" || p == "CARRYINSEL"
+            || p == "CARRYIN")
             return (preg || mreg) ? pin(Kind::SeqIn, "CLK", kDspCtlSetup) : pin(Kind::CombIn);
         return pin(Kind::Ignore);
     }
-    if (startsWith(t, "RAM") && (t.find("X1") != std::string::npos || t.back() == 'M' || t.back() == 'S')) {
+    if (startsWith(t, "RAM")
+        && (t.find("X1") != std::string::npos || t.back() == 'M' || t.back() == 'S')) {
         // distributed RAM (RAM64X1D, RAM32M, ...): asynchronous read, clocked write
         if (p == "WCLK") return pin(Kind::Clk);
         if (out) return pin(Kind::CombOut);
@@ -226,7 +239,8 @@ PinClass classify(const V3MapTiming::Cell& c, const std::string& p, bool out) {
     }
     if (isBufferType(t) || startsWith(t, "OBUF") || startsWith(t, "IOBUF")) {
         if (out) return pin(p == "IO" || p == "IOB" ? Kind::Ignore : Kind::CombOut);
-        if (p == "CE" || p == "IO" || p == "IOB" || p == "CLR" || p == "CEMASK" || p == "IGNORE") return pin(Kind::Ignore);
+        if (p == "CE" || p == "IO" || p == "IOB" || p == "CLR" || p == "CEMASK" || p == "IGNORE")
+            return pin(Kind::Ignore);
         return pin(Kind::CombIn);
     }
     if (t == "VCC" || t == "GND") return pin(out ? Kind::BbOut : Kind::Ignore);
@@ -234,7 +248,8 @@ PinClass classify(const V3MapTiming::Cell& c, const std::string& p, bool out) {
 }
 
 // Combinational arc delay, NaN when the cell has no such arc
-double combDelay(const V3MapTiming::Cell& c, const std::string& in, int ib, const std::string& out, int ob) {
+double combDelay(const V3MapTiming::Cell& c, const std::string& in, int ib, const std::string& out,
+                 int ob) {
     const std::string& t = c.type;
     if (startsWith(t, "LUT") || t == "INV") return kLut;
     if (t == "MUXF7" || t == "MUXF8") return in == "S" ? kMuxFS : kMuxF;
@@ -258,7 +273,9 @@ double combDelay(const V3MapTiming::Cell& c, const std::string& in, int ib, cons
     if (startsWith(t, "RAM")) {
         if (startsWith(in, "DPRA")) return startsWith(out, "DPO") ? kLutramComb : kNaN;
         if (startsWith(in, "ADDR"))  // RAM32M: ADDRA -> DOA
-            return startsWith(out, "DO") && out.size() == 3 && in.size() == 5 && out[2] == in[4] ? kLutramComb : kNaN;
+            return startsWith(out, "DO") && out.size() == 3 && in.size() == 5 && out[2] == in[4]
+                       ? kLutramComb
+                       : kNaN;
         if (in[0] == 'A') return (out == "SPO" || out == "O") ? kLutramComb : kNaN;
         return kNaN;
     }
@@ -340,8 +357,8 @@ struct V3MapTiming::Impl final {
         : sdc{s}
         , opt{o} {}
 
-    NodeId addNode(NodeType t, const std::string& name, const std::string& type, const std::string& net = "",
-                   int cell = -1) {
+    NodeId addNode(NodeType t, const std::string& name, const std::string& type,
+                   const std::string& net = "", int cell = -1) {
         const NodeId id = tg.add_node(t);
         nodeName.push_back(name);
         nodeType.push_back(type);
@@ -379,9 +396,12 @@ struct V3MapTiming::Impl final {
             for (size_t b = 0; b < p.bits.size(); ++b) {
                 const std::string bn = p.name + "[" + std::to_string(b) + "]";
                 const std::string nm = p.bits.size() > 1 ? bn : p.name;
-                const NodeId n = addNode(in ? NodeType::SOURCE : NodeType::SINK, nm, p.dir, p.bits[b]);
-                if (in) drive(p.bits[b], n);
-                else sink(p.bits[b], n);
+                const NodeId n
+                    = addNode(in ? NodeType::SOURCE : NodeType::SINK, nm, p.dir, p.bits[b]);
+                if (in)
+                    drive(p.bits[b], n);
+                else
+                    sink(p.bits[b], n);
                 portNodes[p.name].push_back(n);
                 portNodes[bn].push_back(n);
             }
@@ -401,29 +421,37 @@ struct V3MapTiming::Impl final {
                 for (size_t b = 0; b < cn.bits.size(); ++b) {
                     const PinClass pc = classify(c, cn.port, cn.out);
                     if (pc.kind == Kind::Ignore) continue;
-                    if (pc.kind == Kind::BbIn || pc.kind == Kind::BbOut) unknownTypes.insert(c.type);
+                    if (pc.kind == Kind::BbIn || pc.kind == Kind::BbOut)
+                        unknownTypes.insert(c.type);
                     const std::string& net = cn.bits[b];
                     const std::string pinName
-                        = c.name + "/" + cn.port + (cn.bits.size() > 1 ? "[" + std::to_string(b) + "]" : "");
+                        = c.name + "/" + cn.port
+                          + (cn.bits.size() > 1 ? "[" + std::to_string(b) + "]" : "");
                     if (pc.kind == Kind::Clk) {
-                        if (isConst(net)) continue;  // a tied-off clock: the cell's pins stay unconstrained
-                        const NodeId n = addNode(NodeType::CPIN, pinName, c.type, net, static_cast<int>(ci));
+                        if (isConst(net))
+                            continue;  // a tied-off clock: the cell's pins stay unconstrained
+                        const NodeId n
+                            = addNode(NodeType::CPIN, pinName, c.type, net, static_cast<int>(ci));
                         clkNode[cn.port] = n;
                         pinNodes[pinName] = n;
                         sink(net, n);
                         continue;
                     }
-                    const NodeType nt = pc.kind == Kind::CombIn ? NodeType::IPIN
+                    const NodeType nt = pc.kind == Kind::CombIn    ? NodeType::IPIN
                                         : pc.kind == Kind::CombOut ? NodeType::OPIN
-                                        : (pc.kind == Kind::SeqIn || pc.kind == Kind::BbIn) ? NodeType::SINK
-                                                                                            : NodeType::SOURCE;
+                                        : (pc.kind == Kind::SeqIn || pc.kind == Kind::BbIn)
+                                            ? NodeType::SINK
+                                            : NodeType::SOURCE;
                     const NodeId n = addNode(nt, pinName, c.type, net, static_cast<int>(ci));
                     pinNodes[pinName] = n;
-                    if (cn.out) drive(net, n);
-                    else sink(net, n);
+                    if (cn.out)
+                        drive(net, n);
+                    else
+                        sink(net, n);
                     pins.push_back({n, pc, cn.port, static_cast<int>(b)});
                     if (pc.writeSetup >= 0) {  // a LUTRAM address is also the write port's
-                        const NodeId w = addNode(NodeType::SINK, pinName + "(write)", c.type, net, static_cast<int>(ci));
+                        const NodeId w = addNode(NodeType::SINK, pinName + "(write)", c.type, net,
+                                                 static_cast<int>(ci));
                         sink(net, w);
                         PinClass wc = pin(Kind::SeqIn, pc.clk, pc.writeSetup);
                         pins.push_back({w, wc, cn.port, static_cast<int>(b)});
@@ -435,8 +463,10 @@ struct V3MapTiming::Impl final {
                 if (p.pc.kind != Kind::SeqIn && p.pc.kind != Kind::SeqOut) continue;
                 const auto it = clkNode.find(p.pc.clk);
                 if (it == clkNode.end()) continue;  // no clock: unconstrained
-                if (p.pc.kind == Kind::SeqIn) addEdge(EdgeType::PRIMITIVE_CLOCK_CAPTURE, it->second, p.n, 0, p.pc.t);
-                else addEdge(EdgeType::PRIMITIVE_CLOCK_LAUNCH, it->second, p.n, p.pc.t);
+                if (p.pc.kind == Kind::SeqIn)
+                    addEdge(EdgeType::PRIMITIVE_CLOCK_CAPTURE, it->second, p.n, 0, p.pc.t);
+                else
+                    addEdge(EdgeType::PRIMITIVE_CLOCK_LAUNCH, it->second, p.n, p.pc.t);
             }
             for (const PinNode& i : pins) {
                 if (i.pc.kind != Kind::CombIn) continue;
@@ -447,7 +477,8 @@ struct V3MapTiming::Impl final {
                 }
             }
         }
-        for (const std::string& t : unknownTypes) warn("cell type " + t + " has no timing model: treated as a black box");
+        for (const std::string& t : unknownTypes)
+            warn("cell type " + t + " has no timing model: treated as a black box");
         for (auto& kv : nets) {
             const Net& n = kv.second;
             if (!n.driver) continue;  // floating: its readers stay unconstrained
@@ -481,7 +512,8 @@ struct V3MapTiming::Impl final {
         }
         for (const auto& kv : portNodes) {
             if (kv.first.back() == ']') continue;  // match whole ports
-            if (globMatch(s.c_str(), kv.first.c_str())) out.insert(out.end(), kv.second.begin(), kv.second.end());
+            if (globMatch(s.c_str(), kv.first.c_str()))
+                out.insert(out.end(), kv.second.begin(), kv.second.end());
         }
         return out;
     }
@@ -495,7 +527,8 @@ struct V3MapTiming::Impl final {
         }
         return out;
     }
-    DomainId newDomain(const std::string& name, double period, double offset = 0, int family = -1) {
+    DomainId newDomain(const std::string& name, double period, double offset = 0,
+                       int family = -1) {
         const DomainId d = tc.create_clock_domain(name);
         periods[d] = period;
         waves[d] = {period, offset, family};
@@ -570,7 +603,8 @@ struct V3MapTiming::Impl final {
             }
             if (in <= 0) in = paramReal(c, "CLKIN1_PERIOD", 0);
             if (in <= 0) {
-                warn(c.name + ": no clock on CLKIN1 and no CLKIN1_PERIOD: its outputs are not clocks");
+                warn(c.name
+                     + ": no clock on CLKIN1 and no CLKIN1_PERIOD: its outputs are not clocks");
                 continue;
             }
             if (family < 0) family = families++;
@@ -585,9 +619,12 @@ struct V3MapTiming::Impl final {
             const double mult = paramReal(c, mmcm ? "CLKFBOUT_MULT_F" : "CLKFBOUT_MULT", 5);
             const double div = paramReal(c, "DIVCLK_DIVIDE", 1);
             for (int n = 0; n < 7; ++n) {
-                const std::string odivName = (mmcm && n == 0) ? "CLKOUT0_DIVIDE_F" : "CLKOUT" + std::to_string(n) + "_DIVIDE";
+                const std::string odivName = (mmcm && n == 0)
+                                                 ? "CLKOUT0_DIVIDE_F"
+                                                 : "CLKOUT" + std::to_string(n) + "_DIVIDE";
                 const double odiv = paramReal(c, odivName.c_str(), 1);
-                const double phase = paramReal(c, ("CLKOUT" + std::to_string(n) + "_PHASE").c_str(), 0);
+                const double phase
+                    = paramReal(c, ("CLKOUT" + std::to_string(n) + "_PHASE").c_str(), 0);
                 for (const char* suffix : {"", "B"}) {
                     const std::string pinName = c.name + "/CLKOUT" + std::to_string(n) + suffix;
                     const auto pit = pinNodes.find(pinName);
@@ -613,7 +650,8 @@ struct V3MapTiming::Impl final {
                 if (a.first == b.first || b.second.family != a.second.family) continue;
                 if (tc.should_analyze(a.first, b.first)) continue;  // constrained already
                 tc.set_setup_constraint(a.first, b.first,
-                                        Time(minEdgeDistance(a.second.period, a.second.offset, b.second.period, b.second.offset)));
+                                        Time(minEdgeDistance(a.second.period, a.second.offset,
+                                                             b.second.period, b.second.offset)));
             }
         }
     }
@@ -626,7 +664,8 @@ struct V3MapTiming::Impl final {
             const DomainId d = newDomain(c.name, c.period);
             for (const std::string& t : c.targets) {
                 const std::vector<NodeId> nodes = resolveTarget(t);
-                if (nodes.empty()) warn("create_clock " + c.name + ": no port or pin matches " + t);
+                if (nodes.empty())
+                    warn("create_clock " + c.name + ": no port or pin matches " + t);
                 for (const NodeId n : nodes) tc.set_clock_domain_source(clockSource(n), d);
             }
         }
@@ -640,7 +679,8 @@ struct V3MapTiming::Impl final {
             }
             for (const auto& kv : roots) {
                 if (tc.node_is_clock_source(kv.first)) continue;
-                tc.set_clock_domain_source(clockSource(kv.first), newDomain(kv.second, opt.defaultPeriod));
+                tc.set_clock_domain_source(clockSource(kv.first),
+                                           newDomain(kv.second, opt.defaultPeriod));
             }
         } else {
             std::set<std::string> loose;
@@ -649,18 +689,22 @@ struct V3MapTiming::Impl final {
                 const NodeId r = clockRoot(n);
                 if (r && !tc.node_is_clock_source(r)) loose.insert(nodeName[size_t(r)]);
             }
-            for (const std::string& s : loose) warn("clock from " + s + " has no create_clock: its registers are not analysed");
+            for (const std::string& s : loose)
+                warn("clock from " + s + " has no create_clock: its registers are not analysed");
         }
         for (const V3MapSdcIoDelay& io : sdc.ios) {
             if (!io.isMax) continue;
             const DomainId d = tc.find_clock_domain(io.clock);
             if (!d) {
-                warn(sdc.filename + ":" + std::to_string(io.line) + ": clock " + io.clock + " is not defined");
+                warn(sdc.filename + ":" + std::to_string(io.line) + ": clock " + io.clock
+                     + " is not defined");
                 continue;
             }
             for (const std::string& pat : io.ports) {
                 const std::vector<NodeId> nodes = resolveTarget(pat);
-                if (nodes.empty()) warn(sdc.filename + ":" + std::to_string(io.line) + ": no port matches " + pat);
+                if (nodes.empty())
+                    warn(sdc.filename + ":" + std::to_string(io.line) + ": no port matches "
+                         + pat);
                 for (const NodeId n : nodes) {
                     if (io.input && tg.node_type(n) == NodeType::SOURCE)
                         tc.set_input_constraint(n, d, tatum::DelayType::MAX, Time(io.delay));
@@ -672,10 +716,15 @@ struct V3MapTiming::Impl final {
         for (const V3MapSdcPath& p : sdc.paths) {
             for (const DomainId a : resolveClocks(p.from)) {
                 for (const DomainId b : resolveClocks(p.to)) {
-                    if (p.kind == V3MapSdcPath::MAX_DELAY) tc.set_setup_constraint(a, b, Time(p.value));
-                    else if (p.kind == V3MapSdcPath::MULTICYCLE) tc.set_setup_constraint(a, b, Time(p.value * periods[b]));
-                    // FALSE_PATH: paths between different clocks are not analysed unless constrained
-                    else if (a == b) warn("set_false_path within clock " + tc.clock_domain_name(a) + " is not applied");
+                    if (p.kind == V3MapSdcPath::MAX_DELAY)
+                        tc.set_setup_constraint(a, b, Time(p.value));
+                    else if (p.kind == V3MapSdcPath::MULTICYCLE)
+                        tc.set_setup_constraint(a, b, Time(p.value * periods[b]));
+                    // FALSE_PATH: paths between different clocks are not analysed unless
+                    // constrained
+                    else if (a == b)
+                        warn("set_false_path within clock " + tc.clock_domain_name(a)
+                             + " is not applied");
                 }
             }
         }
@@ -689,7 +738,8 @@ struct V3MapTiming::Impl final {
                 if (e) tg.disable_edge(e);
             }
         }
-        if (!loops.empty()) warn(std::to_string(loops.size()) + " combinational loop(s) cut for the analysis");
+        if (!loops.empty())
+            warn(std::to_string(loops.size()) + " combinational loop(s) cut for the analysis");
         tg.levelize();
         tatum::util::linear_map<EdgeId, Time> delays, setups;
         for (size_t i = 0; i < edgeDelay.size(); ++i) {
@@ -755,7 +805,8 @@ V3MapTiming::V3MapTiming(const V3MapSdcConstraints& sdc, const Options& opt)
     : m_impl{std::make_unique<Impl>(sdc, opt)} {}
 V3MapTiming::~V3MapTiming() = default;
 
-bool V3MapTiming::analyse(const std::vector<Cell>& cells, const std::vector<Port>& ports, std::string& error) {
+bool V3MapTiming::analyse(const std::vector<Cell>& cells, const std::vector<Port>& ports,
+                          std::string& error) {
     const V3MapSdcConstraints& sdc = m_impl->sdc;
     const Options opt = m_impl->opt;
     m_impl = std::make_unique<Impl>(sdc, opt);
@@ -791,8 +842,8 @@ std::string V3MapTiming::summaryText() const {
         os << " (Fmax " << d.fmax() << " MHz)\n";
     }
     if (m_impl->summary.unconstrainedStarts || m_impl->summary.unconstrainedEnds)
-        os << m_impl->summary.unconstrainedStarts << " unconstrained startpoints, " << m_impl->summary.unconstrainedEnds
-           << " unconstrained endpoints\n";
+        os << m_impl->summary.unconstrainedStarts << " unconstrained startpoints, "
+           << m_impl->summary.unconstrainedEnds << " unconstrained endpoints\n";
     return os.str();
 }
 
@@ -832,8 +883,8 @@ double V3MapTiming::averageNetDelay() const {
 
 namespace {
 class Resolver final : public tatum::TimingGraphNameResolver {
-    const std::vector<std::string>& m_names;
-    const std::vector<std::string>& m_types;
+    const std::vector<std::string>& m_names;  // timing node index -> net name
+    const std::vector<std::string>& m_types;  // timing node index -> cell type
 
 public:
     Resolver(const std::vector<std::string>& names, const std::vector<std::string>& types)

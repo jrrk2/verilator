@@ -1,0 +1,6 @@
+%Error-UNSUPPORTED: t/t_synth_iface_logic_bad.v:9:3: Unsupported: logic inside an interface (structural flow)
+                                                   : ... note: In instance 't'
+    9 |   always @(posedge clk) cnt <= cnt + 1;
+      |   ^~~~~~
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error: Exiting due to
