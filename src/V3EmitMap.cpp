@@ -717,9 +717,14 @@ public:
     // and built by buildMuls() once every alias is known.
     struct PendingMul { Vec a, b, r; };
     std::vector<PendingMul> m_pendingMuls;
+    bool m_buildingMuls = false;  // inside buildMuls(): the aliases are known, build at once
     Vec mulVar(const Vec& a, const Vec& b) {
         const int w = a.size();
         if (m_hard && static_cast<size_t>(w) >= MIN_DSP) {
+            // Queued again from buildMuls() (mulConst's constant of many digits, less its
+            // trailing zeros), it would come straight back to the queue being drained: unbounded
+            // recursion, a stack overflow on a 32 x 32 multiply by a wide constant
+            if (m_buildingMuls) return mulHard(a, b);
             PendingMul pm;
             pm.a = a;
             pm.b = b;
@@ -730,6 +735,8 @@ public:
         return mulGates(a, b);
     }
     void buildMuls() {
+        VL_RESTORER(m_buildingMuls);
+        m_buildingMuls = true;
         std::vector<PendingMul> muls;
         muls.swap(m_pendingMuls);
         for (const PendingMul& pm : muls) {
