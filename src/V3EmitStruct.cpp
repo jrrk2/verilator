@@ -60,6 +60,7 @@
 #include "V3Os.h"
 
 #include <algorithm>
+#include <bitset>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -1291,7 +1292,7 @@ private:
                 if (VN_IS(up, Negate)) return mask(~a + 1, w);
                 if (VN_IS(up, RedOr)) return a != 0;
                 if (VN_IS(up, RedAnd)) return mask(a, aw) == mask(~uint64_t{0}, aw);
-                if (VN_IS(up, RedXor)) return __builtin_parityll(a);
+                if (VN_IS(up, RedXor)) return (std::bitset<64>(a).count() & 1);
                 if (VN_IS(up, Extend) || VN_IS(up, CCast)) return mask(a, w);
                 if (VN_IS(up, ExtendS)) return mask(static_cast<uint64_t>(sext(a, aw)), w);
                 return fail();
@@ -4983,7 +4984,7 @@ private:
             return genUnary("reduction_or", materialize(a), a.width, 1);
         }
         if (VN_IS(up, RedXor)) {
-            if (a.hasVal) return constExpr(__builtin_popcountll(a.val) & 1, 1);
+            if (a.hasVal) return constExpr(std::bitset<64>(a.val).count() & 1, 1);
             return genUnary("reduction_xor", materialize(a), a.width, 1);
         }
         if (VN_IS(up, CLog2)) {
@@ -4996,7 +4997,8 @@ private:
             return constExpr(0, width);
         }
         if (VN_IS(up, CountOnes)) {
-            if (a.hasVal) return constExpr(__builtin_popcountll(a.val), width);
+            if (a.hasVal)
+                return constExpr(static_cast<uint64_t>(std::bitset<64>(a.val).count()), width);
         }
         if (VN_IS(up, IsUnknown)) return constExpr(0, 1);  // no X in hardware
         warnNode(up, "unsupported unary operator replaced by operand");
