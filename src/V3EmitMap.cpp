@@ -2256,6 +2256,13 @@ private:
             std::vector<std::pair<int, std::string>> pos;  // (literal, po<i>)
         };
         std::map<int, Part> parts;
+        // A partition input's name: a source (register or cell output, input pad) is
+        // pi<i> as when mapped whole, which the emission's passes look it up by; a
+        // node of another partition is v<var>
+        const auto inName = [&](int v) {
+            return m_aig.isPlaceholder(v) ? "pi" + std::to_string(m_piOf.at(v))
+                                          : "v" + std::to_string(v);
+        };
         auto noteIn = [&](Part& P, int v) {
             if (P.inSet.insert(v).second) P.ins.push_back(v);
         };
@@ -2326,7 +2333,7 @@ private:
                     leb(r0 - r1);
                 }
                 for (size_t i = 0; i < P.ins.size(); ++i)
-                    os << "i" << i << " v" << P.ins[i] << "\n";
+                    os << "i" << i << " " << inName(P.ins[i]) << "\n";
                 for (size_t i = 0; i < outs.size(); ++i)
                     os << "o" << i << " " << outs[i].second << "\n";
                 os << "c\nverilator --map-only-output " << tag << "\n";
@@ -2383,7 +2390,7 @@ private:
                           << std::endl;
             }
             std::unordered_set<std::string> boundary;
-            for (const int v : P.ins) boundary.insert("v" + std::to_string(v));
+            for (const int v : P.ins) boundary.insert(inName(v));
             for (const auto& o : outs) boundary.insert(o.second);
             auto rn = [&](const std::string& n) { return boundary.count(n) ? n : tag + "_" + n; };
             for (const std::string& o : po) {
@@ -2837,7 +2844,6 @@ private:
             auto it = m_netOfVar.find(v);
             if (it == m_netOfVar.end()) it = m_netOfVar.emplace(v, newNet()).first;
             netOfName["pi" + std::to_string(i)] = it->second;
-            netOfName["v" + std::to_string(v)] = it->second;  // the partitions' name for it
         }
         for (const auto& kv : m_regDup)
             for (const std::string& cp : kv.second) netOfName[cp] = newNet();
@@ -2899,10 +2905,6 @@ private:
         for (const std::string& o : order) {
             if (o.size() > 1 && o[0] == 'v' && std::isdigit(static_cast<unsigned char>(o[1])))
                 m_cutNet[o] = netOfName[o];
-        }
-        for (size_t i = 0; i < m_piVar.size(); ++i) {
-            const std::string n = "v" + std::to_string(m_piVar[i]);
-            m_cutNet[n] = netOfName[n];
         }
         // POs that abc wrote as .names outputs get those nets; others may be
         // direct PI buffers / constants handled by abc as LUT1s anyway
