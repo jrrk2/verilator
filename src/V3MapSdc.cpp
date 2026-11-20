@@ -52,14 +52,58 @@ std::string firstWord(const std::string& s) {
     return s.substr(i, j - i);
 }
 
+// The ports a `set_property` statement gives a package pin: LOC or PACKAGE_PIN as the property
+// (alone or in a -dict list) and a [get_ports ...] object list.  Cell placements (get_cells)
+// and every other property are not pin assignments.
+void pinPortsOf(const std::string& stmt, int lineno, V3MapSdcConstraints& out) {
+    const size_t gp = stmt.find("get_ports");
+    if (gp == std::string::npos) return;
+    // the property names: the words before the object list, braces dropped
+    bool pin = false;
+    {
+        std::string head = stmt.substr(0, stmt.rfind('[', gp));
+        for (char& ch : head)
+            if (ch == '{' || ch == '}') ch = ' ';
+        std::istringstream is{head};
+        std::string w;
+        while (is >> w)
+            if (w == "LOC" || w == "PACKAGE_PIN") pin = true;
+    }
+    if (!pin) return;
+    std::string list = stmt.substr(gp + 9);
+    // up to the bracket that closes [get_ports: a port's own [n] nests inside it
+    int depth = 1;
+    size_t end = 0;
+    for (; end < list.size(); ++end) {
+        if (list[end] == '[') ++depth;
+        if (list[end] == ']' && --depth == 0) break;
+    }
+    list.resize(end);
+    for (char& ch : list)
+        if (ch == '{' || ch == '}') ch = ' ';
+    std::istringstream is{list};
+    std::string name;
+    while (is >> name) {
+        if (name[0] == '-') continue;  // an option of get_ports
+        if (name.find_first_of("*?") != std::string::npos) {
+            out.pinWildcard = true;
+            continue;
+        }
+        out.pinPorts.emplace_back(name, lineno);
+    }
+}
+
 // Join continuation lines, keep SDC timing statements, replace everything
 // else by blank lines so libsdcparse's line numbers stay the file's
-std::string filterSdc(std::istream& in, std::set<std::string>& skipped) {
+std::string filterSdc(std::istream& in, std::set<std::string>& skipped,
+                      V3MapSdcConstraints* pinsp = nullptr) {
     std::string out;
     std::string line;
     std::string stmt;
     int joined = 0;
+    int lineno = 0;
     while (std::getline(in, line)) {
+        ++lineno;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         size_t end = line.size();
         while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
@@ -74,6 +118,7 @@ std::string filterSdc(std::istream& in, std::set<std::string>& skipped) {
             out += stmt + "\n";
         } else {
             if (!w.empty() && w[0] != '#') skipped.insert(w);
+            if (pinsp && w == "set_property") pinPortsOf(stmt, lineno - joined, *pinsp);
             out += "\n";
         }
         for (; joined > 0; --joined) out += "\n";
@@ -207,7 +252,7 @@ bool V3MapSdcRead(const std::string& filename, V3MapSdcConstraints& out, std::st
         return false;
     }
     std::set<std::string> skipped;
-    const std::string text = filterSdc(in, skipped);
+    const std::string text = filterSdc(in, skipped, &out);
     if (!skipped.empty()) {
         std::string s;
         for (const std::string& w : skipped) s += (s.empty() ? "" : ", ") + w;
@@ -228,4 +273,16 @@ bool V3MapSdcRead(const std::string& filename, V3MapSdcConstraints& out, std::st
     }
     std::fclose(fp);
     return error.empty();
+}
+
+bool V3MapSdcReadPins(const std::string& filename, V3MapSdcConstraints& out, std::string& error) {
+    std::ifstream in{filename};
+    if (!in) {
+        error = "cannot read constraints file " + filename;
+        return false;
+    }
+    if (out.filename.empty()) out.filename = filename;
+    std::set<std::string> skipped;
+    filterSdc(in, skipped, &out);
+    return true;
 }

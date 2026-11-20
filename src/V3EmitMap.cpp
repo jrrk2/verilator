@@ -1090,11 +1090,23 @@ public:
         // Timing: the constraints, and the analyser the mapped netlist goes through
         std::unique_ptr<V3MapTiming> timing;
         V3MapSdcConstraints sdc;
+        if (!v3Global.opt.mapOnlyPins().empty()) {  // the pin assignments alone, without timing
+            V3MapSdcConstraints pins;
+            std::string err;
+            if (!V3MapSdcReadPins(v3Global.opt.mapOnlyPins(), pins, err))
+                v3fatal("Synthesis: " << err);
+            m_pinPorts = pins.pinPorts;
+            m_pinFile = pins.filename;
+            m_pinWildcard = pins.pinWildcard;
+        }
         if (v3Global.opt.mapOnlyTiming()) {
             if (!v3Global.opt.mapOnlySdc().empty()) {
                 std::string err;
                 if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err))
                     v3fatal("Synthesis: " << err);
+                m_pinPorts = sdc.pinPorts;
+                m_pinFile = sdc.filename;
+                m_pinWildcard = sdc.pinWildcard;
             }
             V3MapTiming::Options to;
             to.defaultPeriod = v3Global.opt.mapOnlyPeriod();
@@ -2585,6 +2597,12 @@ private:
     }
     using PortRec = V3MapTiming::Port;
     std::vector<PortRec> m_portRecs;
+    // pin assignments of the constraints file (--map-only-sdc or --map-only-pins), for the
+    // electrical rule check of the ports: (port as written, line), the file, and whether some
+    // assignment names ports by a pattern
+    std::vector<std::pair<std::string, int>> m_pinPorts;
+    std::string m_pinFile;
+    bool m_pinWildcard = false;
     // "[12, \"0\", 13]" -> {"12", "\"0\"", "13"}
     static std::vector<std::string> splitBits(const std::string& j) {
         std::vector<std::string> out;
@@ -3540,26 +3558,73 @@ private:
             netnames << ",\n    \"" << nm << "\": {\"hide_name\": 0, \"bits\": [" << rq.first
                      << "], \"attributes\": {}}";
         }
-        // Electrical rule: every net a cell reads has a driver.  Hierarchy does not come into
-        // it -- a net with no driver that no cell reads is harmless wherever it is named, and
-        // one that a cell reads is an error wherever it is: the netlist would give a place and
-        // route tool an input to tie off as it pleases, and a bitstream that does something
-        // else than the design.  So it is fatal, the netlist is not written, and every such
-        // net goes into <netlist>.erc.log with the input that reads it.
+        // Electrical rules.  Each is fatal: the netlist is not written, and everything found goes
+        // into <netlist>.erc.log.
+        //
+        // 1. Every net a cell reads has a driver.  Hierarchy does not come into it -- a net with
+        //    no driver that no cell reads is harmless wherever it is named, and one that a cell
+        //    reads is an error wherever it is: the netlist would give a place and route tool an
+        //    input to tie off as it pleases, and a bitstream that does something else than the
+        //    design.
+        // 2. With a constraints file (--map-only-sdc, or --map-only-pins for the pins alone):
+        //    every port bit of this netlist has a pin, and
+        //    every pin assignment names a port bit of this netlist, as this netlist names it.
+        //    A one-bit vector `output [0:0] cs_n` is the scalar cs_n here, so a constraint on
+        //    cs_n[0] assigns nothing and place and route puts the pad where it likes; nextpnr
+        //    says nothing of either.
         {
             std::vector<std::pair<std::string, std::string>> floating;
             for (const auto& kv : m_firstLoad) {
                 if (!m_drivenNets.count(kv.first)) floating.push_back(kv);
             }
-            if (!floating.empty()) {
-                const auto nameOf = [&](const std::string& net) {
-                    const auto nit = m_netName.find(net);
-                    return nit != m_netName.end() ? nit->second : "#" + net;
-                };
-                std::sort(floating.begin(), floating.end(), [&](const auto& a, const auto& b) {
-                    const std::string na = nameOf(a.first), nb = nameOf(b.first);
-                    return na != nb ? na < nb : a.second < b.second;
-                });
+            const auto nameOf = [&](const std::string& net) {
+                const auto nit = m_netName.find(net);
+                return nit != m_netName.end() ? nit->second : "#" + net;
+            };
+            std::sort(floating.begin(), floating.end(), [&](const auto& a, const auto& b) {
+                const std::string na = nameOf(a.first), nb = nameOf(b.first);
+                return na != nb ? na < nb : a.second < b.second;
+            });
+            std::vector<std::string> noPin;  // port bits without a pin
+            std::vector<std::pair<std::string, int>> noPort;  // assignments to no port bit
+            // A constraints file with no pin assignment at all is not let off: a design with
+            // ports and no pins can only be one that talks through JTAG alone, and then it has
+            // no ports to check.
+            if (!m_pinFile.empty()) {
+                std::set<std::string> bits;
+                for (const PortRec& pr : m_portRecs) {
+                    if (pr.bits.size() == 1) {
+                        bits.insert(pr.name);
+                        continue;
+                    }
+                    int lo = 0;
+                    bool upto = false;
+                    const auto rit = m_portRange.find(pr.name);
+                    if (rit != m_portRange.end()) {
+                        lo = rit->second.first;
+                        upto = rit->second.second;
+                    }
+                    for (size_t i = 0; i < pr.bits.size(); ++i) {
+                        const int idx
+                            = upto ? lo + static_cast<int>(pr.bits.size()) - 1 - static_cast<int>(i)
+                                   : lo + static_cast<int>(i);
+                        bits.insert(pr.name + "[" + std::to_string(idx) + "]");
+                    }
+                }
+                std::set<std::string> assigned;
+                for (const auto& pp : m_pinPorts) {
+                    if (bits.count(pp.first))
+                        assigned.insert(pp.first);
+                    else
+                        noPort.push_back(pp);
+                }
+                // an assignment by pattern may cover any port: only the names are checked then
+                if (!m_pinWildcard) {
+                    for (const std::string& bit : bits)
+                        if (!assigned.count(bit)) noPin.push_back(bit);
+                }
+            }
+            if (!floating.empty() || !noPin.empty() || !noPort.empty()) {
                 // beside the netlist that was to be written
                 std::string logName = !filename.empty() ? filename
                                       : !v3Global.opt.mapOnlyVerilog().empty()
@@ -3573,34 +3638,63 @@ private:
                 logName += ".erc.log";
                 {
                     std::ofstream log{logName};
-                    log << "verilator --map-only: electrical rule check of " << m_top << "\n"
-                        << floating.size() << " net(s) are read by a cell and driven by nothing.\n"
-                        << "Each line: the net, then the first cell input found reading it.\n"
-                        << "A net named <array>__<n>[<bit>] is element n of an unpacked array kept\n"
-                        << "as registers: look for an array that is never written outside an\n"
-                        << "initial block, or whose writes were dropped.\n\n";
-                    // by signal: the name up to the last element or bit select
-                    std::map<std::string, int> bySignal;
-                    for (const auto& kv : floating) {
-                        std::string sig = nameOf(kv.first);
-                        const size_t br = sig.rfind('[');
-                        if (br != std::string::npos) sig.resize(br);
-                        const size_t el = sig.rfind("__");
-                        if (el != std::string::npos && el + 2 < sig.size()
-                            && sig.find_first_not_of("0123456789", el + 2) == std::string::npos)
-                            sig.resize(el);
-                        ++bySignal[sig];
+                    log << "verilator --map-only: electrical rule check of " << m_top << "\n";
+                    if (!floating.empty()) {
+                        log << "\n" << floating.size()
+                            << " net(s) are read by a cell and driven by nothing.\n"
+                            << "Each line: the net, then the first cell input found reading it.\n"
+                            << "A net named <array>__<n>[<bit>] is element n of an unpacked array "
+                               "kept\nas registers: look for an array that is never written "
+                               "outside an\ninitial block, or whose writes were dropped.\n\n";
+                        // by signal: the name up to the last element or bit select
+                        std::map<std::string, int> bySignal;
+                        for (const auto& kv : floating) {
+                            std::string sig = nameOf(kv.first);
+                            const size_t br = sig.rfind('[');
+                            if (br != std::string::npos) sig.resize(br);
+                            const size_t el = sig.rfind("__");
+                            if (el != std::string::npos && el + 2 < sig.size()
+                                && sig.find_first_not_of("0123456789", el + 2)
+                                       == std::string::npos)
+                                sig.resize(el);
+                            ++bySignal[sig];
+                        }
+                        log << "By signal:\n";
+                        for (const auto& kv : bySignal)
+                            log << "  " << kv.second << "\t" << kv.first << "\n";
+                        log << "\nEvery net:\n";
+                        for (const auto& kv : floating)
+                            log << "  " << nameOf(kv.first) << "\t<- " << kv.second << "\n";
                     }
-                    log << "By signal:\n";
-                    for (const auto& kv : bySignal)
-                        log << "  " << kv.second << "\t" << kv.first << "\n";
-                    log << "\nEvery net:\n";
-                    for (const auto& kv : floating)
-                        log << "  " << nameOf(kv.first) << "\t<- " << kv.second << "\n";
+                    if (!noPort.empty()) {
+                        log << "\n" << noPort.size() << " pin assignment(s) in " << m_pinFile
+                            << " name no port bit of this netlist.\n"
+                            << "(A one-bit vector port is a scalar here: write cs_n, not "
+                               "cs_n[0].)\n";
+                        for (const auto& pp : noPort)
+                            log << "  " << m_pinFile << ":" << pp.second << ": " << pp.first
+                                << "\n";
+                    }
+                    if (!noPin.empty()) {
+                        log << "\n" << noPin.size() << " port bit(s) have no package pin in "
+                            << m_pinFile << ":\n";
+                        for (const std::string& bit : noPin) log << "  " << bit << "\n";
+                    }
                 }
-                v3fatal("Synthesis: electrical rule check failed: " << floating.size()
-                        << " net(s) are read by a cell but have no driver, the first "
-                        << nameOf(floating[0].first) << " at " << floating[0].second
+                std::string what;
+                const auto add = [&](const std::string& t) { what += (what.empty() ? "" : "; ") + t; };
+                if (!floating.empty())
+                    add(std::to_string(floating.size())
+                        + " net(s) are read by a cell but have no driver, the first "
+                        + nameOf(floating[0].first) + " at " + floating[0].second);
+                if (!noPort.empty())
+                    add(std::to_string(noPort.size())
+                        + " pin assignment(s) name no port of the netlist, the first "
+                        + noPort[0].first + " at line " + std::to_string(noPort[0].second));
+                if (!noPin.empty())
+                    add(std::to_string(noPin.size()) + " port bit(s) have no package pin, the first "
+                        + noPin[0]);
+                v3fatal("Synthesis: electrical rule check failed: " << what
                         << "; no netlist written.  All of them: " << logName);
             }
         }

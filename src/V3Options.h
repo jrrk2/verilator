@@ -448,6 +448,7 @@ private:
     bool        m_mapOnlyEdifFlat = false;  // main switch: --map-only-edif-flat
     string      m_mapOnlyAbcScript;  // main switch: --map-only-abc-script
     string      m_mapOnlySdc;  // main switch: --map-only-sdc
+    string      m_mapOnlyPins;  // main switch: --map-only-pins
     string      m_mapOnlyTimingReport;  // main switch: --map-only-timing-report
     std::set<string> m_structOnlyBlackbox;  // main switch: --struct-only-blackbox
     string      m_l2Name;       // main switch: --l2name; "" for top-module's name
@@ -788,6 +789,7 @@ public:
     bool mapOnlyNoWideLut() const { return m_mapOnlyNoWideLut; }
     bool mapOnlyKeepEquivRegs() const { return m_mapOnlyKeepEquivRegs; }
     string mapOnlySdc() const { return m_mapOnlySdc; }
+    string mapOnlyPins() const { return m_mapOnlyPins; }
     string mapOnlyTimingReport() const { return m_mapOnlyTimingReport; }
     int mapOnlyTimingIterations() const { return m_mapOnlyTimingIterations; }
     int mapOnlyTimingPaths() const { return m_mapOnlyTimingPaths; }

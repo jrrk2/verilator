@@ -59,6 +59,10 @@ struct V3MapSdcConstraints final {
     std::vector<V3MapSdcIoDelay> ios;
     std::vector<V3MapSdcPath> paths;
     std::vector<std::string> warnings;  // what was read but is not applied
+    // the ports the file gives a package pin (set_property LOC / PACKAGE_PIN ... [get_ports]),
+    // as written there, with the line; a name with a wildcard is left out
+    std::vector<std::pair<std::string, int>> pinPorts;
+    bool pinWildcard = false;  // some pin assignment names its ports by a pattern
     bool empty() const { return clocks.empty() && ios.empty() && paths.empty(); }
 };
 
@@ -66,5 +70,9 @@ struct V3MapSdcConstraints final {
 // (Vivado's set_property and friends) are skipped.  False, with `error`, on
 // a syntax error or an unreadable file.
 bool V3MapSdcRead(const std::string& filename, V3MapSdcConstraints& out, std::string& error);
+// The pin assignments of an XDC file alone (V3MapSdcConstraints::pinPorts), without parsing its
+// timing commands: for checking a netlist's ports against a file whose clocks this reader
+// does not take.  False, with `error`, if the file cannot be read.
+bool V3MapSdcReadPins(const std::string& filename, V3MapSdcConstraints& out, std::string& error);
 
 #endif  // guard

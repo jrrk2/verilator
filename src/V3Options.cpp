@@ -1669,6 +1669,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-no-wide-lut", OnOff, &m_mapOnlyNoWideLut);
     DECL_OPTION("-map-only-keep-equivalent-registers", OnOff, &m_mapOnlyKeepEquivRegs);
     DECL_OPTION("-map-only-sdc", Set, &m_mapOnlySdc);
+    DECL_OPTION("-map-only-pins", Set, &m_mapOnlyPins);
     DECL_OPTION("-map-only-timing-report", Set, &m_mapOnlyTimingReport);
     DECL_OPTION("-map-only-timing-iterations", CbVal,
                 [this](const char* valp) { m_mapOnlyTimingIterations = std::atoi(valp); });
