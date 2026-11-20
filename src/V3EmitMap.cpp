@@ -3540,26 +3540,69 @@ private:
             netnames << ",\n    \"" << nm << "\": {\"hide_name\": 0, \"bits\": [" << rq.first
                      << "], \"attributes\": {}}";
         }
-        // Floating gates: hierarchy does not come into it -- a net with no driver
-        // that no cell reads is harmless wherever it is named, and one that a
-        // cell reads is an error wherever it is
+        // Electrical rule: every net a cell reads has a driver.  Hierarchy does not come into
+        // it -- a net with no driver that no cell reads is harmless wherever it is named, and
+        // one that a cell reads is an error wherever it is: the netlist would give a place and
+        // route tool an input to tie off as it pleases, and a bitstream that does something
+        // else than the design.  So it is fatal, the netlist is not written, and every such
+        // net goes into <netlist>.erc.log with the input that reads it.
         {
             std::vector<std::pair<std::string, std::string>> floating;
             for (const auto& kv : m_firstLoad) {
                 if (!m_drivenNets.count(kv.first)) floating.push_back(kv);
             }
-            std::sort(floating.begin(), floating.end(),
-                      [](const auto& a, const auto& b) { return a.second < b.second; });
-            for (size_t i = 0; i < floating.size() && i < 20; ++i) {
-                const auto nit = m_netName.find(floating[i].first);
-                m_warnings.push_back(
-                    "floating input " + floating[i].second + ": net "
-                    + (nit != m_netName.end() ? nit->second : "#" + floating[i].first)
-                    + " has no driver");
+            if (!floating.empty()) {
+                const auto nameOf = [&](const std::string& net) {
+                    const auto nit = m_netName.find(net);
+                    return nit != m_netName.end() ? nit->second : "#" + net;
+                };
+                std::sort(floating.begin(), floating.end(), [&](const auto& a, const auto& b) {
+                    const std::string na = nameOf(a.first), nb = nameOf(b.first);
+                    return na != nb ? na < nb : a.second < b.second;
+                });
+                // beside the netlist that was to be written
+                std::string logName = !filename.empty() ? filename
+                                      : !v3Global.opt.mapOnlyVerilog().empty()
+                                          ? v3Global.opt.mapOnlyVerilog()
+                                          : !v3Global.opt.mapOnlyEdif().empty()
+                                                ? v3Global.opt.mapOnlyEdif()
+                                                : m_top;
+                const size_t dot = logName.rfind('.');
+                if (dot != std::string::npos && logName.find('/', dot) == std::string::npos)
+                    logName.resize(dot);
+                logName += ".erc.log";
+                {
+                    std::ofstream log{logName};
+                    log << "verilator --map-only: electrical rule check of " << m_top << "\n"
+                        << floating.size() << " net(s) are read by a cell and driven by nothing.\n"
+                        << "Each line: the net, then the first cell input found reading it.\n"
+                        << "A net named <array>__<n>[<bit>] is element n of an unpacked array kept\n"
+                        << "as registers: look for an array that is never written outside an\n"
+                        << "initial block, or whose writes were dropped.\n\n";
+                    // by signal: the name up to the last element or bit select
+                    std::map<std::string, int> bySignal;
+                    for (const auto& kv : floating) {
+                        std::string sig = nameOf(kv.first);
+                        const size_t br = sig.rfind('[');
+                        if (br != std::string::npos) sig.resize(br);
+                        const size_t el = sig.rfind("__");
+                        if (el != std::string::npos && el + 2 < sig.size()
+                            && sig.find_first_not_of("0123456789", el + 2) == std::string::npos)
+                            sig.resize(el);
+                        ++bySignal[sig];
+                    }
+                    log << "By signal:\n";
+                    for (const auto& kv : bySignal)
+                        log << "  " << kv.second << "\t" << kv.first << "\n";
+                    log << "\nEvery net:\n";
+                    for (const auto& kv : floating)
+                        log << "  " << nameOf(kv.first) << "\t<- " << kv.second << "\n";
+                }
+                v3fatal("Synthesis: electrical rule check failed: " << floating.size()
+                        << " net(s) are read by a cell but have no driver, the first "
+                        << nameOf(floating[0].first) << " at " << floating[0].second
+                        << "; no netlist written.  All of them: " << logName);
             }
-            if (floating.size() > 20)
-                m_warnings.push_back(std::to_string(floating.size() - 20)
-                                     + " more floating inputs");
         }
         if (!write) return;  // a pass the timing analysis looks at, not the one written out
         if (!v3Global.opt.mapOnlyEdif().empty()) writeEdif(v3Global.opt.mapOnlyEdif());
