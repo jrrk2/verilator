@@ -5081,6 +5081,26 @@ private:
             const auto it = pins.outs.find(name);
             return it == pins.outs.end() ? std::vector<std::string>{} : it->second;
         };
+        // Initial contents (an initial block's image, or $readmemh INIT_FILE on the primitive):
+        // bit b of word k is INIT bit k % 64 of bit b's cell for block k / 64
+        std::vector<uint64_t> image = pins.image;
+        for (const auto& p : c.params) {
+            if (pins.hasImage || p.first != "INIT_FILE") continue;
+            std::string f = p.second;
+            if (f.size() >= 2 && f.front() == '"') f = f.substr(1, f.size() - 2);
+            if (f.empty()) continue;
+            if (!readHex(f, image))
+                v3error("Synthesis: " << "memory " + c.name + ": INIT_FILE " + f
+                                             + " not readable; contents left 0");
+        }
+        const auto initOf = [&](int b, int d) {
+            std::string bits(64, '0');  // MSB first
+            for (int i = 0; i < 64; ++i) {
+                const size_t k = static_cast<size_t>(d) * 64 + i;
+                if (b < 64 && k < image.size() && ((image[k] >> b) & 1)) bits[63 - i] = '1';
+            }
+            return "\"" + bits + "\"";
+        };
         const bool sp = c.type == "memory_sp" || c.type == "memory_sp_sync";
         const std::string clk = pinNets("clk").empty() ? "\"0\"" : pinNets("clk")[0];
         const std::vector<std::string> we = pinNets("we");
@@ -5164,7 +5184,7 @@ private:
                     cell("RAM64X1D",
                          sanitize(c.name) + "_r" + std::to_string(r) + "_b" + std::to_string(b)
                              + "_d" + std::to_string(d),
-                         {{"INIT", "\"" + std::string(64, '0') + "\""}}, ins,
+                         {{"INIT", initOf(b, d)}}, ins,
                          {{"SPO", "[" + newNet() + "]"}, {"DPO", "[" + dpo + "]"}});
                 }
                 if (nblk > 1) muxTree(blk, rhi, rdata[b]);

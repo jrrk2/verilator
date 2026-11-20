@@ -1568,12 +1568,7 @@ private:
         // A register with a declaration value (`reg [3:0] n = 4'd12;`) powers
         // up there on an FPGA: the value goes onto its register cells as
         // INIT_VAL (the slice a cell holds, when the register was split)
-        for (const auto& kv : m_staticInits) {
-            if (!written.count(kv.first) || kv.second->num().width() > 64
-                || kv.second->num().isFourState())
-                continue;
-            const uint64_t v = kv.second->num().toUQuad();
-            if (!v) continue;
+        const auto powerUp = [&](const std::string& name, const uint64_t v) {
             for (SItem& it : m_items) {
                 if (it.kind != SItem::CELL || (it.prim != "dff_en" && it.prim != "dffn_en"))
                     continue;
@@ -1582,11 +1577,11 @@ private:
                     const std::string& e = pin.expr;
                     int lo = -1;
                     int w = -1;
-                    if (e == kv.first) {
+                    if (e == name) {
                         lo = 0;
-                    } else if (e.compare(0, kv.first.size() + 1, kv.first + "[") == 0) {
+                    } else if (e.compare(0, name.size() + 1, name + "[") == 0) {
                         int a = 0, b = 0;
-                        const char* rest = e.c_str() + kv.first.size() + 1;
+                        const char* rest = e.c_str() + name.size() + 1;
                         if (std::sscanf(rest, "%d +: %d]", &a, &b) == 2) {
                             lo = a;
                             w = b;
@@ -1603,6 +1598,21 @@ private:
                     if (w > 0 && w < 64) part &= (uint64_t{1} << w) - 1;
                     if (part) it.params.emplace_back("INIT_VAL", std::to_string(part));
                 }
+            }
+        };
+        for (const auto& kv : m_staticInits) {
+            if (!written.count(kv.first) || kv.second->num().width() > 64
+                || kv.second->num().isFourState())
+                continue;
+            const uint64_t v = kv.second->num().toUQuad();
+            if (v) powerUp(kv.first, v);
+        }
+        // Likewise an array kept as registers that an initial block fills
+        for (const auto& kv : m_mems) {
+            const SMem& m = kv.second;
+            if (!m.asRegs || !m.hasInitWords) continue;
+            for (size_t k = 0; k < m.regNames.size() && k < m.initWords.size(); ++k) {
+                if (m.initWords[k]) powerUp(m.regNames[k], m.initWords[k]);
             }
         }
         for (const auto& kv : m_staticInits) {
