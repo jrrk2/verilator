@@ -66,6 +66,7 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <numeric>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -150,6 +151,7 @@ struct SLVal final {
     int baseWidth = 0;  // sliceDynamic: the vector's width
     int baseOff = 0;  // sliceDynamic: where in baseKey's variable those bits start
     long long slotMin = 0, slotMax = -1;  // sliceDynamic: the values idx can take
+    long long slotStep = 1;  // sliceDynamic: idx is a multiple of this
 };
 
 // Memory candidate (sv_memory.memory_info)
@@ -3229,21 +3231,36 @@ private:
             return;
         }
         if (lv.sliceDynamic) {
+            // The index is a multiple of slotStep, which need not be the width written
+            // (buf[16 * n +: 32] = word), so the vector is taken in pieces of their common
+            // divisor: piece p gets part k of the value when the index is p - k pieces
             const int w = lv.width;
+            const int piece = static_cast<int>(std::gcd<long long>(lv.slotStep, w));
             const SExpr idx = materialize(lv.idx);
-            for (int lo = 0; lo + w <= lv.baseWidth; lo += w) {
-                // A slot the index can't reach is left alone: not even read, as a later
-                // statement may be what assigns it (mk[g] = '0; mk[g][i] = v; for each g)
-                if (lo < lv.slotMin || lo > lv.slotMax) continue;
-                const SExpr hit = eqConst(idx, static_cast<uint64_t>(lo));
+            const SExpr value = piece == w ? rhs : materialize(rhs);
+            std::map<int, SExpr> hits;
+            for (int p = 0; p + piece <= lv.baseWidth; p += piece) {
                 SLVal e;
                 e.ok = true;
-                const std::string at = std::to_string(lv.baseOff + lo);
-                e.key = lv.baseKey + "[" + at + "+:" + std::to_string(w) + "]";
-                e.text = lv.baseKey + "[" + at + " +: " + std::to_string(w) + "]";
-                e.width = w;
-                const SExpr prior = readKey(e.key, env, true);
-                setKey(e, genMux(hit, materialize(prior), rhs, w), blocking, env);
+                const std::string at = std::to_string(lv.baseOff + p);
+                e.key = lv.baseKey + "[" + at + "+:" + std::to_string(piece) + "]";
+                e.text = lv.baseKey + "[" + at + " +: " + std::to_string(piece) + "]";
+                e.width = piece;
+                SExpr next;
+                bool reached = false;
+                for (int k = 0; k * piece < w; ++k) {
+                    // A piece the index can't reach is left alone: not even read, as a later
+                    // statement may be what assigns it (mk[g] = '0; mk[g][i] = v; for each g)
+                    const int lo = p - k * piece;
+                    if (lo < 0 || lo < lv.slotMin || lo > lv.slotMax || lo % lv.slotStep) continue;
+                    if (!reached) next = materialize(readKey(e.key, env, true));
+                    reached = true;
+                    const auto hit = hits.emplace(lo, SExpr{});
+                    if (hit.second) hit.first->second = eqConst(idx, static_cast<uint64_t>(lo));
+                    next = genMux(hit.first->second, next,
+                                  piece == w ? value : sliceOf(value, k * piece, piece), piece);
+                }
+                if (reached) setKey(e, next, blocking, env);
             }
             return;
         }
@@ -3522,6 +3539,51 @@ private:
         return full;
     }
 
+    // A number every value of an index expression is a multiple of (1 when its form shows none)
+    long long exprStep(AstNodeExpr* np, Env& env) {
+        const SExpr v = lowerExpr(np, env);
+        if (v.hasVal) return v.val ? static_cast<long long>(v.val) : 0;  // 0: a multiple of all
+        if (const AstExtend* const ep = VN_CAST(np, Extend)) return exprStep(ep->lhsp(), env);
+        if (const AstMul* const mp = VN_CAST(np, Mul)) {
+            // only without wrap-around, which exprRange's caller has from the same bounds
+            const long long a = exprStep(mp->lhsp(), env), b = exprStep(mp->rhsp(), env);
+            const std::pair<long long, long long> ra = exprRange(mp->lhsp(), env);
+            const std::pair<long long, long long> rb = exprRange(mp->rhsp(), env);
+            const int width = np->width();
+            const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
+            if (ra.second && rb.second > top / ra.second) return 1;
+            return a * b;
+        }
+        if (const AstShiftL* const sp = VN_CAST(np, ShiftL)) {
+            const SExpr by = lowerExpr(sp->rhsp(), env);
+            const std::pair<long long, long long> ra = exprRange(sp->lhsp(), env);
+            if (by.hasVal && by.val < 31 && np->width() < 62
+                && ra.second <= ((1LL << np->width()) - 1) >> by.val)
+                return exprStep(sp->lhsp(), env) << by.val;
+            return 1;
+        }
+        if (const AstConcat* const cp = VN_CAST(np, Concat)) {
+            // {n, zeros}
+            const SExpr low = lowerExpr(cp->rhsp(), env);
+            if (low.hasVal && !low.val && cp->rhsp()->width() < 31)
+                return std::max<long long>(1, exprStep(cp->lhsp(), env)) << cp->rhsp()->width();
+            return 1;
+        }
+        if (VN_IS(np, Add) || VN_IS(np, Cond)) {
+            AstNodeExpr* const ap = VN_IS(np, Add) ? VN_AS(np, Add)->lhsp() : VN_AS(np, Cond)->thenp();
+            AstNodeExpr* const bp = VN_IS(np, Add) ? VN_AS(np, Add)->rhsp() : VN_AS(np, Cond)->elsep();
+            if (VN_IS(np, Add)) {
+                const std::pair<long long, long long> ra = exprRange(ap, env), rb = exprRange(bp, env);
+                const int width = np->width();
+                const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
+                if (ra.second > top - rb.second) return 1;
+            }
+            const long long g = std::gcd(exprStep(ap, env), exprStep(bp, env));
+            return g ? g : 0;
+        }
+        return 1;
+    }
+
     // ---- lvalues ----
     SLVal lowerLValue(AstNodeExpr* lhsp, Env& env) {
         SLVal lv;
@@ -3589,10 +3651,11 @@ private:
             int sliceLo = 0, sliceW = 0;
             const bool onSlice = splitSliceKey(base.key, sliceBase, sliceLo, sliceW);
             const auto slots = exprRange(sp->lsbp(), env);
+            const long long step = std::max<long long>(1, exprStep(sp->lsbp(), env));
             if ((base.key.find('[') == std::string::npos || onSlice) && base.width > 0 && w > 0
-                && std::min<long long>(slots.second, base.width - w) / w - slots.first / w
+                && (std::min<long long>(slots.second, base.width - 1) - slots.first) / step
                        < MAX_SLICE_SLOTS) {
-                // vector[idx +: w] = v  ->  one conditional write per aligned slot
+                // vector[idx +: w] = v  ->  one conditional write per place idx can put it
                 // (Verilator emits idx as element*w for packed arrays), and likewise
                 // within a constant slice of a vector (amk[g][idx] = v)
                 lv.ok = true;
@@ -3601,6 +3664,7 @@ private:
                 lv.baseOff = sliceLo;
                 lv.slotMin = slots.first;
                 lv.slotMax = slots.second;
+                lv.slotStep = step;
                 lv.baseWidth = base.width;
                 lv.idx = idx;
                 lv.width = w;
