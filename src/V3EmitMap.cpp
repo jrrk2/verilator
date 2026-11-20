@@ -1104,9 +1104,11 @@ public:
                 std::string err;
                 if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err))
                     v3fatal("Synthesis: " << err);
-                m_pinPorts = sdc.pinPorts;
-                m_pinFile = sdc.filename;
-                m_pinWildcard = sdc.pinWildcard;
+                if (v3Global.opt.mapOnlyPins().empty()) {  // else the pins have a file of their own
+                    m_pinPorts = sdc.pinPorts;
+                    m_pinFile = sdc.filename;
+                    m_pinWildcard = sdc.pinWildcard;
+                }
             }
             V3MapTiming::Options to;
             to.defaultPeriod = v3Global.opt.mapOnlyPeriod();
