@@ -3309,12 +3309,11 @@ private:
             m_curPath = pathOf(c.name);
             if (c.type.rfind("memory_", 0) == 0) {
                 if (laneDone[ci]) continue;
-                Design::Cell merged;
-                MemPins mp;
-                const std::vector<size_t> lanes = mergeLanes(ci, merged, mp);
+                std::vector<std::pair<Design::Cell, MemPins>> groups;
+                const std::vector<size_t> lanes = mergeLanes(ci, groups);
                 if (!lanes.empty()) {
                     for (const size_t cj : lanes) laneDone[cj] = true;
-                    emitMemory(merged, mp);
+                    for (const auto& g : groups) emitMemory(g.first, g.second);
                     continue;
                 }
                 emitMemory(c, m_cellInPo[ci]);
@@ -4337,12 +4336,15 @@ private:
     // V3EmitStruct splits a memory written in byte lanes (`if (wen[k])
     // mem[a][8k +: 8] <= d[8k +: 8]`) into one memory per lane, X_lane0 ..
     // X_laneN, alike but for we / wdata / rdata.  Lanes on byte boundaries
-    // whose total fits one x36 tile go back together here into one block
-    // RAM with a write enable per byte (WEA[3:0]), as the RTL's one memory
-    // (picosoc's 256 x 32 memory: one RAMB36E1, not four).  Returns the
-    // cells (by index) taken into the merged memory, empty if `ci` is not the
-    // first lane of a mergeable group.
-    std::vector<size_t> mergeLanes(size_t ci, Design::Cell& merged, MemPins& pins) {
+    // go back together here, as many as fit one x36 tile (32 data bits), into
+    // block RAMs with a write enable per byte (WEA[3:0]): picosoc's 256 x 32
+    // memory is one RAMB36E1, not four, and a wider memory is one tile per
+    // four byte lanes (a cache of 1024 x 512 bits with 64 byte enables: 16
+    // tiles, not 64).  Fills `groups` with one merged memory per tile, in lane
+    // order, and returns the cells (by index) taken into them; empty if `ci`
+    // is not the first lane of a memory that can be merged.
+    std::vector<size_t> mergeLanes(size_t ci,
+                                   std::vector<std::pair<Design::Cell, MemPins>>& groups) {
         const Design::Cell& c0 = m_d.cells2[ci];
         // "<path>.<mem>_lane0_inst": V3EmitStruct names the instance after the lane
         std::string sfx;
@@ -4353,10 +4355,17 @@ private:
         }
         const size_t at = stem.rfind("_lane");
         if (at == std::string::npos || stem.substr(at) != "_lane0") return {};
+        const std::string base = stem.substr(0, at);
+        // why a memory in byte lanes stays one block RAM per lane (--struct-only-report)
+        const auto no = [&](const std::string& why) -> std::vector<size_t> {
+            if (v3Global.opt.structOnlyReport())
+                std::cerr << "%Info: map-mem: byte lanes of " << base << " not merged: " << why
+                          << "\n";
+            return {};
+        };
         if (c0.type != "memory_1w1r_sync" && c0.type != "memory_1w2r_sync"
             && c0.type != "memory_sp_sync")
-            return {};
-        const std::string base = stem.substr(0, at);
+            return no("a " + c0.type);
         std::vector<size_t> lanes;
         for (size_t k = 0;; ++k) {
             const std::string want = base + "_lane" + std::to_string(k) + sfx;
@@ -4369,78 +4378,108 @@ private:
         if (lanes.size() < 2) return {};
         const int aw = paramOf(c0, "ADDR_WIDTH", 1);
         const int depth = paramOf(c0, "DEPTH", 1 << aw);
-        if (depth > 1024)
-            return {};  // x36 tiles hold 1K words; deeper lanes need a tile each anyway
+        if (depth > 1024)  // x36 tiles hold 1K words; deeper lanes need a tile each anyway
+            return no(std::to_string(depth) + " words deep, over the 1024 of a 32-bit tile");
         std::vector<MemPins> lp;
-        int total = 0;
+        std::vector<int> widths;
         bool anyImage = false;
         for (const size_t cj : lanes) {
             const Design::Cell& c = m_d.cells2[cj];
             if (c.type != c0.type || paramOf(c, "ADDR_WIDTH", 1) != aw
                 || paramOf(c, "DEPTH", 1 << aw) != depth)
-                return {};
-            const int w = paramOf(c, "DATA_WIDTH", 1);
-            if (total % 8 != 0) return {};  // every lane but the last starts a byte
-            total += w;
+                return no("lanes of different kinds or depths");
+            widths.push_back(paramOf(c, "DATA_WIDTH", 1));
             for (const auto& prm : c.params)
                 if (prm.first == "INIT_FILE" && prm.second.size() > 2) anyImage = true;
             lp.push_back(memPins(c, m_cellInPo[cj]));
         }
-        if (total > 32) return {};
+        // The tiles: lanes in order, as many to a tile as fit its 32 data bits.  Every lane of
+        // a tile but its last must end on a byte, as WEA enables whole bytes.
+        std::vector<std::pair<size_t, size_t>> tiles;  // [first lane, one past the last)
+        for (size_t k = 0; k < lanes.size();) {
+            size_t e = k;
+            int total = 0;
+            while (e < lanes.size() && total % 8 == 0 && total + widths[e] <= 32)
+                total += widths[e++];
+            if (e == k) return no("a lane wider than a tile");
+            tiles.emplace_back(k, e);
+            k = e;
+        }
+        if (tiles.size() == lanes.size()) return {};  // no two lanes share a tile
         // everything but the lane's own we / wdata / rdata must be the same nets
+        // (the same function of the design, compared in the AIG: after mapping each lane's pin
+        // can be a net of its own even where all lanes are fed the same address)
+        const auto litsOf = [&](size_t cj, const std::string& pin) -> const std::vector<int>* {
+            for (const auto& in : m_d.cells2[cj].ins)
+                if (in.first == pin) return &in.second;
+            return nullptr;
+        };
         for (size_t k = 1; k < lp.size(); ++k) {
             for (const auto& kv : lp[0].ins) {
                 if (kv.first == "we" || kv.first == "wdata") continue;
-                const auto it = lp[k].ins.find(kv.first);
-                if (it == lp[k].ins.end() || it->second != kv.second) return {};
+                const std::vector<int>* const l0 = litsOf(lanes[0], kv.first);
+                const std::vector<int>* const lk = litsOf(lanes[k], kv.first);
+                if (!l0 || !lk || *l0 != *lk)
+                    return no("lane " + std::to_string(k) + " differs from lane 0 at pin "
+                              + kv.first);
             }
-            if (lp[k].outs.size() != lp[0].outs.size()) return {};
+            if (lp[k].outs.size() != lp[0].outs.size()) return no("lanes with different outputs");
         }
-        merged = c0;
-        merged.name = base + sfx;
-        for (auto& prm : merged.params) {
-            if (prm.first == "DATA_WIDTH") prm.second = std::to_string(total);
-            if (prm.first == "INIT_FILE") prm.second = "\"\"";
-        }
-        pins = lp[0];
-        pins.ins["wdata"].clear();
-        for (auto& kv : pins.outs) kv.second.clear();
-        std::string weAny = "\"0\"";
-        int lo = 0;
-        for (size_t k = 0; k < lp.size(); ++k) {
-            const Design::Cell& c = m_d.cells2[lanes[k]];
-            const int w = paramOf(c, "DATA_WIDTH", 1);
-            const std::string we = lp[k].ins["we"].empty() ? "\"0\"" : lp[k].ins["we"][0];
-            for (int b = lo; b < lo + w; b += 8) pins.weBytes.push_back(we);
-            weAny = orNet(weAny, we);
-            const std::vector<std::string>& wd = lp[k].ins["wdata"];
-            for (int b = 0; b < w; ++b)
-                pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b] : "\"0\"");
-            for (auto& kv : pins.outs) {
-                const std::vector<std::string>& rd = lp[k].outs[kv.first];
+        for (size_t ti = 0; ti < tiles.size(); ++ti) {
+            const size_t first = tiles[ti].first, last = tiles[ti].second;
+            int total = 0;
+            for (size_t k = first; k < last; ++k) total += widths[k];
+            Design::Cell merged = m_d.cells2[lanes[first]];
+            // one tile keeps the memory's own name, as before; several are numbered
+            merged.name
+                = tiles.size() == 1 ? base + sfx : base + "_tile" + std::to_string(ti) + sfx;
+            for (auto& prm : merged.params) {
+                if (prm.first == "DATA_WIDTH") prm.second = std::to_string(total);
+                if (prm.first == "INIT_FILE") prm.second = "\"\"";
+            }
+            MemPins pins = lp[first];
+            pins.ins["wdata"].clear();
+            for (auto& kv : pins.outs) kv.second.clear();
+            std::string weAny = "\"0\"";
+            int lo = 0;
+            for (size_t k = first; k < last; ++k) {
+                const Design::Cell& c = m_d.cells2[lanes[k]];
+                const int w = widths[k];
+                const std::string we = lp[k].ins["we"].empty() ? "\"0\"" : lp[k].ins["we"][0];
+                for (int b = lo; b < lo + w; b += 8) pins.weBytes.push_back(we);
+                weAny = orNet(weAny, we);
+                const std::vector<std::string>& wd = lp[k].ins["wdata"];
                 for (int b = 0; b < w; ++b)
-                    kv.second.push_back(b < static_cast<int>(rd.size()) ? rd[b] : newNet());
-            }
-            if (anyImage) {
-                std::vector<uint64_t> words;
-                for (const auto& prm : c.params) {
-                    if (prm.first != "INIT_FILE" || prm.second.size() <= 2) continue;
-                    const std::string f = prm.second.substr(1, prm.second.size() - 2);
-                    if (!readHex(f, words))
-                        v3error("Synthesis: memory " + c.name + ": INIT_FILE " + f
-                                + " not readable; contents left 0");
+                    pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b]
+                                                                                : "\"0\"");
+                for (auto& kv : pins.outs) {
+                    const std::vector<std::string>& rd = lp[k].outs[kv.first];
+                    for (int b = 0; b < w; ++b)
+                        kv.second.push_back(b < static_cast<int>(rd.size()) ? rd[b] : newNet());
                 }
-                if (pins.image.size() < words.size()) pins.image.resize(words.size(), 0);
-                for (size_t i = 0; i < words.size(); ++i)
-                    pins.image[i] |= (words[i] & ((w >= 64 ? 0ULL : (1ULL << w)) - 1)) << lo;
-                pins.hasImage = true;
+                if (anyImage) {
+                    std::vector<uint64_t> words;
+                    for (const auto& prm : c.params) {
+                        if (prm.first != "INIT_FILE" || prm.second.size() <= 2) continue;
+                        const std::string f = prm.second.substr(1, prm.second.size() - 2);
+                        if (!readHex(f, words))
+                            v3error("Synthesis: memory " + c.name + ": INIT_FILE " + f
+                                    + " not readable; contents left 0");
+                    }
+                    if (pins.image.size() < words.size()) pins.image.resize(words.size(), 0);
+                    for (size_t i = 0; i < words.size(); ++i)
+                        pins.image[i] |= (words[i] & ((w >= 64 ? 0ULL : (1ULL << w)) - 1)) << lo;
+                    pins.hasImage = true;
+                }
+                lo += w;
             }
-            lo += w;
+            pins.ins["we"] = {weAny};
+            groups.emplace_back(merged, pins);
         }
-        pins.ins["we"] = {weAny};
         if (v3Global.opt.structOnlyReport())
             std::cerr << "%Info: map-mem: " << lanes.size() << " byte lanes of " << base
-                      << " merged into one block RAM\n";
+                      << " merged into " << tiles.size() << " block RAM"
+                      << (tiles.size() == 1 ? "" : "s") << "\n";
         return lanes;
     }
     void emitMemory(const Design::Cell& c, const std::vector<int>& inPo) {
