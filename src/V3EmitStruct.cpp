@@ -414,6 +414,56 @@ class StructModule final {
         });
         return found;
     }
+    // Whether one-dimensional unpacked array varp is read a whole array at a time: every
+    // element at a constant index, or an element indexed by the counter of a loop the read is
+    // in (a TLB or other content-addressed table, all of whose entries are compared in one
+    // cycle).  A memory primitive reads one word per port, so as a memory such an array is
+    // replicated once per element -- 8 x 44 bits came out as 352 RAM64X1D -- where as
+    // registers it is a flop per bit.
+    bool arrayReadInParallel(const AstVar* varp, int depth) const {
+        const auto inInitial = [](const AstNode* np) {
+            for (const AstNode* up = parentOf(np); up && !VN_IS(up, NodeModule);
+                 up = parentOf(up)) {
+                if (VN_IS(up, Initial) || VN_IS(up, InitialStatic) || VN_IS(up, InitialAutomatic))
+                    return true;
+            }
+            return false;
+        };
+        // a loop counter: an int / integer / genvar, not a signal of the design
+        const auto isCounter = [](const AstVar* vp) {
+            const AstBasicDType* const bp = VN_CAST(vp->dtypep()->skipRefp(), BasicDType);
+            if (!bp) return false;
+            const VBasicDTypeKwd k = bp->keyword();
+            return k == VBasicDTypeKwd::INT || k == VBasicDTypeKwd::INTEGER
+                   || k == VBasicDTypeKwd::LONGINT || k == VBasicDTypeKwd::SHORTINT
+                   || k == VBasicDTypeKwd::BYTE;
+        };
+        std::set<int> constIdx;
+        bool byCounter = false;
+        m_modp->foreach([&](const AstArraySel* sp) {
+            if (byCounter) return;
+            const AstNodeVarRef* const rp = VN_CAST(sp->fromp(), NodeVarRef);
+            if (!rp || rp->varp() != varp || !rp->access().isReadOrRW() || inInitial(sp)) return;
+            if (const AstConst* const cp = VN_CAST(sp->bitp(), Const)) {
+                constIdx.insert(cp->toSInt());
+                return;
+            }
+            bool underLoop = false;
+            for (const AstNode* up = parentOf(sp); up && !VN_IS(up, NodeModule);
+                 up = parentOf(up)) {
+                if (VN_IS(up, Loop) || VN_IS(up, Repeat)) underLoop = true;
+            }
+            if (!underLoop) return;
+            // the index is made of loop counters only
+            bool counters = true, any = false;
+            sp->bitp()->foreach([&](const AstNodeVarRef* ip) {
+                any = true;
+                if (!isCounter(ip->varp())) counters = false;
+            });
+            if (any && counters) byCounter = true;
+        });
+        return byCounter || static_cast<int>(constIdx.size()) >= depth;
+    }
     int arrayWriteSites(const AstVar* varp, int depth, bool* twoBlocksp = nullptr) const {
         int n = 0;
         std::vector<BranchPath> ports;  // one per write port: the path it is under
@@ -893,7 +943,13 @@ private:
             const std::vector<ArrayDim> dims = arrayDims(varp->dtypep());
             if (!varp->isIO() && bits > MEMORY_THRESHOLD_BITS && !drivenByInstance(varp)
                 && !arrayCannotBeRam(varp) && (dims.size() < 2 || arrayAddressable(dims))
-                && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)) {
+                && (bits > REGISTER_ARRAY_MAX_BITS || ports <= 1 || twoBlocks)
+                // read all at once and written as the design runs: registers, unless too big
+                // for that.  (One that is only set in an initial block is a table of constants
+                // -- an LFSR's masks, read in a loop over every bit -- and stays a ROM: as
+                // registers it would have no driver.)
+                && !(bits <= REGISTER_ARRAY_MAX_BITS && dims.size() < 2 && ports >= 1
+                     && arrayReadInParallel(varp, depth))) {
                 SMem m;
                 m.name = name;
                 m.depth = depth;
