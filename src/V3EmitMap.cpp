@@ -1153,7 +1153,8 @@ public:
             } else {
                 mapPartitioned(base, luts, lutOrder, timing != nullptr, pass ? &bt : nullptr);
             }
-            if (timing && passes > 1) last = false;  // written below, once the best pass is known
+            // written below, once the best pass is known and the registers are retimed
+            if (timing && (passes > 1 || v3Global.opt.mapOnlyRetime() > 0)) last = false;
             // abc's netlist as read, before the emission reworks it (register
             // polarity, fanout copies): what a re-emission of this pass starts from
             const std::map<std::string, Lut> lutsRead
@@ -1187,13 +1188,94 @@ public:
                 }
             }
         }
-        if (timing && passes > 1) {
-            m_po = poSnapshot;
-            resetEmission();
-            emitJson(filename, bestLuts, bestOrder, true);
-            std::string err;
-            if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
-            timingNotes.push_back("written: pass " + std::to_string(bestPass));
+        if (timing && (passes > 1 || v3Global.opt.mapOnlyRetime() > 0)) {
+            // the best pass again, from abc's netlist as read; each emission reworks a copy
+            const auto emitBest = [&](bool write, double& wns, double& tns) {
+                m_po = poSnapshot;
+                resetEmission();
+                std::map<std::string, Lut> l = bestLuts;
+                std::vector<std::string> o = bestOrder;
+                emitJson(write ? filename : std::string{}, l, o, write);
+                std::string err;
+                if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
+                wns = 0;
+                tns = 0;
+                for (const V3MapTiming::Domain& d : timing->summary().domains) {
+                    wns = std::min(wns, d.wns);
+                    tns += d.tns;
+                }
+            };
+            double wns = 0, tns = 0;
+            // --map-only-retime: rounds of moving late register bits back across their LUTs,
+            // each kept only if the analysis of the result is no worse
+            const int rounds = v3Global.opt.mapOnlyRetime();
+            if (rounds > 0) emitBest(false, wns, tns);
+            for (int round = 0; round < rounds; ++round) {
+                // both directions, each where the timing asks for it (-backward / -forward
+                // restrict the rounds to one of them)
+                const bool fwdOnly = v3Global.opt.mapOnlyRetimeForward();
+                const bool backOnly = v3Global.opt.mapOnlyRetimeBackward();
+                const std::vector<RegBit> added
+                    = fwdOnly ? std::vector<RegBit>{} : chooseRetime(*timing);
+                const std::vector<std::string> addedFwd
+                    = backOnly ? std::vector<std::string>{} : chooseRetimeFwd(*timing);
+                if (added.empty() && addedFwd.empty()) break;
+                double wns2 = 0, tns2 = 0;
+                emitBest(false, wns2, tns2);
+                std::ostringstream note;
+                {
+                    size_t moved = 0, ffs = 0;
+                    for (const RegBit& rb : added) {
+                        const auto it = m_rtApplied.find(rb);
+                        if (it == m_rtApplied.end()) continue;
+                        ++moved;
+                        ffs += it->second.dIns.size();
+                    }
+                    size_t kept = 0;
+                    for (const std::string& n : addedFwd)
+                        if (!m_ftRejected.count(n)) ++kept;
+                    note << "retime round " << round + 1 << ": forward " << kept << " of "
+                         << addedFwd.size() << " LUTs ("
+                         << m_ftApplied.size() - m_ftDroppedFt.size() << " flip-flops made, "
+                         << m_ftDropped.size() << " register bits no longer needed so far); "
+                         << "backward " << moved << " of " << added.size() << " register bits ("
+                         << ffs << " flip-flops for them)";
+                }
+                note << ", WNS " << wns << " -> " << wns2 << " ns, TNS " << tns << " -> " << tns2
+                     << " ns";
+                // Kept when the worst slack improves, or the total does while the worst slack
+                // gives up no more than a two-hundredth of the period: every new flip-flop is a
+                // load on the net it reads, which this estimate prices and placement may not
+                const double tol = 0.005 * timing->minPeriod();
+                const bool better = wns2 > wns + 1e-6 || (wns2 > wns - tol && tns2 > tns + 1e-6)
+                                    || v3Global.opt.mapOnlyRetimeKeep();  // (to test the move)
+                if (!better) {
+                    for (const RegBit& rb : added) {
+                        m_rtSet.erase(rb);
+                        m_rtRejected.insert(rb);
+                    }
+                    for (const std::string& n : addedFwd) {
+                        m_ftOrder.erase(std::remove(m_ftOrder.begin(), m_ftOrder.end(), n),
+                                        m_ftOrder.end());
+                        m_ftRejected.insert(n);
+                    }
+                    timingNotes.push_back(note.str() + ": not kept");
+                    break;
+                }
+                timingNotes.push_back(note.str());
+                wns = wns2;
+                tns = tns2;
+            }
+            emitBest(true, wns, tns);
+            timingNotes.push_back("written: pass " + std::to_string(bestPass)
+                                  + (m_ftApplied.empty()
+                                         ? std::string{}
+                                         : ", " + std::to_string(m_ftApplied.size())
+                                               + " LUTs retimed forward")
+                                  + (m_rtApplied.empty()
+                                         ? std::string{}
+                                         : ", " + std::to_string(m_rtApplied.size())
+                                               + " register bits retimed"));
         }
         if (timing) {
             for (const std::string& l : timingNotes)
@@ -1235,6 +1317,14 @@ private:
         m_regDup.clear();
         m_spread.clear();
         m_dupLuts = m_dupRegs = 0;
+        m_rtApplied.clear();
+        m_rtLuts.clear();
+        m_regNets.clear();
+        m_ftApplied.clear();
+        m_ftDropped.clear();
+        m_ftDroppedFt.clear();
+        m_ftCand.clear();
+        m_ftDNet.clear();
     }
 
     // ---- fanout ----
@@ -1257,6 +1347,55 @@ private:
     std::unordered_map<std::string, Spread> m_spread;  // by node
     std::map<std::pair<size_t, size_t>, std::vector<std::string>>
         m_regDup;  // (register, bit) -> copies' BLIF names
+    // Register retiming (--map-only-retime): a register bit whose D input misses its time while
+    // its output has time to spare is moved back across the LUT that drives D.  The LUT then
+    // drives the bit's Q net from flip-flops on each of its inputs (the same clock, enable and
+    // reset; values at reset and at power-up that make the LUT give the bit's own), named
+    // <register>_<bit>_bret<input> after Vivado's.  m_rtSet is the choice, kept across
+    // emissions; the rest describes the emission in hand.
+    using RegBit = std::pair<size_t, size_t>;
+    struct RtApplied final {
+        std::string lut;  // the LUT (BLIF name), now on the Q side
+        std::vector<std::string> dIns;  // what its inputs were: the new flip-flops' D
+        std::vector<std::string> qNames;  // the new flip-flops' Q (BLIF names)
+    };
+    std::set<RegBit> m_rtSet, m_rtRejected;
+    // Forward retiming, what --map-only-retime does unless told otherwise: a LUT whose inputs
+    // all come straight from flip-flops with one clock, enable and reset, and whose output is
+    // late while those flip-flops' D inputs have time to spare, is moved in front of them.
+    // One flip-flop (<register>_<bit>_fret<n>) then holds the LUT's value; the LUT itself is
+    // built again on the D side.  A flip-flop left without readers goes; one that is read
+    // elsewhere stays for those readers, split in two.  The flip-flop a move makes is a
+    // candidate in later rounds, so a register can go forward through several LUTs.
+    struct FtApplied final {
+        std::string lut, ft, q;  // the LUT moved, its D-side copy, the new flip-flop's output
+        RegBit ctl;  // a register bit with the clock, enable and reset to use
+        bool rv, iv;  // the value at reset and at power-up
+    };
+    struct SrcReg final {  // a flip-flop a LUT input may come from: a register bit or a moved one
+        RegBit ctl;
+        int ft = -1;  // index in m_ftApplied, -1 for a register bit
+        RegBit bit;
+        std::string dNode;  // BLIF name of what drives its D
+        bool rv = false, iv = false;
+    };
+    struct FtCand final {
+        std::string net;  // the LUT's output net in this emission
+        std::vector<std::string> dNets;  // the D nets of the flip-flops it reads
+    };
+    std::vector<std::string> m_ftOrder;  // the LUTs chosen, in the order they are moved
+    std::set<std::string> m_ftRejected;
+    std::vector<FtApplied> m_ftApplied;
+    std::set<RegBit> m_ftDropped;  // register bits no longer read by anything
+    std::set<int> m_ftDroppedFt;  // moved flip-flops moved on, likewise
+    std::map<std::string, FtCand> m_ftCand;
+    std::map<std::string, std::string> m_ftDNet;  // a moved flip-flop's D net, by its q name
+    std::map<RegBit, RtApplied> m_rtApplied;
+    std::set<std::string> m_rtLuts;
+    struct RegNets final {
+        std::string d, q, en;
+    };
+    std::map<RegBit, RegNets> m_regNets;  // each bit's nets in this emission
     int m_dupLuts = 0;
     int m_dupRegs = 0;
     struct Lut;  // abc's LUT (BLIF back, below)
@@ -1299,6 +1438,278 @@ private:
         if (invp) *invp = inv;
         return n;
     }
+    // Move the chosen register bits (m_rtSet) back across their D LUTs, in abc's netlist: the
+    // LUT reads the new flip-flops' outputs and is given the bit's Q net when nets are
+    // numbered.  A bit that cannot be moved is dropped from the choice for good.
+    void applyRetime(std::map<std::string, Lut>& luts) {
+        if (m_rtSet.empty()) return;
+        std::unordered_map<std::string, int> uses;  // readers of each node: LUT inputs and POs
+        for (const auto& kv : luts) {
+            if (isBufLut(kv.second)) continue;
+            for (const std::string& in : kv.second.ins) ++uses[resolveLut(luts, in)];
+        }
+        for (size_t i = 0; i < m_po.size(); ++i) {
+            const std::string pn = "po" + std::to_string(i);
+            if (luts.count(pn)) ++uses[resolveLut(luts, pn)];
+        }
+        std::vector<RegBit> bad;
+        for (const RegBit& rb : m_rtSet) {
+            const Design::Reg& r = m_d.regs[rb.first];
+            const std::string pn = "po" + std::to_string(m_regPo[rb.first].d0 + rb.second);
+            const int ql = m_aig.resolve(r.q[rb.second]);
+            bool ok = !r.latch && ql >= 2 && !(ql & 1) && luts.count(pn);
+            std::string n;
+            if (ok) {
+                n = resolveLut(luts, pn);
+                const auto it = luts.find(n);
+                // a LUT of its own, read by this D input alone, that can give either value
+                ok = it != luts.end() && !it->second.ins.empty() && it->second.ins.size() <= 6
+                     && !isBufLut(it->second) && uses[n] == 1 && !m_rtLuts.count(n);
+                ok = ok && m_piOf.count(ql >> 1);
+                if (ok) {
+                    const std::string tt = lutInit(it->second);
+                    ok = tt.find('0') != std::string::npos && tt.find('1') != std::string::npos;
+                }
+            }
+            if (!ok) {
+                bad.push_back(rb);
+                continue;
+            }
+            Lut& l = luts[n];
+            RtApplied ap;
+            ap.lut = n;
+            ap.dIns = l.ins;
+            for (size_t j = 0; j < l.ins.size(); ++j) {
+                ap.qNames.push_back("rt$" + std::to_string(rb.first) + "_"
+                                    + std::to_string(rb.second) + "_" + std::to_string(j));
+                l.ins[j] = ap.qNames.back();
+            }
+            m_rtLuts.insert(n);
+            m_rtApplied[rb] = ap;
+            // The LUTs that read the bit read this LUT by name from now on, so that
+            // limitFanout copies it for them as it would any other LUT (the bit's register
+            // copies are gone).  Readers outside abc stay on the bit's net, which is this
+            // LUT's own.
+            const std::string pi = "pi" + std::to_string(m_piOf.at(ql >> 1));
+            for (auto& kv : luts) {
+                if (kv.first == n) continue;
+                for (std::string& in : kv.second.ins)
+                    if (in == pi) in = n;
+            }
+        }
+        for (const RegBit& rb : bad) {
+            m_rtSet.erase(rb);
+            m_rtRejected.insert(rb);
+        }
+    }
+    // The flip-flops a LUT input may come straight from, by the BLIF name of their output: the
+    // register bits (those still in place) and the flip-flops forward retiming has made
+    std::unordered_map<std::string, SrcReg> sourceRegs(const std::map<std::string, Lut>& luts) {
+        std::unordered_map<std::string, SrcReg> src;
+        for (size_t ri = 0; ri < m_d.regs.size(); ++ri) {
+            const Design::Reg& r = m_d.regs[ri];
+            if (r.latch) continue;
+            const RegOut& ro = m_regPo[ri];
+            for (size_t b = 0; b < r.q.size(); ++b) {
+                if (m_rtApplied.count({ri, b}) || m_ftDropped.count({ri, b})) continue;
+                const int ql = m_aig.resolve(r.q[b]);
+                if (ql < 2 || (ql & 1)) continue;
+                const auto pit = m_piOf.find(ql >> 1);
+                if (pit == m_piOf.end()) continue;
+                SrcReg s;
+                s.ctl = s.bit = {ri, b};
+                const size_t i = ro.d0 + b;
+                const std::string pn = "po" + std::to_string(i);
+                if (luts.count(pn)) {
+                    s.dNode = pn;
+                } else {  // D is a register or input bit as it stands
+                    const int dl = m_aig.resolve(m_po[i]);
+                    const auto dit = m_piOf.find(dl >> 1);
+                    if (dl < 2 || (dl & 1) || dit == m_piOf.end()) continue;
+                    s.dNode = "pi" + std::to_string(dit->second);
+                }
+                const size_t bn = r.bitNo.empty() ? b : static_cast<size_t>(r.bitNo[b]);
+                const bool flip = m_flippedDpo.count(i) != 0;  // stored inverted
+                s.rv = bitOf(r.resetVal, bn) != flip;
+                s.iv = bitOf(r.initVal, bn) != flip;
+                src["pi" + std::to_string(pit->second)] = s;
+            }
+        }
+        for (size_t fi = 0; fi < m_ftApplied.size(); ++fi) {
+            if (m_ftDroppedFt.count(static_cast<int>(fi))) continue;
+            const FtApplied& f = m_ftApplied[fi];
+            SrcReg s;
+            s.ctl = f.ctl;
+            s.ft = static_cast<int>(fi);
+            s.dNode = f.ft;
+            s.rv = f.rv;
+            s.iv = f.iv;
+            src[f.q] = s;
+        }
+        return src;
+    }
+    // The clock, enable and reset of two register bits are the same nets
+    bool sameControl(const RegBit& a, const RegBit& b) {
+        if (a.first == b.first) return true;
+        const Design::Reg& ra = m_d.regs[a.first];
+        const Design::Reg& rb = m_d.regs[b.first];
+        const RegOut& oa = m_regPo[a.first];
+        const RegOut& ob = m_regPo[b.first];
+        const auto lit = [&](int po) { return po < 0 ? -1 : m_aig.resolve(m_po[po]); };
+        return ra.async == rb.async && ra.negedge == rb.negedge
+               && m_aig.resolve(ra.clk) == m_aig.resolve(rb.clk) && lit(oa.en) == lit(ob.en)
+               && lit(oa.rst) == lit(ob.rst);
+    }
+    // Whether LUT `n` (up to six inputs, not a buffer) reads nothing but such flip-flops, all of
+    // one control set; `ins` gets them in input order
+    bool readsOnlyRegs(const std::map<std::string, Lut>& luts,
+                       const std::unordered_map<std::string, SrcReg>& src, const std::string& n,
+                       std::vector<SrcReg>& ins) {
+        const auto it = luts.find(n);
+        if (it == luts.end() || it->second.ins.empty() || it->second.ins.size() > 6
+            || isBufLut(it->second) || m_rtLuts.count(n))
+            return false;
+        for (const std::string& in : it->second.ins) {
+            const auto sit = src.find(resolveLut(luts, in));
+            if (sit == src.end()) return false;
+            if (!ins.empty() && !sameControl(ins[0].ctl, sit->second.ctl)) return false;
+            ins.push_back(sit->second);
+        }
+        return true;
+    }
+    // Move the chosen LUTs (m_ftOrder) in front of the flip-flops they read, in abc's netlist.
+    // The LUT's cover goes onto a new node reading the flip-flops' D nodes; the LUT's own name
+    // becomes a buffer of the new flip-flop's output, so everything that read it still does.
+    void applyRetimeFwd(std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
+        if (m_ftOrder.empty()) return;
+        std::vector<std::string> kept;
+        for (const std::string& n : m_ftOrder) {
+            const std::unordered_map<std::string, SrcReg> src = sourceRegs(luts);
+            std::vector<SrcReg> ins;
+            if (!readsOnlyRegs(luts, src, n, ins)) {
+                m_ftRejected.insert(n);
+                continue;
+            }
+            Lut& l = luts[n];
+            const std::string tt = lutInit(l);  // MSB first; input j is bit j of the index
+            int ri = 0, ii = 0;
+            for (size_t j = 0; j < ins.size(); ++j) {
+                ri |= (ins[j].rv ? 1 : 0) << j;
+                ii |= (ins[j].iv ? 1 : 0) << j;
+            }
+            FtApplied f;
+            const std::string k = std::to_string(m_ftApplied.size());
+            f.lut = n;
+            f.ft = "ft$" + k;
+            f.q = "ftq$" + k;
+            f.ctl = ins[0].ctl;
+            f.rv = tt[tt.size() - 1 - ri] == '1';
+            f.iv = tt[tt.size() - 1 - ii] == '1';
+            Lut d = l;
+            d.out = f.ft;
+            for (size_t j = 0; j < ins.size(); ++j) d.ins[j] = ins[j].dNode;
+            luts[f.ft] = d;
+            order.push_back(f.ft);
+            l.ins = {f.q};
+            l.cover = {{"1", '1'}};
+            m_ftApplied.push_back(f);
+            kept.push_back(n);
+            // a flip-flop nothing reads any more is not emitted
+            std::unordered_set<std::string> read;
+            for (const auto& kv : luts)
+                for (const std::string& in : kv.second.ins) read.insert(resolveLut(luts, in));
+            for (const auto& kv : m_rtApplied)
+                for (const std::string& in : kv.second.dIns) read.insert(resolveLut(luts, in));
+            for (size_t i = 0; i < m_po.size(); ++i) {  // POs abc left out: a bit as it stands
+                if (luts.count("po" + std::to_string(i))) continue;
+                const auto pit = m_piOf.find(m_aig.resolve(m_po[i]) >> 1);
+                if (pit != m_piOf.end()) read.insert("pi" + std::to_string(pit->second));
+            }
+            for (const Design::Reg& r : m_d.regs) {  // and bits used as clocks
+                const auto pit = m_piOf.find(m_aig.resolve(r.clk) >> 1);
+                if (pit != m_piOf.end()) read.insert("pi" + std::to_string(pit->second));
+            }
+            for (const SrcReg& sr : ins) {
+                if (sr.ft >= 0) {
+                    if (!read.count(m_ftApplied[sr.ft].q)) m_ftDroppedFt.insert(sr.ft);
+                } else {
+                    const int ql = m_aig.resolve(m_d.regs[sr.bit.first].q[sr.bit.second]);
+                    if (!read.count("pi" + std::to_string(m_piOf.at(ql >> 1))))
+                        m_ftDropped.insert(sr.bit);
+                }
+            }
+        }
+        m_ftOrder.swap(kept);
+    }
+    // After an analysis: the LUTs worth moving forward, appended to m_ftOrder.  A LUT qualifies
+    // when its output is late and the D inputs of the flip-flops it reads would still be less
+    // late with the LUT's delay in front of them.
+    std::vector<std::string> chooseRetimeFwd(const V3MapTiming& timing) {
+        std::vector<std::string> added;
+        const double step = V3MapTiming::lutDelay(4, timing.averageNetDelay());
+        const std::set<std::string> have(m_ftOrder.begin(), m_ftOrder.end());
+        size_t late = 0;
+        double worstIn = 1e30;
+        for (const auto& kv : m_ftCand) {
+            if (have.count(kv.first) || m_ftRejected.count(kv.first)) continue;
+            const std::string& o = kv.second.net;
+            if (o.empty() || o[0] == '"') continue;
+            const double so = timing.required(o) - timing.arrival(o);
+            if (std::isnan(so) || so >= 0) continue;
+            double sd = 1e30;
+            bool ok = true;
+            for (const std::string& d : kv.second.dNets) {
+                if (d.empty()) ok = false;
+                if (!ok || d[0] == '"') continue;
+                const double s = timing.required(d) - timing.arrival(d);
+                // (a D input no clocked path reaches has all the time there is)
+                if (!std::isnan(s)) sd = std::min(sd, s);
+            }
+            ++late;
+            if (ok) worstIn = std::min(worstIn, sd - so);
+            if (ok && sd - step > so + step) {
+                m_ftOrder.push_back(kv.first);
+                added.push_back(kv.first);
+            }
+        }
+        if (v3Global.opt.structOnlyReport())
+            std::cerr << "%Info: map-retime: " << m_ftCand.size()
+                      << " LUTs read only flip-flops of one control set; " << late
+                      << " of them have a late output; " << added.size()
+                      << " have inputs with a LUT's delay to spare over it (step " << step
+                      << " ns)\n";
+        return added;
+    }
+    // After an analysis: the register bits worth moving back, added to m_rtSet.  A bit
+    // qualifies when its D input is late and its output would still be less late with the
+    // LUT's delay moved behind it.
+    std::vector<RegBit> chooseRetime(const V3MapTiming& timing) {
+        std::vector<RegBit> added;
+        const double step = V3MapTiming::lutDelay(4, timing.averageNetDelay());
+        for (const auto& kv : m_regNets) {
+            if (m_rtSet.count(kv.first) || m_rtRejected.count(kv.first)) continue;
+            const std::string& d = kv.second.d;
+            const std::string& q = kv.second.q;
+            const std::string& en = kv.second.en;
+            if (d.empty() || d[0] == '"' || q.empty() || q[0] == '"') continue;
+            const double sd = timing.required(d) - timing.arrival(d);
+            const double sq = timing.required(q) - timing.arrival(q);
+            if (std::isnan(sd) || std::isnan(sq)) continue;
+            // The new flip-flops take the bit's enable, several loads for one: not where the
+            // enable is itself late (moving the bit does nothing for that path)
+            if (!en.empty() && en[0] != '"') {
+                const double se = timing.required(en) - timing.arrival(en);
+                if (!std::isnan(se) && se < step) continue;
+            }
+            // the output keeps a LUT's delay in hand over the input after the move, so that
+            // the move cannot make a new worst path of its own
+            if (sd < 0 && sq - step > sd + step) {
+                m_rtSet.insert(kv.first);
+                added.push_back(kv.first);
+            }
+        }
+        return added;
+    }
     void limitFanout(std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
         const size_t F = v3Global.opt.mapOnlyMaxFanout();
         if (F < 2) return;
@@ -1315,6 +1726,8 @@ private:
             for (size_t b = 0; b < r.q.size(); ++b) {
                 const int ql = m_aig.resolve(r.q[b]);
                 if (ql < 2 || (ql & 1)) continue;
+                if (m_rtApplied.count({ri, b})) continue;  // retimed: a LUT drives this net
+                if (m_ftDropped.count({ri, b})) continue;  // moved forward: gone
                 regOfVar[ql >> 1] = {ri, b};
             }
         }
@@ -2880,6 +3293,8 @@ private:
                 std::cerr << "%Info: map-regs: " << n << " register bits stored inverted, "
                           << m_flipGain << " inverter LUTs removed\n";
         }
+        applyRetime(luts);
+        applyRetimeFwd(luts, order);
         limitFanout(luts, order);
         // 1. nets for PIs (sources) and for every LUT output; resolve BLIF names
         std::unordered_map<std::string, std::string> netOfName;  // blif name -> net json
@@ -2891,6 +3306,12 @@ private:
         }
         for (const auto& kv : m_regDup)
             for (const std::string& cp : kv.second) netOfName[cp] = newNet();
+        // a retimed bit's LUT drives the bit's Q net; its inputs come from the new flip-flops
+        for (const auto& kv : m_rtApplied) {
+            netOfName[kv.second.lut] = netOfLit(m_d.regs[kv.first.first].q[kv.first.second]);
+            for (const std::string& qn : kv.second.qNames) netOfName[qn] = newNet();
+        }
+        for (const FtApplied& f : m_ftApplied) netOfName[f.q] = newNet();
         // The net a register pin reads a PO from: the node's, or one of its
         // fanout copies' (limitFanout) once the first group is full
         const size_t F = std::max<size_t>(1, v3Global.opt.mapOnlyMaxFanout());
@@ -2966,6 +3387,22 @@ private:
         for (const std::string& o : order) {
             if (o.size() > 1 && o[0] == 'v' && std::isdigit(static_cast<unsigned char>(o[1])))
                 m_cutNet[o] = netOfName[o];
+        }
+        // forward-retiming candidates: LUTs that read only flip-flops of one control set
+        if (v3Global.opt.mapOnlyRetime() > 0) {
+            const std::unordered_map<std::string, SrcReg> src = sourceRegs(luts);
+            for (const std::string& o : order) {
+                if (skip.count(o)) continue;
+                std::vector<SrcReg> ins;
+                if (!readsOnlyRegs(luts, src, o, ins)) continue;
+                FtCand c;
+                c.net = netOfName[o];
+                for (const SrcReg& sr : ins) {
+                    const auto dit = netOfName.find(sr.dNode);
+                    c.dNets.push_back(dit == netOfName.end() ? std::string{} : dit->second);
+                }
+                m_ftCand[o] = c;
+            }
         }
         // POs that abc wrote as .names outputs get those nets; others may be
         // direct PI buffers / constants handled by abc as LUT1s anyway
@@ -3066,7 +3503,8 @@ private:
             const auto soleLut = [&](const std::string& n) {
                 const auto it = luts.find(n);
                 return it != luts.end() && !skip.count(n) && !it->second.ins.empty()
-                       && it->second.ins.size() <= 6 && fanout[n] == 1;
+                       && it->second.ins.size() <= 6 && fanout[n] == 1
+                       && !m_rtLuts.count(n);  // a retimed bit's net has readers outside abc
             };
             std::set<std::string> f7;
             std::set<std::string> f7data;  // LUTs feeding a MUXF7: they stay LUTs
@@ -3349,6 +3787,52 @@ private:
                         attrs.emplace_back("MERGED_EQUIV", "\"" + names + "\"");
                     }
                 }
+                m_regNets[{ri, b}] = {d, q, en};
+                if (m_ftDropped.count({ri, b})) continue;  // moved forward, and read nowhere else
+                const auto rtit = m_rtApplied.find({ri, b});
+                if (rtit != m_rtApplied.end()) {
+                    // Retimed: no flip-flop on this net (its LUT drives it), one behind each
+                    // of the LUT's inputs.  Their reset and power-up values are an input
+                    // pattern for which the LUT gives this bit's own.
+                    const RtApplied& ap = rtit->second;
+                    const std::string tt = lutInit(luts.at(ap.lut));  // MSB first
+                    const int n = static_cast<int>(tt.size());
+                    const auto pattern = [&](bool want) {
+                        for (int idx = 0; idx < n; ++idx)
+                            if ((tt[n - 1 - idx] == '1') == want) return idx;
+                        v3fatal("internal: retimed LUT " << ap.lut << " is a constant");
+                        return 0;
+                    };
+                    const int rstPat = hasRst ? pattern(setv) : 0;
+                    const int initPat = pattern(initv);
+                    const std::string leaf = m_curLeaf;
+                    for (size_t j = 0; j < ap.dIns.size(); ++j) {
+                        const bool rv = (rstPat >> j) & 1;
+                        std::string t2;
+                        std::vector<std::pair<std::string, std::string>> in2
+                            = {{"C", "[" + clk + "]"},
+                               {"CE", "[" + en + "]"},
+                               {"D", "[" + netOf(ap.dIns[j]) + "]"}};
+                        if (!hasRst) {
+                            t2 = "FDRE";
+                            in2.emplace_back("R", "[\"0\"]");
+                        } else if (r.async) {
+                            t2 = rv ? "FDPE" : "FDCE";
+                            in2.emplace_back(rv ? "PRE" : "CLR", "[" + rst + "]");
+                        } else {
+                            t2 = rv ? "FDSE" : "FDRE";
+                            in2.emplace_back(rv ? "S" : "R", "[" + rst + "]");
+                        }
+                        if (r.negedge) t2 += "_1";
+                        m_curLeaf = leaf + "_bret" + std::to_string(j);
+                        cell(t2,
+                             sanitize(r.name) + "_" + std::to_string(bn) + "_bret"
+                                 + std::to_string(j),
+                             {{"INIT", ((initPat >> j) & 1) ? "\"1\"" : "\"0\""}}, in2,
+                             {{"Q", "[" + netOfName.at(ap.qNames[j]) + "]"}}, {});
+                    }
+                    continue;
+                }
                 cell(type, sanitize(r.name) + "_" + std::to_string(bn),
                      {{"INIT", initv ? "\"1\"" : "\"0\""}}, ins, {{"Q", "[" + q + "]"}}, attrs);
                 // its copies for fanout (limitFanout): the same register again
@@ -3364,6 +3848,40 @@ private:
                     }
                 }
             }
+        }
+        // 3b. the flip-flops forward retiming made: each holds its LUT's value
+        for (size_t fi = 0; fi < m_ftApplied.size(); ++fi) {
+            if (m_ftDroppedFt.count(static_cast<int>(fi))) continue;
+            const FtApplied& f = m_ftApplied[fi];
+            const Design::Reg& r = m_d.regs[f.ctl.first];
+            const RegOut& ro = m_regPo[f.ctl.first];
+            m_curPath = pathOf(r.name);
+            const std::string clk = netOfLit(r.clk);
+            const std::string en = poNetFor(ro.en);
+            const std::string rst = poNetFor(ro.rst);
+            const bool hasRst = rst != "\"0\"";
+            std::string type;
+            std::vector<std::pair<std::string, std::string>> ins
+                = {{"C", "[" + clk + "]"}, {"CE", "[" + en + "]"}, {"D", "[" + netOf(f.ft) + "]"}};
+            if (!hasRst) {
+                type = "FDRE";
+                ins.emplace_back("R", "[\"0\"]");
+            } else if (r.async) {
+                type = f.rv ? "FDPE" : "FDCE";
+                ins.emplace_back(f.rv ? "PRE" : "CLR", "[" + rst + "]");
+            } else {
+                type = f.rv ? "FDSE" : "FDRE";
+                ins.emplace_back(f.rv ? "S" : "R", "[" + rst + "]");
+            }
+            if (r.negedge) type += "_1";
+            const size_t bn = r.bitNo.empty() ? f.ctl.second
+                                              : static_cast<size_t>(r.bitNo[f.ctl.second]);
+            const std::string name
+                = sanitize(r.name) + "_" + std::to_string(bn) + "_fret" + std::to_string(fi);
+            m_curLeaf = name;
+            m_ftDNet[f.q] = netOf(f.ft);
+            cell(type, name, {{"INIT", f.iv ? "\"1\"" : "\"0\""}}, ins,
+                 {{"Q", "[" + netOfName.at(f.q) + "]"}}, {});
         }
         // 4. memories and pass-through cells
         std::vector<bool> laneDone(m_d.cells2.size(), false);

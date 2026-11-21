@@ -314,6 +314,10 @@ private:
     int m_mapOnlyPartitionMin = 1000;  // main switch: --map-only-partition-min
     bool m_mapOnlyBramCascade = false;  // main switch: --map-only-bram-cascade
     bool m_mapOnlyBramX2X4 = false;  // main switch: --map-only-bram-x2-x4
+    int m_mapOnlyRetime = 0;  // main switch: --map-only-retime <rounds>
+    bool m_mapOnlyRetimeKeep = false;  // main switch: --map-only-retime-keep
+    bool m_mapOnlyRetimeBackward = false;  // main switch: --map-only-retime-backward
+    bool m_mapOnlyRetimeForward = false;  // main switch: --map-only-retime-forward
     bool m_mapOnlyNoIobuf = false;  // main switch: --map-only-no-iobuf
     bool m_mapOnlyNoWideLut = false;  // main switch: --map-only-no-wide-lut
     bool m_mapOnlyKeepEquivRegs = false;  // main switch: --map-only-keep-equivalent-registers
@@ -787,6 +791,10 @@ public:
     int mapOnlyPartitionMin() const { return m_mapOnlyPartitionMin; }
     bool mapOnlyBramCascade() const { return m_mapOnlyBramCascade; }
     bool mapOnlyBramX2X4() const { return m_mapOnlyBramX2X4; }
+    int mapOnlyRetime() const { return m_mapOnlyRetime; }
+    bool mapOnlyRetimeKeep() const { return m_mapOnlyRetimeKeep; }
+    bool mapOnlyRetimeBackward() const { return m_mapOnlyRetimeBackward; }
+    bool mapOnlyRetimeForward() const { return m_mapOnlyRetimeForward; }
     bool mapOnlyNoIobuf() const { return m_mapOnlyNoIobuf; }
     bool mapOnlyNoWideLut() const { return m_mapOnlyNoWideLut; }
     bool mapOnlyKeepEquivRegs() const { return m_mapOnlyKeepEquivRegs; }

@@ -1666,6 +1666,11 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-keep-temps", OnOff, &m_mapOnlyKeepTemps);
     DECL_OPTION("-map-only-bram-cascade", OnOff, &m_mapOnlyBramCascade);
     DECL_OPTION("-map-only-bram-x2-x4", OnOff, &m_mapOnlyBramX2X4);
+    DECL_OPTION("-map-only-retime-keep", OnOff, &m_mapOnlyRetimeKeep);
+    DECL_OPTION("-map-only-retime-backward", OnOff, &m_mapOnlyRetimeBackward);
+    DECL_OPTION("-map-only-retime-forward", OnOff, &m_mapOnlyRetimeForward);
+    DECL_OPTION("-map-only-retime", CbVal,
+                [this](const char* valp) { m_mapOnlyRetime = std::atoi(valp); });
     DECL_OPTION("-map-only-no-iobuf", OnOff, &m_mapOnlyNoIobuf);
     DECL_OPTION("-map-only-no-wide-lut", OnOff, &m_mapOnlyNoWideLut);
     DECL_OPTION("-map-only-keep-equivalent-registers", OnOff, &m_mapOnlyKeepEquivRegs);
