@@ -1261,6 +1261,7 @@ private:
     int m_dupRegs = 0;
     struct Lut;  // abc's LUT (BLIF back, below)
     static bool isBufLut(const Lut& l) { return isBufLutImpl(l); }  // (defined with Lut, below)
+    static bool isInvLut(const Lut& l) { return isInvLutImpl(l); }
     // abc's buffers (`.names a b / 1 1`) become net aliases when emitted: the node a name stands
     // for
     static std::string resolveLut(const std::map<std::string, Lut>& luts, std::string n) {
@@ -1271,14 +1272,32 @@ private:
         }
         return n;
     }
-    // The node a PO's net comes from: a LUT, a PI passed straight through, or none (a constant)
-    std::string poNode(const std::map<std::string, Lut>& luts, size_t i) {
-        const std::string pn = "po" + std::to_string(i);
-        if (luts.count(pn)) return resolveLut(luts, pn);
-        const int r = m_aig.resolve(m_po[i]);
-        const auto pit = m_piOf.find(r >> 1);
-        if (r <= 1 || pit == m_piOf.end()) return std::string{};
-        return "pi" + std::to_string(pit->second);
+    // The node a PO's net comes from: a LUT, a PI passed straight through, or none (a constant).
+    // Buffers are aliases, and inverters are looked through too (*invp says the PO is the node's
+    // complement): the pins reading a register's or a LUT's complement load that node, whether
+    // abc wrote the inverter as a LUT or left a complemented PI out of the BLIF.
+    std::string poNode(const std::map<std::string, Lut>& luts, size_t i, bool* invp = nullptr) {
+        bool inv = false;
+        std::string n = "po" + std::to_string(i);
+        if (luts.count(n)) {
+            for (int guard = 0; guard < 64; ++guard) {
+                const auto it = luts.find(n);
+                if (it == luts.end()) break;
+                if (isInvLut(it->second))
+                    inv = !inv;
+                else if (!isBufLut(it->second))
+                    break;
+                n = it->second.ins[0];
+            }
+        } else {
+            const int r = m_aig.resolve(m_po[i]);
+            const auto pit = m_piOf.find(r >> 1);
+            if (r <= 1 || pit == m_piOf.end()) return std::string{};
+            inv = r & 1;
+            n = "pi" + std::to_string(pit->second);
+        }
+        if (invp) *invp = inv;
+        return n;
     }
     void limitFanout(std::map<std::string, Lut>& luts, std::vector<std::string>& order) {
         const size_t F = v3Global.opt.mapOnlyMaxFanout();
@@ -2196,6 +2215,11 @@ private:
         return l.ins.size() == 1 && l.cover.size() == 1 && l.cover[0].first == "1"
                && l.cover[0].second == '1';
     }
+    static bool isInvLutImpl(const Lut& l) {
+        return l.ins.size() == 1 && l.cover.size() == 1
+               && ((l.cover[0].first == "0" && l.cover[0].second == '1')
+                   || (l.cover[0].first == "1" && l.cover[0].second == '0'));
+    }
 
     // ---- partitioned mapping: abc once per instance ----
     // The flat AIG is cut at instance boundaries: every node belongs to the
@@ -2870,16 +2894,33 @@ private:
         // The net a register pin reads a PO from: the node's, or one of its
         // fanout copies' (limitFanout) once the first group is full
         const size_t F = std::max<size_t>(1, v3Global.opt.mapOnlyMaxFanout());
+        // One inverter per net read complemented by register pins and the like: a register bit's,
+        // or one of its fanout copies'
+        std::unordered_map<std::string, std::string> invOfNet;
+        const auto invOf = [&](const std::string& net) -> std::string {
+            auto inv = invOfNet.find(net);
+            if (inv == invOfNet.end()) {
+                const std::string o = newNet();
+                cell("LUT1", "inv_" + std::to_string(m_ncells), {{"INIT", "\"01\""}},
+                     {{"I0", "[" + net + "]"}}, {{"O", "[" + o + "]"}});
+                inv = invOfNet.emplace(net, o).first;
+            }
+            return inv->second;
+        };
         const auto poNetFor = [&](int i) -> std::string {
             const std::string& base = m_poNet[i];
             if (base.empty() || base[0] == '"' || m_spread.empty()) return base;
-            const auto it = m_spread.find(poNode(luts, i));
+            bool inverted = false;
+            const auto it = m_spread.find(poNode(luts, i, &inverted));
             if (it == m_spread.end()) return base;
             Spread& sp = it->second;
             const size_t g = sp.readerGroup + (sp.readerFill + sp.outsideNext++) / F;
             if (g == 0) return base;
             const auto nit = netOfName.find(sp.names[std::min(g, sp.names.size() - 1)]);
-            return nit == netOfName.end() ? base : nit->second;
+            if (nit == netOfName.end()) return base;
+            if (!inverted) return nit->second;
+            // the complement: the copy's own inverter, one for its group of pins
+            return invOf(nit->second);
         };
         auto netOf = [&](const std::string& n) -> std::string {
             const auto it = netOfName.find(n);
@@ -2940,8 +2981,10 @@ private:
                     m_poNet[i] = "\"0\"";
                 else if (r == 1)
                     m_poNet[i] = "\"1\"";
+                else if (m_aig.resolve(r) > 1 && (m_aig.resolve(r) & 1))
+                    m_poNet[i] = invOf(netOfLit(r ^ 1));  // a PI inverted: its one inverter
                 else
-                    m_poNet[i] = netOfLit(r);  // PI (possibly inverted) passed straight through
+                    m_poNet[i] = netOfLit(r);  // a PI passed straight through
             }
         }
         // LUT owners for the hierarchical EDIF: a primary output belongs to the
