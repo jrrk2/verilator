@@ -1665,6 +1665,7 @@ void V3Options::parseOptsList(FileLine* fl, const string& optdir, int argc,
     DECL_OPTION("-map-only-abc-script", Set, &m_mapOnlyAbcScript);
     DECL_OPTION("-map-only-keep-temps", OnOff, &m_mapOnlyKeepTemps);
     DECL_OPTION("-map-only-bram-cascade", OnOff, &m_mapOnlyBramCascade);
+    DECL_OPTION("-map-only-bram-x2-x4", OnOff, &m_mapOnlyBramX2X4);
     DECL_OPTION("-map-only-no-iobuf", OnOff, &m_mapOnlyNoIobuf);
     DECL_OPTION("-map-only-no-wide-lut", OnOff, &m_mapOnlyNoWideLut);
     DECL_OPTION("-map-only-keep-equivalent-registers", OnOff, &m_mapOnlyKeepEquivRegs);

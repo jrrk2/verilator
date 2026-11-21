@@ -4863,13 +4863,18 @@ private:
         }
         // Tile plan: RAMB36E1 only, in the lane widths the open flow has been
         // seen to get right on hardware: x36 (32 data bits), x9 (8) and x1.
-        // x2/x4 come out of nextpnr miscompiled (bytecode/fpga/vc707-ethmin
-        // notes) and x18 / RAMB18E1 are unproven, so they are not used.
+        // x2/x4 came out of an earlier nextpnr miscompiled (bytecode/fpga/
+        // vc707-ethmin notes), so they are used only with
+        // --map-only-bram-x2-x4: a memory of 4097..8192 words then takes x4
+        // tiles and one of 8193..16384 words x2, a quarter and a half of the
+        // x1 tiles it would otherwise need (and of the loads on its address).
+        // x18 / RAMB18E1 are unproven and not used.
         // Deeper memories use x1 lanes in 32K blocks with a registered block
         // select (tdp_ram32's scheme).
         int tw = 1;
         const char* prim = "RAMB36E1";
-        for (const int cand : {32, 8, 1}) {
+        for (const int cand : {32, 8, 4, 2, 1}) {
+            if ((cand == 4 || cand == 2) && !v3Global.opt.mapOnlyBramX2X4()) continue;
             if (32768 / cand >= depth) {
                 tw = cand;
                 break;
