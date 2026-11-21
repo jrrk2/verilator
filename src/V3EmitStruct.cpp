@@ -74,6 +74,19 @@
 #include <unordered_set>
 #include <vector>
 
+// The greatest common divisor, not std::gcd: that is C++17's, and some of the compilers the
+// synthesis backend is built with (macOS CI) compile the C++14 dialect
+static long long gcdLL(long long a, long long b) {
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b) {
+        const long long t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
 // Verilator after 5.050 splits VL_RESTORER (trivially copyable only) from
 // VL_RESTORER_COPY; the same source builds against both
 #ifndef VL_RESTORER_COPY
@@ -3245,7 +3258,7 @@ private:
             // (buf[16 * n +: 32] = word), so the vector is taken in pieces of their common
             // divisor: piece p gets part k of the value when the index is p - k pieces
             const int w = lv.width;
-            const int piece = static_cast<int>(std::gcd<long long>(lv.slotStep, w));
+            const int piece = static_cast<int>(gcdLL(lv.slotStep, w));
             const SExpr idx = materialize(lv.idx);
             const SExpr value = piece == w ? rhs : materialize(rhs);
             std::map<int, SExpr> hits;
@@ -3591,7 +3604,7 @@ private:
                 const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
                 if (ra.second > top - rb.second) return 1;
             }
-            const long long g = std::gcd(exprStep(ap, env), exprStep(bp, env));
+            const long long g = gcdLL(exprStep(ap, env), exprStep(bp, env));
             return g ? g : 0;
         }
         return 1;
