@@ -66,8 +66,8 @@
 #include <functional>
 #include <iomanip>
 #include <map>
-#include <numeric>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -3580,10 +3580,13 @@ private:
             return 1;
         }
         if (VN_IS(np, Add) || VN_IS(np, Cond)) {
-            AstNodeExpr* const ap = VN_IS(np, Add) ? VN_AS(np, Add)->lhsp() : VN_AS(np, Cond)->thenp();
-            AstNodeExpr* const bp = VN_IS(np, Add) ? VN_AS(np, Add)->rhsp() : VN_AS(np, Cond)->elsep();
+            AstNodeExpr* const ap
+                = VN_IS(np, Add) ? VN_AS(np, Add)->lhsp() : VN_AS(np, Cond)->thenp();
+            AstNodeExpr* const bp
+                = VN_IS(np, Add) ? VN_AS(np, Add)->rhsp() : VN_AS(np, Cond)->elsep();
             if (VN_IS(np, Add)) {
-                const std::pair<long long, long long> ra = exprRange(ap, env), rb = exprRange(bp, env);
+                const std::pair<long long, long long> ra = exprRange(ap, env),
+                                                      rb = exprRange(bp, env);
                 const int width = np->width();
                 const long long top = width >= 62 ? (1LL << 62) : (1LL << width) - 1;
                 if (ra.second > top - rb.second) return 1;

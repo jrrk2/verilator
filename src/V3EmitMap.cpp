@@ -1104,7 +1104,8 @@ public:
                 std::string err;
                 if (!V3MapSdcRead(v3Global.opt.mapOnlySdc(), sdc, err))
                     v3fatal("Synthesis: " << err);
-                if (v3Global.opt.mapOnlyPins().empty()) {  // else the pins have a file of their own
+                if (v3Global.opt.mapOnlyPins()
+                        .empty()) {  // else the pins have a file of their own
                     m_pinPorts = sdc.pinPorts;
                     m_pinFile = sdc.filename;
                     m_pinWildcard = sdc.pinWildcard;
@@ -1267,15 +1268,14 @@ public:
                 tns = tns2;
             }
             emitBest(true, wns, tns);
-            timingNotes.push_back("written: pass " + std::to_string(bestPass)
-                                  + (m_ftApplied.empty()
-                                         ? std::string{}
-                                         : ", " + std::to_string(m_ftApplied.size())
-                                               + " LUTs retimed forward")
-                                  + (m_rtApplied.empty()
-                                         ? std::string{}
-                                         : ", " + std::to_string(m_rtApplied.size())
-                                               + " register bits retimed"));
+            timingNotes.push_back(
+                "written: pass " + std::to_string(bestPass)
+                + (m_ftApplied.empty()
+                       ? std::string{}
+                       : ", " + std::to_string(m_ftApplied.size()) + " LUTs retimed forward")
+                + (m_rtApplied.empty()
+                       ? std::string{}
+                       : ", " + std::to_string(m_rtApplied.size()) + " register bits retimed"));
         }
         if (timing) {
             for (const std::string& l : timingNotes)
@@ -3874,8 +3874,8 @@ private:
                 ins.emplace_back(f.rv ? "S" : "R", "[" + rst + "]");
             }
             if (r.negedge) type += "_1";
-            const size_t bn = r.bitNo.empty() ? f.ctl.second
-                                              : static_cast<size_t>(r.bitNo[f.ctl.second]);
+            const size_t bn
+                = r.bitNo.empty() ? f.ctl.second : static_cast<size_t>(r.bitNo[f.ctl.second]);
             const std::string name
                 = sanitize(r.name) + "_" + std::to_string(bn) + "_fret" + std::to_string(fi);
             m_curLeaf = name;
@@ -4168,9 +4168,9 @@ private:
                         upto = rit->second.second;
                     }
                     for (size_t i = 0; i < pr.bits.size(); ++i) {
-                        const int idx
-                            = upto ? lo + static_cast<int>(pr.bits.size()) - 1 - static_cast<int>(i)
-                                   : lo + static_cast<int>(i);
+                        const int idx = upto ? lo + static_cast<int>(pr.bits.size()) - 1
+                                                   - static_cast<int>(i)
+                                             : lo + static_cast<int>(i);
                         bits.insert(pr.name + "[" + std::to_string(idx) + "]");
                     }
                 }
@@ -4189,12 +4189,11 @@ private:
             }
             if (!floating.empty() || !noPin.empty() || !noPort.empty()) {
                 // beside the netlist that was to be written
-                std::string logName = !filename.empty() ? filename
-                                      : !v3Global.opt.mapOnlyVerilog().empty()
-                                          ? v3Global.opt.mapOnlyVerilog()
-                                          : !v3Global.opt.mapOnlyEdif().empty()
-                                                ? v3Global.opt.mapOnlyEdif()
-                                                : m_top;
+                std::string logName
+                    = !filename.empty()                        ? filename
+                      : !v3Global.opt.mapOnlyVerilog().empty() ? v3Global.opt.mapOnlyVerilog()
+                      : !v3Global.opt.mapOnlyEdif().empty()    ? v3Global.opt.mapOnlyEdif()
+                                                               : m_top;
                 const size_t dot = logName.rfind('.');
                 if (dot != std::string::npos && logName.find('/', dot) == std::string::npos)
                     logName.resize(dot);
@@ -4203,7 +4202,8 @@ private:
                     std::ofstream log{logName};
                     log << "verilator --map-only: electrical rule check of " << m_top << "\n";
                     if (!floating.empty()) {
-                        log << "\n" << floating.size()
+                        log << "\n"
+                            << floating.size()
                             << " net(s) are read by a cell and driven by nothing.\n"
                             << "Each line: the net, then the first cell input found reading it.\n"
                             << "A net named <array>__<n>[<bit>] is element n of an unpacked array "
@@ -4230,7 +4230,8 @@ private:
                             log << "  " << nameOf(kv.first) << "\t<- " << kv.second << "\n";
                     }
                     if (!noPort.empty()) {
-                        log << "\n" << noPort.size() << " pin assignment(s) in " << m_pinFile
+                        log << "\n"
+                            << noPort.size() << " pin assignment(s) in " << m_pinFile
                             << " name no port bit of this netlist.\n"
                             << "(A one-bit vector port is a scalar here: write cs_n, not "
                                "cs_n[0].)\n";
@@ -4239,13 +4240,15 @@ private:
                                 << "\n";
                     }
                     if (!noPin.empty()) {
-                        log << "\n" << noPin.size() << " port bit(s) have no package pin in "
-                            << m_pinFile << ":\n";
+                        log << "\n"
+                            << noPin.size() << " port bit(s) have no package pin in " << m_pinFile
+                            << ":\n";
                         for (const std::string& bit : noPin) log << "  " << bit << "\n";
                     }
                 }
                 std::string what;
-                const auto add = [&](const std::string& t) { what += (what.empty() ? "" : "; ") + t; };
+                const auto add
+                    = [&](const std::string& t) { what += (what.empty() ? "" : "; ") + t; };
                 if (!floating.empty())
                     add(std::to_string(floating.size())
                         + " net(s) are read by a cell but have no driver, the first "
@@ -4255,10 +4258,10 @@ private:
                         + " pin assignment(s) name no port of the netlist, the first "
                         + noPort[0].first + " at line " + std::to_string(noPort[0].second));
                 if (!noPin.empty())
-                    add(std::to_string(noPin.size()) + " port bit(s) have no package pin, the first "
-                        + noPin[0]);
-                v3fatal("Synthesis: electrical rule check failed: " << what
-                        << "; no netlist written.  All of them: " << logName);
+                    add(std::to_string(noPin.size())
+                        + " port bit(s) have no package pin, the first " + noPin[0]);
+                v3fatal("Synthesis: electrical rule check failed: "
+                        << what << "; no netlist written.  All of them: " << logName);
             }
         }
         if (!write) return;  // a pass the timing analysis looks at, not the one written out
@@ -5150,8 +5153,7 @@ private:
                 weAny = orNet(weAny, we);
                 const std::vector<std::string>& wd = lp[k].ins["wdata"];
                 for (int b = 0; b < w; ++b)
-                    pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b]
-                                                                                : "\"0\"");
+                    pins.ins["wdata"].push_back(b < static_cast<int>(wd.size()) ? wd[b] : "\"0\"");
                 for (auto& kv : pins.outs) {
                     const std::vector<std::string>& rd = lp[k].outs[kv.first];
                     for (int b = 0; b < w; ++b)
