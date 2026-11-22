@@ -4521,7 +4521,8 @@ private:
         if (retp) {
             const auto it = fenv.cur.find(retKey);
             if (it != fenv.cur.end()) {
-                result = it->second;
+                // slice writes after the last whole one go on top, as for any variable read
+                result = assembleFromMap(retKey, it->second, fenv.cur);
             } else {
                 const SExpr r = assembleSlices(retKey, constExpr(0, retp->width()), fenv);
                 if (r.isConst)
