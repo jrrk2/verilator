@@ -1199,12 +1199,14 @@ public:
                 emitJson(write ? filename : std::string{}, l, o, write);
                 std::string err;
                 if (!timing->analyse(m_recs, m_portRecs, err)) v3fatal("Synthesis: " << err);
-                wns = 0;
+                // the worst slack as it is, above zero too: retiming aims at the margin
+                wns = std::numeric_limits<double>::infinity();
                 tns = 0;
                 for (const V3MapTiming::Domain& d : timing->summary().domains) {
                     wns = std::min(wns, d.wns);
                     tns += d.tns;
                 }
+                if (std::isinf(wns)) wns = 0;
             };
             double wns = 0, tns = 0;
             // --map-only-retime: rounds of moving late register bits back across their LUTs,
@@ -1324,6 +1326,7 @@ private:
         m_ftDropped.clear();
         m_ftDroppedFt.clear();
         m_ftCand.clear();
+        m_ftNodes.clear();
         m_ftDNet.clear();
     }
 
@@ -1382,6 +1385,7 @@ private:
     struct FtCand final {
         std::string net;  // the LUT's output net in this emission
         std::vector<std::string> dNets;  // the D nets of the flip-flops it reads
+        std::vector<std::string> dNodes;  // and what drives them (BLIF names)
     };
     std::vector<std::string> m_ftOrder;  // the LUTs chosen, in the order they are moved
     std::set<std::string> m_ftRejected;
@@ -1389,6 +1393,11 @@ private:
     std::set<RegBit> m_ftDropped;  // register bits no longer read by anything
     std::set<int> m_ftDroppedFt;  // moved flip-flops moved on, likewise
     std::map<std::string, FtCand> m_ftCand;
+    struct FtNode final {  // a LUT of the emission, for walking back along a late path
+        std::string net;
+        std::vector<std::string> ins;  // BLIF names, buffers looked through
+    };
+    std::unordered_map<std::string, FtNode> m_ftNodes;
     std::map<std::string, std::string> m_ftDNet;  // a moved flip-flop's D net, by its q name
     std::map<RegBit, RtApplied> m_rtApplied;
     std::set<std::string> m_rtLuts;
@@ -1560,13 +1569,14 @@ private:
                && m_aig.resolve(ra.clk) == m_aig.resolve(rb.clk) && lit(oa.en) == lit(ob.en)
                && lit(oa.rst) == lit(ob.rst);
     }
-    // Whether LUT `n` (up to six inputs, not a buffer) reads nothing but such flip-flops, all of
-    // one control set; `ins` gets them in input order
+    // Whether LUT `n` (not a buffer) reads nothing but such flip-flops, all of one control set;
+    // `ins` gets them in input order.  A 7- or 8-input cover moves as one: its D-side copy is
+    // emitted as the same LUT6s and wide muxes.
     bool readsOnlyRegs(const std::map<std::string, Lut>& luts,
                        const std::unordered_map<std::string, SrcReg>& src, const std::string& n,
                        std::vector<SrcReg>& ins) {
         const auto it = luts.find(n);
-        if (it == luts.end() || it->second.ins.empty() || it->second.ins.size() > 6
+        if (it == luts.end() || it->second.ins.empty() || it->second.ins.size() > 8
             || isBufLut(it->second) || m_rtLuts.count(n))
             return false;
         for (const std::string& in : it->second.ins) {
@@ -1642,47 +1652,92 @@ private:
         m_ftOrder.swap(kept);
     }
     // After an analysis: the LUTs worth moving forward, appended to m_ftOrder.  A LUT qualifies
-    // when its output is late and the D inputs of the flip-flops it reads would still be less
-    // late with the LUT's delay in front of them.
+    // when its output is late (has less slack than the timing margin) and the D inputs of the
+    // flip-flops it reads would still be less late with the LUT's delay in front of them, or can
+    // be made so (makeRoomFwd).
     std::vector<std::string> chooseRetimeFwd(const V3MapTiming& timing) {
-        std::vector<std::string> added;
-        const double step = V3MapTiming::lutDelay(4, timing.averageNetDelay());
-        const std::set<std::string> have(m_ftOrder.begin(), m_ftOrder.end());
+        PullFwd p{timing, V3MapTiming::lutDelay(4, timing.averageNetDelay()),
+                  std::set<std::string>(m_ftOrder.begin(), m_ftOrder.end()), {}, {}};
         size_t late = 0;
-        double worstIn = 1e30;
         for (const auto& kv : m_ftCand) {
-            if (have.count(kv.first) || m_ftRejected.count(kv.first)) continue;
+            if (p.have.count(kv.first) || m_ftRejected.count(kv.first)) continue;
             const std::string& o = kv.second.net;
             if (o.empty() || o[0] == '"') continue;
             const double so = timing.required(o) - timing.arrival(o);
-            if (std::isnan(so) || so >= 0) continue;
-            double sd = 1e30;
-            bool ok = true;
-            for (const std::string& d : kv.second.dNets) {
-                if (d.empty()) ok = false;
-                if (!ok || d[0] == '"') continue;
-                const double s = timing.required(d) - timing.arrival(d);
-                // (a D input no clocked path reaches has all the time there is)
-                if (!std::isnan(s)) sd = std::min(sd, s);
-            }
+            if (std::isnan(so) || so >= timingMargin(timing)) continue;
             ++late;
-            if (ok) worstIn = std::min(worstIn, sd - so);
-            if (ok && sd - step > so + step) {
-                m_ftOrder.push_back(kv.first);
-                added.push_back(kv.first);
-            }
+            pullFwd(p, kv.first, kMaxPull);
         }
         if (v3Global.opt.structOnlyReport())
             std::cerr << "%Info: map-retime: " << m_ftCand.size()
                       << " LUTs read only flip-flops of one control set; " << late
-                      << " of them have a late output; " << added.size()
-                      << " have inputs with a LUT's delay to spare over it (step " << step
-                      << " ns)\n";
-        return added;
+                      << " of them have a late output; " << p.added.size()
+                      << " moves chosen for them (step " << p.step << " ns)\n";
+        return p.added;
+    }
+    // Registers C-slowed round a loop go forward one behind the other: where a flip-flop's D
+    // input has no time to spare for the LUT behind it, the logic in front of that flip-flop
+    // is made shorter first, by moving its first LUT across the flip-flops further back.  That
+    // nests, up to this many deep.
+    static constexpr int kMaxPull = 16;
+    struct PullFwd final {
+        const V3MapTiming& timing;
+        double step;
+        std::set<std::string> have;  // chosen, this round or before
+        std::vector<std::string> added;  // chosen this round
+        std::unordered_map<std::string, bool> seen;  // walked back through this round: room made
+    };
+    // Choose candidate `n` to move, after what it needs moved in front of it; whether it was
+    bool pullFwd(PullFwd& p, const std::string& n, int depth) {
+        if (p.have.count(n)) return true;
+        if (m_ftRejected.count(n)) return false;
+        const auto it = m_ftCand.find(n);
+        if (it == m_ftCand.end()) return false;
+        const std::string& o = it->second.net;
+        if (o.empty() || o[0] == '"') return false;
+        const double so = p.timing.required(o) - p.timing.arrival(o);
+        if (std::isnan(so)) return false;
+        for (size_t j = 0; j < it->second.dNets.size(); ++j) {
+            const std::string& d = it->second.dNets[j];
+            if (d.empty()) return false;
+            if (d[0] == '"') continue;
+            const double sd = p.timing.required(d) - p.timing.arrival(d);
+            // (a D input no clocked path reaches has all the time there is)
+            if (std::isnan(sd) || sd - p.step > so + p.step) continue;
+            if (depth == 0 || !makeRoomFwd(p, it->second.dNodes[j], depth - 1)) return false;
+        }
+        p.have.insert(n);
+        m_ftOrder.push_back(n);
+        p.added.push_back(n);
+        return true;
+    }
+    // Shorten the logic ending at LUT `y` by a LUT at its start: walk back along its latest
+    // inputs to LUTs that read only flip-flops and move those; whether any was
+    bool makeRoomFwd(PullFwd& p, const std::string& y, int depth) {
+        if (m_ftCand.count(y)) return pullFwd(p, y, depth);
+        const auto it = m_ftNodes.find(y);
+        if (it == m_ftNodes.end()) return false;
+        const auto sit = p.seen.emplace(y, false);
+        if (!sit.second) return sit.first->second;
+        double latest = -1e30;
+        for (const std::string& in : it->second.ins) {
+            const auto nit = m_ftNodes.find(in);
+            if (nit != m_ftNodes.end())
+                latest = std::max(latest, p.timing.arrival(nit->second.net));
+        }
+        bool moved = false;
+        for (const std::string& in : it->second.ins) {
+            const auto nit = m_ftNodes.find(in);
+            if (nit == m_ftNodes.end()) continue;
+            if (p.timing.arrival(nit->second.net) < latest - p.step / 2) continue;
+            if (makeRoomFwd(p, in, depth)) moved = true;
+        }
+        p.seen[y] = moved;
+        return moved;
     }
     // After an analysis: the register bits worth moving back, added to m_rtSet.  A bit
-    // qualifies when its D input is late and its output would still be less late with the
-    // LUT's delay moved behind it.
+    // qualifies when its D input is late (has less slack than the timing margin) and its output
+    // would still be less late with the LUT's delay moved behind it.
     std::vector<RegBit> chooseRetime(const V3MapTiming& timing) {
         std::vector<RegBit> added;
         const double step = V3MapTiming::lutDelay(4, timing.averageNetDelay());
@@ -1703,7 +1758,7 @@ private:
             }
             // the output keeps a LUT's delay in hand over the input after the move, so that
             // the move cannot make a new worst path of its own
-            if (sd < 0 && sq - step > sd + step) {
+            if (sd < timingMargin(timing) && sq - step > sd + step) {
                 m_rtSet.insert(kv.first);
                 added.push_back(kv.first);
             }
@@ -1826,12 +1881,14 @@ private:
     // routing then eats
     double abcRequired(const V3MapTiming& timing, const std::string& net) const {
         if (net.empty() || net[0] == '"') return std::numeric_limits<double>::quiet_NaN();
-        const double margin = v3Global.opt.mapOnlyTimingMargin() >= 0
-                                  ? v3Global.opt.mapOnlyTimingMargin()
-                                  : 0.2 * timing.minPeriod();
-        const double req = timing.required(net) - margin;
+        const double req = timing.required(net) - timingMargin(timing);
         const double arr = timing.arrival(net);
         return std::isnan(arr) ? req : std::min(req, arr);
+    }
+    // The slack the timing-driven passes and retiming aim for
+    static double timingMargin(const V3MapTiming& timing) {
+        return v3Global.opt.mapOnlyTimingMargin() >= 0 ? v3Global.opt.mapOnlyTimingMargin()
+                                                       : 0.2 * timing.minPeriod();
     }
     void boundaryTimes(const V3MapTiming& timing, BoundaryTimes& bt) {
         const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -3393,6 +3450,12 @@ private:
             const std::unordered_map<std::string, SrcReg> src = sourceRegs(luts);
             for (const std::string& o : order) {
                 if (skip.count(o)) continue;
+                const Lut& l = luts[o];
+                if (!isBufLut(l) && netOfName.count(o)) {
+                    FtNode& fn = m_ftNodes[o];
+                    fn.net = netOfName[o];
+                    for (const std::string& in : l.ins) fn.ins.push_back(resolveLut(luts, in));
+                }
                 std::vector<SrcReg> ins;
                 if (!readsOnlyRegs(luts, src, o, ins)) continue;
                 FtCand c;
@@ -3400,6 +3463,7 @@ private:
                 for (const SrcReg& sr : ins) {
                     const auto dit = netOfName.find(sr.dNode);
                     c.dNets.push_back(dit == netOfName.end() ? std::string{} : dit->second);
+                    c.dNodes.push_back(sr.dNode);
                 }
                 m_ftCand[o] = c;
             }
