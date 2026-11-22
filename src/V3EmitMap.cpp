@@ -1656,8 +1656,11 @@ private:
     // flip-flops it reads would still be less late with the LUT's delay in front of them, or can
     // be made so (makeRoomFwd).
     std::vector<std::string> chooseRetimeFwd(const V3MapTiming& timing) {
-        PullFwd p{timing, V3MapTiming::lutDelay(4, timing.averageNetDelay()),
-                  std::set<std::string>(m_ftOrder.begin(), m_ftOrder.end()), {}, {}};
+        PullFwd p{timing,
+                  V3MapTiming::lutDelay(4, timing.averageNetDelay()),
+                  std::set<std::string>(m_ftOrder.begin(), m_ftOrder.end()),
+                  {},
+                  {}};
         size_t late = 0;
         for (const auto& kv : m_ftCand) {
             if (p.have.count(kv.first) || m_ftRejected.count(kv.first)) continue;
